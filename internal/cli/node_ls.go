@@ -88,7 +88,14 @@ func runNodeLs(cmd *cobra.Command, args []string) error {
 		if len(n.Tags) > 0 {
 			tagsStr = strings.Join(n.Tags, ",")
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n.ID, n.Hostname, n.Status, tagsStr, n.RemoteIP, n.Domain, uptime)
+		domainStr := n.Domain
+		if domainStr == "" {
+			domainStr = "fabric.mesh"
+		}
+		if n.Hostname != "" && !strings.Contains(n.Hostname, ".") && !strings.HasPrefix(domainStr, n.Hostname+".") {
+			domainStr = n.Hostname + "." + domainStr
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n.ID, n.Hostname, n.Status, tagsStr, n.RemoteIP, domainStr, uptime)
 	}
 	w.Flush()
 	return nil
