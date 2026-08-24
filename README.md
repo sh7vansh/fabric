@@ -1,23 +1,145 @@
 # Fabric
 
-Fabric is a lightweight remote execution, service discovery, and networking mesh written in Go. It allows you to manage and connect to multiple remote machines seamlessly without needing inbound firewall rules.
+> A lightweight, zero-firewall remote execution, service discovery, and networking mesh written in Go.
 
-## One-Click Installation
+[![Go Version](https://img.shields.io/badge/go-1.22+-00ADD8?style=flat&logo=go)](https://golang.org)
+[![Release](https://img.shields.io/github/v/release/sh7vansh/fabric?style=flat&color=38bdf8)](https://github.com/sh7vansh/fabric/releases)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-To install Fabric on any modern Linux system (Ubuntu, Fedora, Debian, CentOS, etc.), simply run this command in your terminal:
+Fabric connects distributed servers, edge devices, and local VMs behind firewalls and NATs into a unified, secure mesh without requiring open inbound ports or complex VPN infrastructure.
+
+---
+
+## Key Features
+
+* 🔒 **Zero Inbound Firewall Holes**: Nodes maintain persistent outbound WebSocket tunnels to the central Socket.
+* 💻 **Interactive PTY & Fleet Execution**: Run non-interactive commands, attach full pseudo-terminals (`-i -t`), or execute across entire node fleets (`--all`, `--tag`) in parallel.
+* 🌐 **Built-in Mesh DNS (`.mesh`)**: Automatic RFC 1035 DNS name resolution between nodes with `systemd-resolved` split-DNS and `/etc/hosts` fallback.
+* 📦 **Safe Streaming File Transfers (`cp`)**: Stream directory trees and files over Tar-chunked pipes with built-in traversal and symlink guards.
+* 🔌 **TCP Port Forwarding (`port`)**: Securely bridge local ports directly to remote services across the mesh (`127.0.0.1:8080 -> worker.mesh:80`).
+* 🧵 **One-Shot SSH Stitching & Discovery**: Discover SSH hosts on your subnet (`stitch discover`) and bootstrap them air-gapped into the mesh with a single command.
+* 🔄 **Inverted & Dual-Mode mTLS**: Optional direct peer-to-peer mTLS listener mode for edge-to-CLI operations without relaying through a central socket.
+
+---
+
+## ⚡ Quick Start
+
+### 1. Installation
+
+Install Fabric on any modern Linux host (`amd64`, `arm64`, `arm`):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/sh7vansh/fabric/main/install.sh | bash
 ```
 
-### What this script does:
-1. Detects your OS and architecture (`amd64`, `arm64`, or `arm`).
-2. Downloads the pre-compiled binaries from the latest GitHub Release.
-3. Places them in `/usr/local/bin` (or `~/.local/bin` if run without `sudo`).
-4. Automatically launches the interactive `fabric setup` wizard to get your node connected!
+*Or install from source:*
+```bash
+go install fabric/cmd/cli@latest
+```
 
-## Architecture Highlights
-* **Outbound Only**: Nodes generally must never require inbound firewall holes; communication originates outbound from nodes to the central Socket. 
-  * *(Edge Case: Supports an "Inverted Connection Mode" where a node can safely expose a public port via strict mTLS, allowing operators behind strict NATs to bypass the central socket using the CLI `--direct` flag).*
-* **Deterministic Teardown**: DNS hooks (`/etc/hosts` modifications) and PTY processes are cleanly cleaned up on node shutdown or disconnect.
-* **Streaming Transfers**: File copies (`cp`) and execution streams operate incrementally over chunked tar/stream envelopes without holding unbounded memory buffers.
+---
+
+### 2. Basic Setup
+
+#### Option A: Start a Socket (Central Control Plane)
+Run on a publicly reachable server or central relay machine:
+```bash
+fabric setup --role=socket --domain=fabric.mesh
+```
+
+#### Option B: Join a Node (Agent Daemon)
+Run on any host you want to manage:
+```bash
+fabric setup --role=node --host=ws://<socket-ip>:8080/ws --token=<your-token>
+```
+
+#### Option C: Stitch Remotely over SSH (Zero-Touch)
+From your workstation, provision remote machines into your mesh automatically:
+```bash
+# Stitch a single machine
+fabric stitch user@192.168.1.50
+
+# Scan your subnet and batch-stitch discovered endpoints
+fabric stitch discover 192.168.1.0/24
+```
+
+---
+
+## 🛠️ CLI Cheat Sheet
+
+### Node Management
+```bash
+fabric ps                           # List active nodes (shorthand)
+fabric node ls                      # List connected nodes with uptime and OS
+fabric node inspect worker-1        # Detailed telemetry and tags in JSON
+```
+
+### Remote Execution
+```bash
+# Single command execution
+fabric exec worker-1 uname -a
+
+# Interactive shell with PTY allocation
+fabric exec -i -t worker-1 /bin/bash
+
+# Execute in detached background mode
+fabric exec -d worker-1 /opt/backup.sh
+
+# Fleet-wide execution across tagged worker nodes
+fabric exec --tag prod "uptime"
+fabric exec --all "df -h"
+```
+
+### File Transfers (`cp`)
+```bash
+# Upload local file or folder to remote node
+fabric cp ./app.tar.gz worker-1:/opt/app/
+
+# Download remote directory to local machine
+fabric cp worker-1:/var/log/ ./logs/
+```
+
+### Port Forwarding & Networking
+```bash
+# Forward local port 8080 to remote node's internal port 80
+fabric port worker-1 8080:80
+
+# Inspect mesh DNS target URL
+fabric port worker-1
+```
+
+### Service Lifecycle
+```bash
+fabric service status node          # Inspect daemon service unit
+fabric service restart node         # Restart background agent daemon
+fabric service uninstall node       # Cleanly remove systemd/supervisor service
+```
+
+---
+
+## 🏗️ Architecture Overview
+
+```text
+[ fabric CLI ] ────── WebSocket / Yamux ─────► [ fabric-socket ] ◄───── Persistent Outbound WS ───── [ fabric-node Agent ]
+ (Exec / CP / Port)                              (Relay & DNS)                                         (PTY / Host Control)
+```
+
+1. **Persistent Multiplexing**: A single WebSocket connection carries multiple multiplexed streams (PTY I/O, file transfers, TCP proxies, DNS queries) via Yamux.
+2. **Mesh DNS (`.mesh`)**: The Socket embeds an RFC 1035 DNS server. Node agents configure local stub resolvers so `http://worker-1.fabric.mesh` resolves seamlessly.
+3. **Multi-Tier Init**: Supports root `systemd` system units, non-root `systemd --user` units with lingering, and standalone supervisor daemons for containers.
+
+---
+
+## 🔒 Security Invariants
+
+* **mTLS Direct Mode**: Inverted node listeners enforce Mutual TLS client certificate authentication minted by the mesh Root CA.
+* **Safe Extraction**: Tar extraction enforces decompressed byte limits (5 GB max) and strict symlink escape checks to prevent zip-slip attacks.
+* **Egress Filtering**: TCP proxy tunnels reject loopback/cloud-metadata IPs (e.g. AWS/GCP `169.254.169.254` and `metadata.google.internal`).
+* **Constant-Time Verification**: All cluster auth tokens use cryptographic constant-time comparison.
+
+---
+
+## License
+
+Fabric is open-source software released under the [MIT License](LICENSE).
+
