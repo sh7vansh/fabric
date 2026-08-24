@@ -197,7 +197,10 @@ func (c *Client) DoHTTP(method, path string, body interface{}) (*http.Response, 
 		scheme = "https"
 	}
 	u.Scheme = scheme
-	u.Path = strings.TrimRight(u.Path, "/") + "/" + strings.TrimLeft(path, "/")
+
+	basePath := strings.TrimSuffix(u.Path, "/ws")
+	basePath = strings.TrimRight(basePath, "/")
+	u.Path = basePath + "/" + strings.TrimLeft(path, "/")
 
 	req, err := http.NewRequest(method, u.String(), nil)
 	if err != nil {
@@ -245,16 +248,23 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 		defer resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
 			_ = json.NewDecoder(resp.Body).Decode(&nodes)
+		} else {
+			socketErr = fmt.Errorf("failed to list nodes: HTTP %s", resp.Status)
+		}
+	} else {
+		socketErr = err
+	}
 
-			if verResp, verErr := c.DoHTTP("GET", "/version", nil); verErr == nil {
-				defer verResp.Body.Close()
-				var verInfo struct {
-					Version string `json:"version"`
-					Domain  string `json:"domain"`
-				}
-				if json.NewDecoder(verResp.Body).Decode(&verInfo) == nil && verInfo.Domain != "" {
-					socketDomain = verInfo.Domain
-				}
+	// Always probe socket /version to check if socket control plane is alive
+	if verResp, verErr := c.DoHTTP("GET", "/version", nil); verErr == nil {
+		defer verResp.Body.Close()
+		if verResp.StatusCode == http.StatusOK {
+			var verInfo struct {
+				Version string `json:"version"`
+				Domain  string `json:"domain"`
+			}
+			if json.NewDecoder(verResp.Body).Decode(&verInfo) == nil && verInfo.Domain != "" {
+				socketDomain = verInfo.Domain
 			}
 
 			socketNode = &protocol.NodeMetadata{
@@ -266,11 +276,7 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 				Domain:      socketDomain,
 				ConnectedAt: time.Now().UTC().Format(time.RFC3339),
 			}
-		} else {
-			socketErr = fmt.Errorf("failed to list nodes: HTTP %s", resp.Status)
 		}
-	} else {
-		socketErr = err
 	}
 
 	// Merge direct nodes from local configuration
