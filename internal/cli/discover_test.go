@@ -54,8 +54,29 @@ func TestParseTargets(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name:        "IPv4 single octet range (192.168.1.10-15)",
+			input:       "192.168.1.10-15",
+			wantCount:   6,
+			firstIP:     "192.168.1.10",
+			lastIP:      "192.168.1.15",
+			expectError: false,
+		},
+		{
+			name:        "IPv4 full IP range (10.0.0.1-10.0.0.4)",
+			input:       "10.0.0.1-10.0.0.4",
+			wantCount:   4,
+			firstIP:     "10.0.0.1",
+			lastIP:      "10.0.0.4",
+			expectError: false,
+		},
+		{
 			name:        "Invalid CIDR notation",
 			input:       "999.999.999.999/24",
+			expectError: true,
+		},
+		{
+			name:        "Invalid IP range start > end",
+			input:       "192.168.1.50-10",
 			expectError: true,
 		},
 		{

@@ -127,30 +127,40 @@ func probeSSH(ip string, port int, timeout time.Duration) (*DiscoveredHost, erro
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	reader := bufio.NewReader(conn)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return nil, err
+	for i := 0; i < 10; i++ {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+
+		rawBanner := strings.TrimSpace(line)
+		if rawBanner == "" {
+			continue
+		}
+
+		// RFC 4253 Section 4.2: Server identification string starts with "SSH-"
+		if strings.HasPrefix(rawBanner, "SSH-") {
+			clean := rawBanner
+			if strings.HasPrefix(clean, "SSH-2.0-") {
+				clean = strings.TrimPrefix(clean, "SSH-2.0-")
+			} else if strings.HasPrefix(clean, "SSH-1.99-") {
+				clean = strings.TrimPrefix(clean, "SSH-1.99-")
+			}
+
+			return &DiscoveredHost{
+				IP:          ip,
+				Port:        port,
+				Banner:      rawBanner,
+				CleanBanner: clean,
+				Latency:     latency.Round(time.Millisecond),
+			}, nil
+		}
+
+		// Fail fast if clearly not SSH (e.g. HTTP response)
+		if strings.HasPrefix(rawBanner, "HTTP/") || strings.HasPrefix(rawBanner, "<html") {
+			return nil, fmt.Errorf("non-SSH HTTP service on %s: %q", addr, rawBanner)
+		}
 	}
 
-	rawBanner := strings.TrimSpace(line)
-
-	// RFC 4253 Section 4.2: Server MUST identify itself with "SSH-protoversion-softwareversion..."
-	if !strings.HasPrefix(rawBanner, "SSH-") {
-		return nil, fmt.Errorf("non-SSH service on %s: %q", addr, rawBanner)
-	}
-
-	clean := rawBanner
-	if strings.HasPrefix(clean, "SSH-2.0-") {
-		clean = strings.TrimPrefix(clean, "SSH-2.0-")
-	} else if strings.HasPrefix(clean, "SSH-1.99-") {
-		clean = strings.TrimPrefix(clean, "SSH-1.99-")
-	}
-
-	return &DiscoveredHost{
-		IP:          ip,
-		Port:        port,
-		Banner:      rawBanner,
-		CleanBanner: clean,
-		Latency:     latency.Round(time.Millisecond),
-	}, nil
+	return nil, fmt.Errorf("no valid SSH banner received from %s", addr)
 }

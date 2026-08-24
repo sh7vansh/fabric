@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 )
 
@@ -82,6 +84,18 @@ func ParseTargets(input string) ([]string, error) {
 					targets = append(targets, ip)
 				}
 			}
+		} else if strings.Contains(part, "-") && isIPRange(part) {
+			// IP range, e.g. 192.168.1.1-10 or 192.168.1.1-192.168.1.10
+			ips, err := expandIPRange(part)
+			if err != nil {
+				return nil, err
+			}
+			for _, ip := range ips {
+				if !seen[ip] {
+					seen[ip] = true
+					targets = append(targets, ip)
+				}
+			}
 		} else {
 			// Single IP or Hostname
 			ip := net.ParseIP(part)
@@ -106,6 +120,65 @@ func ParseTargets(input string) ([]string, error) {
 	}
 
 	return targets, nil
+}
+
+func isIPRange(s string) bool {
+	parts := strings.Split(s, "-")
+	if len(parts) != 2 {
+		return false
+	}
+	startIP := net.ParseIP(strings.TrimSpace(parts[0]))
+	return startIP != nil && startIP.To4() != nil
+}
+
+// expandIPRange expands a range like 192.168.1.1-10 or 192.168.1.1-192.168.1.10
+func expandIPRange(rangeStr string) ([]string, error) {
+	parts := strings.Split(rangeStr, "-")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid IP range %q", rangeStr)
+	}
+	startStr := strings.TrimSpace(parts[0])
+	endStr := strings.TrimSpace(parts[1])
+
+	startIP := net.ParseIP(startStr).To4()
+	if startIP == nil {
+		return nil, fmt.Errorf("invalid start IP in range %q", rangeStr)
+	}
+
+	var endIP net.IP
+	if strings.Contains(endStr, ".") {
+		endIP = net.ParseIP(endStr).To4()
+		if endIP == nil {
+			return nil, fmt.Errorf("invalid end IP in range %q", rangeStr)
+		}
+	} else {
+		octet, err := strconv.Atoi(endStr)
+		if err != nil || octet < 0 || octet > 255 {
+			return nil, fmt.Errorf("invalid end octet in range %q: %s", rangeStr, endStr)
+		}
+		endIP = net.IPv4(startIP[0], startIP[1], startIP[2], byte(octet)).To4()
+	}
+
+	if bytes.Compare(startIP, endIP) > 0 {
+		return nil, fmt.Errorf("start IP %s is greater than end IP %s", startIP, endIP)
+	}
+
+	var ips []string
+	curr := make(net.IP, 4)
+	copy(curr, startIP)
+
+	for {
+		ips = append(ips, curr.String())
+		if len(ips) > MaxScanHosts {
+			return nil, fmt.Errorf("IP range %q exceeds safety limit of %d hosts", rangeStr, MaxScanHosts)
+		}
+		if curr.Equal(endIP) {
+			break
+		}
+		incrementIP(curr)
+	}
+
+	return ips, nil
 }
 
 // expandCIDR generates all usable host IP addresses within an IPv4 CIDR range.

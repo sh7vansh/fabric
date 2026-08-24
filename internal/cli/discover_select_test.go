@@ -71,6 +71,15 @@ func TestParseSelectionInput(t *testing.T) {
 			},
 		},
 		{
+			name:        "Index range with user and port override (admin@1-2:2222)",
+			input:       "admin@1-2:2222",
+			defaultUser: "",
+			wantTargets: []StitchTarget{
+				{Host: "192.168.1.10", Port: "2222", User: "admin", Banner: "OpenSSH_8.9 Ubuntu"},
+				{Host: "192.168.1.15", Port: "2222", User: "admin", Banner: "OpenSSH_9.2 Debian"},
+			},
+		},
+		{
 			name:        "Quit input",
 			input:       "q",
 			wantTargets: nil,
@@ -78,6 +87,21 @@ func TestParseSelectionInput(t *testing.T) {
 		{
 			name:      "Out of range index",
 			input:     "5",
+			expectErr: true,
+		},
+		{
+			name:      "Out of range index with user",
+			input:     "admin@10",
+			expectErr: true,
+		},
+		{
+			name:      "Out of range end in range",
+			input:     "1-99",
+			expectErr: true,
+		},
+		{
+			name:      "Invalid reversed range",
+			input:     "3-1",
 			expectErr: true,
 		},
 	}

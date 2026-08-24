@@ -79,7 +79,7 @@ func FormatDiscoveredOutput(w io.Writer, hosts []DiscoveredHost, quiet bool, for
 }
 
 // ParseSelectionInput parses user selection expressions like:
-// "all", "1, 3", "admin@2", "3:2222", "root@4:2222", "1-3"
+// "all", "1, 3", "admin@2", "3:2222", "root@4:2222", "1-3", "admin@1-3:2222"
 func ParseSelectionInput(input string, hosts []DiscoveredHost, defaultUser string) ([]StitchTarget, error) {
 	input = strings.TrimSpace(input)
 	if input == "" || strings.ToLower(input) == "q" || strings.ToLower(input) == "quit" || strings.ToLower(input) == "exit" {
@@ -109,32 +109,6 @@ func ParseSelectionInput(input string, hosts []DiscoveredHost, defaultUser strin
 			continue
 		}
 
-		// Check for range e.g. "1-3" without user/port overrides
-		if strings.Contains(token, "-") && !strings.Contains(token, "@") && !strings.Contains(token, ":") {
-			rangeParts := strings.Split(token, "-")
-			if len(rangeParts) == 2 {
-				start, err1 := strconv.Atoi(strings.TrimSpace(rangeParts[0]))
-				end, err2 := strconv.Atoi(strings.TrimSpace(rangeParts[1]))
-				if err1 == nil && err2 == nil && start >= 1 && end <= len(hosts) && start <= end {
-					for i := start; i <= end; i++ {
-						h := hosts[i-1]
-						key := fmt.Sprintf("%s:%d", h.IP, h.Port)
-						if !seen[key] {
-							seen[key] = true
-							selected = append(selected, StitchTarget{
-								Host:   h.IP,
-								Port:   strconv.Itoa(h.Port),
-								User:   defaultUser,
-								Banner: h.CleanBanner,
-							})
-						}
-					}
-					continue
-				}
-			}
-		}
-
-		// Parse inline user@ and :port overrides, e.g. "admin@2", "3:2222", "user@4:2222"
 		userOverride := defaultUser
 		portOverride := ""
 		targetIdentifier := token
@@ -149,7 +123,39 @@ func ParseSelectionInput(input string, hosts []DiscoveredHost, defaultUser strin
 			targetIdentifier = targetIdentifier[:colonIdx]
 		}
 
-		// Check if targetIdentifier is an index number (1-based)
+		// Check if targetIdentifier is a numeric range e.g. "1-3"
+		if strings.Contains(targetIdentifier, "-") {
+			rangeParts := strings.Split(targetIdentifier, "-")
+			if len(rangeParts) == 2 {
+				start, err1 := strconv.Atoi(strings.TrimSpace(rangeParts[0]))
+				end, err2 := strconv.Atoi(strings.TrimSpace(rangeParts[1]))
+				if err1 == nil && err2 == nil {
+					if start < 1 || end > len(hosts) || start > end {
+						return nil, fmt.Errorf("invalid selection range [%s]: out of range (1-%d)", targetIdentifier, len(hosts))
+					}
+					for i := start; i <= end; i++ {
+						h := hosts[i-1]
+						port := strconv.Itoa(h.Port)
+						if portOverride != "" {
+							port = portOverride
+						}
+						key := fmt.Sprintf("%s@%s:%s", userOverride, h.IP, port)
+						if !seen[key] {
+							seen[key] = true
+							selected = append(selected, StitchTarget{
+								Host:   h.IP,
+								Port:   port,
+								User:   userOverride,
+								Banner: h.CleanBanner,
+							})
+						}
+					}
+					continue
+				}
+			}
+		}
+
+		// Check if targetIdentifier is a single index number (1-based)
 		idx, err := strconv.Atoi(targetIdentifier)
 		if err == nil {
 			if idx < 1 || idx > len(hosts) {

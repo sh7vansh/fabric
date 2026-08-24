@@ -67,6 +67,10 @@ func TestProbeSSH(t *testing.T) {
 	httpLn, httpPort := startMockHTTPServer(t)
 	defer httpLn.Close()
 
+	// 3. Pre-banner text followed by SSH identification (RFC 4253 § 4.2)
+	preLn, prePort := startMockSSHServer(t, "Authorized uses only\r\nSSH-2.0-OpenSSH_9.0")
+	defer preLn.Close()
+
 	// Test valid SSH
 	host, err := probeSSH("127.0.0.1", sshPort, 500*time.Millisecond)
 	if err != nil {
@@ -77,6 +81,15 @@ func TestProbeSSH(t *testing.T) {
 	}
 	if host.CleanBanner != "OpenSSH_9.2p1 Debian-2" {
 		t.Errorf("CleanBanner = %q, want %q", host.CleanBanner, "OpenSSH_9.2p1 Debian-2")
+	}
+
+	// Test pre-banner SSH
+	hostPre, err := probeSSH("127.0.0.1", prePort, 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("probeSSH pre-banner failed: %v", err)
+	}
+	if hostPre.CleanBanner != "OpenSSH_9.0" {
+		t.Errorf("CleanBanner = %q, want %q", hostPre.CleanBanner, "OpenSSH_9.0")
 	}
 
 	// Test non-SSH rejection
