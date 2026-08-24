@@ -1,15 +1,19 @@
 ## Destination
 
-Internet-wide private mesh DNS resolution for `*.fabric.mesh`: Automatic Linux Split DNS configuration (`systemd-resolved` / local stub resolver) that routes mesh queries through the persistent outbound Fabric WebSocket tunnel without requiring public domain registrations or open inbound UDP port 53.
+Automated Network Discovery & Batch Stitching (`fabric stitch discover`): Subnet auto-detection, concurrent SSH banner scanning, interactive inline target selection (`1, admin@2, 3:2222`), and resilient multi-node onboarding into the Fabric mesh.
 
 ## Notes
 
-- **Domain:** DNS protocols (RFC 1035), Linux network resolvers (`systemd-resolved`, `resolvectl`, `nsswitch`, `/etc/resolv.conf`), local stub listeners, WebSocket multiplexing.
-- **Preferences:** Linux-first (systemd-resolved), zero-touch automatic configuration on node connect, clean lifecycle teardown, secure multiplexed transport over existing WebSocket.
+- **Domain:** Network discovery, subnet IP generation, concurrent TCP/SSH banner grabbing, CLI TUI interaction, OpenSSH batch orchestration.
+- **Preferences:** Native OpenSSH integration (inherits `~/.ssh/config` & `ssh-agent`), zero external dependencies, fast goroutine scanning with timeout safeguards, fault-tolerant batch execution with clear summary reporting.
 - **Tracker:** Local Markdown
 
 ## Decisions so far
 
+- [022-batch-stitch-orchestration-and-summary.md](tickets/022-batch-stitch-orchestration-and-summary.md) — Built `fabric stitch discover` CLI command, fault-tolerant batch execution loop, OpenSSH bootstrap integration, and summary table reporting.
+- [021-interactive-selection-and-inline-overrides.md](tickets/021-interactive-selection-and-inline-overrides.md) — Implemented terminal tabular output, index ranges, inline user/port overrides (`admin@2`, `3:2222`), and JSON/quiet formatters.
+- [020-concurrent-ssh-port-and-banner-scanner.md](tickets/020-concurrent-ssh-port-and-banner-scanner.md) — Built concurrent worker pool scanner, RFC 4253 SSH banner verification, latency profiling, and mock listener test suite.
+- [019-subnet-and-target-range-discovery.md](tickets/019-subnet-and-target-range-discovery.md) — Implemented local network interface auto-detection, CIDR expansion, broadcast/network address scrubbing, and safety host limits in `ParseTargets()`.
 - [017-node-dns-lifecycle-and-clean-teardown.md](tickets/017-node-dns-lifecycle-and-clean-teardown.md) — Implemented graceful signal reverts, systemd `ExecStopPost` fail-safes, and startup scrubbing for leak-free resolver teardown.
 - [016-dynamic-socket-mesh-dns-resolution.md](tickets/016-dynamic-socket-mesh-dns-resolution.md) — Implemented dynamic in-memory registry lookup with NXDOMAIN for offline nodes and wildcard subdomain routing.
 - [015-linux-systemd-resolved-split-dns-integration.md](tickets/015-linux-systemd-resolved-split-dns-integration.md) — Configured `resolvectl` on loopback with routing domain `~fabric.mesh` and `/etc/hosts` sync fallback for non-systemd environments.
@@ -30,12 +34,11 @@ Internet-wide private mesh DNS resolution for `*.fabric.mesh`: Automatic Linux S
 
 ## Not yet specified
 
-- macOS split DNS integration via `/etc/resolver/fabric.mesh`.
-- Windows DNS client / NRPT (Name Resolution Policy Table) integration.
-- Custom domain namespaces per tenant / network cluster (`*.company.internal`).
-- Dynamic SRV / TXT service discovery records registered by nodes.
+- mDNS / Avahi local multicast discovery fallback for zero-configuration LANs.
+- Automatic node tag / metadata assignment during batch discovery.
+- Cloud provider metadata discovery plugins (AWS EC2, GCP Compute, Azure VM tag scanning).
 
 ## Out of scope
 
-- Public domain registrar DNS delegation / global public authoritative NS setup (we are using private Split DNS / Option B).
-- Direct peer-to-peer WireGuard kernel overlay routing (v1 routes through Fabric's multiplexed reverse proxy engine).
+- Raw SYN packet crafting requiring root raw-socket capabilities (we use standard Go non-blocking TCP connect + SSH banner read).
+- Automated password brute-forcing / dictionary attacks (all authentication relies on user-provided or SSH config keys).
