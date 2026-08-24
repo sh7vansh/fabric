@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fabric/internal/protocol"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"strings"
@@ -107,8 +106,7 @@ func runPort(cmd *cobra.Command, args []string) error {
 			b, _ := json.Marshal(req)
 			stream.Write(b)
 
-			go io.Copy(stream, c)
-			io.Copy(c, stream)
+			protocol.Proxy(stream, c)
 		}(localConn)
 	}
 }

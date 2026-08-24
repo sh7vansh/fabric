@@ -8,13 +8,22 @@ import (
 	"sync"
 )
 
-const TypeProxyRequest EnvelopeType = "proxy_request"
+const (
+	TypeProxyRequest  EnvelopeType = "proxy_request"
+	TypeProxyResponse EnvelopeType = "proxy_response"
+)
 
 type ProxyRequest struct {
 	Type           EnvelopeType `json:"type"`
 	TargetHostname string       `json:"target_hostname,omitempty"`
 	TargetHost     string       `json:"target_host,omitempty"`
 	TargetPort     int          `json:"target_port,omitempty"`
+}
+
+type ProxyResponse struct {
+	Type    EnvelopeType `json:"type"`
+	Success bool         `json:"success"`
+	Error   string       `json:"error,omitempty"`
 }
 
 // ValidateProxyDestination checks that the requested target host and port are valid and safe.

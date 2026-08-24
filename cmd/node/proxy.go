@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"io"
 	"log"
 	"net"
 
@@ -20,16 +19,31 @@ func handleProxyRequest(stream net.Conn, envelope []byte) {
 	targetAddr, err := protocol.ValidateProxyDestination(req.TargetHost, req.TargetPort)
 	if err != nil {
 		log.Println("Blocked proxy request:", err)
+		resp := protocol.ProxyResponse{
+			Type:    protocol.TypeProxyResponse,
+			Success: false,
+			Error:   err.Error(),
+		}
+		if b, marshalErr := json.Marshal(resp); marshalErr == nil {
+			stream.Write(b)
+		}
 		return
 	}
 
 	conn, err := net.Dial("tcp", targetAddr)
 	if err != nil {
 		log.Println("Node proxy dial error:", err)
+		resp := protocol.ProxyResponse{
+			Type:    protocol.TypeProxyResponse,
+			Success: false,
+			Error:   err.Error(),
+		}
+		if b, marshalErr := json.Marshal(resp); marshalErr == nil {
+			stream.Write(b)
+		}
 		return
 	}
 	defer conn.Close()
 
-	go io.Copy(stream, conn)
-	io.Copy(conn, stream)
+	protocol.Proxy(stream, conn)
 }

@@ -150,20 +150,24 @@ func main() {
 
 			nodesLock.Lock()
 			if existing, exists := nodes[hs.Hostname]; exists {
-				if existing.Mux != nil && !existing.Mux.Session.IsClosed() && existing.Mux != mux {
-					nodesLock.Unlock()
-					log.Printf("Conflict: hostname %q is already actively registered by another connection\n", hs.Hostname)
-					conn.Close()
-					return
+				if existing.Mux != nil && existing.Mux != mux {
+					log.Printf("Renewing registration for hostname %q (displacing previous session)\n", hs.Hostname)
+					go existing.Mux.Session.Close()
 				}
 			}
 
-			log.Printf("Node connected successfully: %s\n", hs.Hostname)
+			sessID := hs.SessionID
+			if sessID == "" {
+				sessID = fmt.Sprintf("sess-%s-%d", hs.Hostname, time.Now().UnixNano())
+			}
+
+			log.Printf("Node connected successfully: %s (session: %s)\n", hs.Hostname, sessID)
 
 			nodes[hs.Hostname] = &NodeState{
 				Mux: mux,
 				Metadata: protocol.NodeMetadata{
 					ID:          hs.Hostname,
+					SessionID:   sessID,
 					Hostname:    hs.Hostname,
 					Domain:      hs.Domain,
 					OS:          hs.OS,

@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"fabric/internal/meshdns"
 	"fabric/internal/pki"
@@ -72,6 +73,9 @@ func main() {
 		os.Exit(0)
 	}()
 
+	hostname, _ := os.Hostname()
+	sessionID := fmt.Sprintf("node-%s-%d", hostname, time.Now().UnixNano())
+
 	for {
 		c := ConnectWithRetry(*u, token, *caCertFlag)
 
@@ -90,15 +94,15 @@ func main() {
 			continue
 		}
 
-		hostname, _ := os.Hostname()
 		hs := protocol.Handshake{
-			Type:     protocol.TypeHandshake,
-			Hostname: hostname,
-			Domain:   *domainFlag,
-			Token:    token,
-			OS:       runtime.GOOS,
-			Arch:     runtime.GOARCH,
-			Version:  "1.0.0",
+			Type:      protocol.TypeHandshake,
+			SessionID: sessionID,
+			Hostname:  hostname,
+			Domain:    *domainFlag,
+			Token:     token,
+			OS:        runtime.GOOS,
+			Arch:      runtime.GOARCH,
+			Version:   "1.0.0",
 		}
 
 		b, _ := json.Marshal(hs)

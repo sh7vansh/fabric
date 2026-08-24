@@ -8,13 +8,14 @@ const (
 )
 
 type Handshake struct {
-	Type     EnvelopeType `json:"type"`
-	Hostname string       `json:"hostname"`
-	Domain   string       `json:"domain,omitempty"`
-	Token    string       `json:"token"`
-	OS       string       `json:"os,omitempty"`
-	Arch     string       `json:"arch,omitempty"`
-	Version  string       `json:"version,omitempty"`
+	Type      EnvelopeType `json:"type"`
+	SessionID string       `json:"session_id,omitempty"`
+	Hostname  string       `json:"hostname"`
+	Domain    string       `json:"domain,omitempty"`
+	Token     string       `json:"token"`
+	OS        string       `json:"os,omitempty"`
+	Arch      string       `json:"arch,omitempty"`
+	Version   string       `json:"version,omitempty"`
 }
 
 type ExecRequest struct {
@@ -30,9 +31,9 @@ type ExecRequest struct {
 	User           string       `json:"user,omitempty"`
 }
 
-
 type NodeMetadata struct {
 	ID          string `json:"id"`
+	SessionID   string `json:"session_id,omitempty"`
 	Hostname    string `json:"hostname"`
 	Domain      string `json:"domain"`
 	OS          string `json:"os"`
@@ -80,4 +81,3 @@ type CopyRequest struct {
 	Direction      string       `json:"direction"` // "upload" or "download"
 	RemotePath     string       `json:"remote_path"`
 }
-

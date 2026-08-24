@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -47,22 +48,36 @@ func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer) {
 
 			nodesLock.Lock()
 			if existing, exists := nodes[hs.Hostname]; exists {
-				if existing.Mux != nil && !existing.Mux.Session.IsClosed() && existing.Mux != smux {
-					nodesLock.Unlock()
-					conn.Close()
-					return
+				if existing.Mux != nil && existing.Mux != smux {
+					go existing.Mux.Session.Close()
 				}
+			}
+
+			sessID := hs.SessionID
+			if sessID == "" {
+				sessID = fmt.Sprintf("sess-%s-%d", hs.Hostname, time.Now().UnixNano())
 			}
 
 			nodes[hs.Hostname] = &NodeState{
 				Mux: smux,
 				Metadata: protocol.NodeMetadata{
-					ID:       hs.Hostname,
-					Hostname: hs.Hostname,
-					Status:   "online",
+					ID:        hs.Hostname,
+					SessionID: sessID,
+					Hostname:  hs.Hostname,
+					Status:    "online",
 				},
 			}
 			nodesLock.Unlock()
+
+			go func() {
+				<-smux.Session.CloseChan()
+				nodesLock.Lock()
+				if curr, ok := nodes[hs.Hostname]; ok && curr.Mux == smux {
+					delete(nodes, hs.Hostname)
+				}
+				nodesLock.Unlock()
+				conn.Close()
+			}()
 		})
 		router.Accept()
 	})
@@ -128,7 +143,7 @@ func TestServerHTTPAuth(t *testing.T) {
 	resp2.Body.Close()
 }
 
-func TestServerWebSocketHandshakeAuthAndConflict(t *testing.T) {
+func TestServerWebSocketHandshakeAuthAndReconnect(t *testing.T) {
 	testToken := "test-secret-token-123"
 	ts, dialer := setupTestServer(testToken)
 	defer ts.Close()
@@ -146,15 +161,15 @@ func TestServerWebSocketHandshakeAuthAndConflict(t *testing.T) {
 	}
 	stream1, _ := mux1.Session.Open()
 	badHs := protocol.Handshake{
-		Type:     protocol.TypeHandshake,
-		Hostname: "node-a",
-		Token:    "wrong-token",
+		Type:      protocol.TypeHandshake,
+		SessionID: "sess-bad",
+		Hostname:  "node-a",
+		Token:     "wrong-token",
 	}
 	bBad, _ := json.Marshal(badHs)
 	stream1.Write(bBad)
 	stream1.Close()
 
-	// Verify session is closed by server
 	time.Sleep(50 * time.Millisecond)
 	if !mux1.Session.IsClosed() {
 		t.Errorf("expected bad token session to be closed")
@@ -172,9 +187,10 @@ func TestServerWebSocketHandshakeAuthAndConflict(t *testing.T) {
 	}
 	stream2, _ := mux2.Session.Open()
 	goodHs := protocol.Handshake{
-		Type:     protocol.TypeHandshake,
-		Hostname: "node-a",
-		Token:    testToken,
+		Type:      protocol.TypeHandshake,
+		SessionID: "sess-good-1",
+		Hostname:  "node-a",
+		Token:     testToken,
 	}
 	bGood, _ := json.Marshal(goodHs)
 	stream2.Write(bGood)
@@ -185,7 +201,7 @@ func TestServerWebSocketHandshakeAuthAndConflict(t *testing.T) {
 		t.Errorf("expected valid token session to stay open")
 	}
 
-	// 3. Conflict: Another connection attempts to register same hostname "node-a"
+	// 3. Reconnect / Renewal: Reconnecting with same hostname seamlessly renews and displaces old session
 	conn3, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial failed: %v", err)
@@ -195,12 +211,22 @@ func TestServerWebSocketHandshakeAuthAndConflict(t *testing.T) {
 		t.Fatalf("client mux failed: %v", err)
 	}
 	stream3, _ := mux3.Session.Open()
-	stream3.Write(bGood) // tries to claim "node-a" again
+	renewHs := protocol.Handshake{
+		Type:      protocol.TypeHandshake,
+		SessionID: "sess-good-2",
+		Hostname:  "node-a",
+		Token:     testToken,
+	}
+	bRenew, _ := json.Marshal(renewHs)
+	stream3.Write(bRenew)
 	stream3.Close()
 
 	time.Sleep(50 * time.Millisecond)
-	if !mux3.Session.IsClosed() {
-		t.Errorf("expected conflicting connection to be rejected and closed")
+	if mux3.Session.IsClosed() {
+		t.Errorf("expected new reconnected session to stay open")
+	}
+	if !mux2.Session.IsClosed() {
+		t.Errorf("expected displaced previous session to be closed")
 	}
 
 	conn2.Close()
