@@ -87,7 +87,7 @@ if [ -n "$REPO_DIR" ] && [ -f "$REPO_DIR/go.mod" ] && command -v go >/dev/null 2
 else
     # Check if download URL or release is configured
     RELEASE_TAG="${FABRIC_VERSION:-latest}"
-    DOWNLOAD_BASE="${FABRIC_DOWNLOAD_URL:-https://github.com/shivansh/fabric/releases/download}"
+    DOWNLOAD_BASE="${FABRIC_DOWNLOAD_URL:-https://github.com/sh7vansh/fabric/releases/download}"
     
     echo "[+] Attempting to download Fabric ($RELEASE_TAG) for linux/$FABRIC_ARCH..."
     if command -v curl >/dev/null 2>&1; then
