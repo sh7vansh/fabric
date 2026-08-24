@@ -97,8 +97,7 @@ func main() {
 		log.Printf("[TLS] Socket TLS listening on %s (HTTPS / WSS with Dual-Mode SNI)", tlsAddr)
 
 		secureSrv := &http.Server{
-			Handler:   http.DefaultServeMux,
-			TLSConfig: tlsEng.TLSConfig(),
+			Handler: http.DefaultServeMux,
 		}
 		secureLn := tls.NewListener(tlsLn, tlsEng.TLSConfig())
 		if err := secureSrv.Serve(secureLn); err != nil && err != http.ErrServerClosed {

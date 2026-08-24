@@ -22,7 +22,8 @@ type TrustStore interface {
 
 // SystemTrustStore implements TrustStore for the host operating system.
 type SystemTrustStore struct {
-	runner CommandRunner
+	runner   CommandRunner
+	provider osTrustProvider
 }
 
 // CommandRunner abstracts command execution for testability.
@@ -42,14 +43,47 @@ func (r *osCommandRunner) LookPath(file string) (string, error) {
 	return exec.LookPath(file)
 }
 
-// NewSystemTrustStore creates a TrustStore targeting the running OS.
-func NewSystemTrustStore() *SystemTrustStore {
-	return &SystemTrustStore{runner: &osCommandRunner{}}
+type osTrustProvider interface {
+	install(runner CommandRunner, certPEM []byte, certName string) error
+	uninstall(runner CommandRunner, certName string) error
+	isInstalled(runner CommandRunner, certName string) (bool, error)
 }
 
-// NewCustomTrustStore creates a SystemTrustStore with a custom CommandRunner for testing.
+func getProviderForOS(goos string) osTrustProvider {
+	switch goos {
+	case "linux":
+		return &linuxTrustProvider{}
+	case "darwin":
+		return &darwinTrustProvider{}
+	case "windows":
+		return &windowsTrustProvider{}
+	default:
+		return &unsupportedTrustProvider{os: goos}
+	}
+}
+
+// NewSystemTrustStore creates a TrustStore targeting the running OS.
+func NewSystemTrustStore() *SystemTrustStore {
+	return &SystemTrustStore{
+		runner:   &osCommandRunner{},
+		provider: getProviderForOS(runtime.GOOS),
+	}
+}
+
+// NewCustomTrustStore creates a SystemTrustStore with a custom CommandRunner for testing on host OS.
 func NewCustomTrustStore(runner CommandRunner) *SystemTrustStore {
-	return &SystemTrustStore{runner: runner}
+	return &SystemTrustStore{
+		runner:   runner,
+		provider: getProviderForOS(runtime.GOOS),
+	}
+}
+
+// NewCustomTrustStoreForOS creates a SystemTrustStore configured for a specific target OS and CommandRunner.
+func NewCustomTrustStoreForOS(runner CommandRunner, goos string) *SystemTrustStore {
+	return &SystemTrustStore{
+		runner:   runner,
+		provider: getProviderForOS(goos),
+	}
 }
 
 // InstallCA installs the given PEM certificate into the OS system trust store.
@@ -66,16 +100,7 @@ func (s *SystemTrustStore) InstallCA(certPEM []byte, certName string) error {
 		return errors.New("invalid certificate PEM block")
 	}
 
-	switch runtime.GOOS {
-	case "linux":
-		return s.installLinux(certPEM, certName)
-	case "darwin":
-		return s.installDarwin(certPEM, certName)
-	case "windows":
-		return s.installWindows(certPEM, certName)
-	default:
-		return fmt.Errorf("unsupported operating system for trust store: %s", runtime.GOOS)
-	}
+	return s.provider.install(s.runner, certPEM, certName)
 }
 
 // UninstallCA removes the root certificate from the OS system trust store.
@@ -84,16 +109,7 @@ func (s *SystemTrustStore) UninstallCA(certName string) error {
 		certName = "fabric-ca"
 	}
 
-	switch runtime.GOOS {
-	case "linux":
-		return s.uninstallLinux(certName)
-	case "darwin":
-		return s.uninstallDarwin(certName)
-	case "windows":
-		return s.uninstallWindows(certName)
-	default:
-		return fmt.Errorf("unsupported operating system for trust store: %s", runtime.GOOS)
-	}
+	return s.provider.uninstall(s.runner, certName)
 }
 
 // IsInstalled checks if the named certificate is already present in the target store path.
@@ -102,39 +118,31 @@ func (s *SystemTrustStore) IsInstalled(certName string) (bool, error) {
 		certName = "fabric-ca"
 	}
 
-	switch runtime.GOOS {
-	case "linux":
-		destPath, _, _ := s.detectLinuxTrustPath(certName)
-		if destPath == "" {
-			return false, nil
-		}
-		_, err := os.Stat(destPath)
-		return err == nil, nil
-	default:
-		return false, nil
-	}
+	return s.provider.isInstalled(s.runner, certName)
 }
 
-// Linux implementation
-func (s *SystemTrustStore) detectLinuxTrustPath(certName string) (destPath, updateCmd string, updateArgs []string) {
+// Linux Trust Provider
+type linuxTrustProvider struct{}
+
+func (p *linuxTrustProvider) detectPath(runner CommandRunner, certName string) (destPath, updateCmd string, updateArgs []string) {
 	// Debian / Ubuntu / Mint
-	if _, err := s.runner.LookPath("update-ca-certificates"); err == nil {
+	if _, err := runner.LookPath("update-ca-certificates"); err == nil {
 		return filepath.Join("/usr/local/share/ca-certificates", certName+".crt"), "update-ca-certificates", nil
 	}
 	// RHEL / CentOS / Fedora / Rocky
-	if _, err := s.runner.LookPath("update-ca-trust"); err == nil {
+	if _, err := runner.LookPath("update-ca-trust"); err == nil {
 		return filepath.Join("/etc/pki/ca-trust/source/anchors", certName+".crt"), "update-ca-trust", []string{"extract"}
 	}
 	// Arch / openSUSE
-	if _, err := s.runner.LookPath("trust"); err == nil {
+	if _, err := runner.LookPath("trust"); err == nil {
 		return filepath.Join("/etc/ca-certificates/trust-source/anchors", certName+".crt"), "trust", []string{"extract-compat"}
 	}
 	// Generic fallback
 	return filepath.Join("/usr/local/share/ca-certificates", certName+".crt"), "update-ca-certificates", nil
 }
 
-func (s *SystemTrustStore) installLinux(certPEM []byte, certName string) error {
-	destPath, updateCmd, updateArgs := s.detectLinuxTrustPath(certName)
+func (p *linuxTrustProvider) install(runner CommandRunner, certPEM []byte, certName string) error {
+	destPath, updateCmd, updateArgs := p.detectPath(runner, certName)
 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return fmt.Errorf("failed to create ca certs directory (may require sudo): %w", err)
@@ -144,8 +152,8 @@ func (s *SystemTrustStore) installLinux(certPEM []byte, certName string) error {
 		return fmt.Errorf("failed to write CA certificate to %s (may require sudo): %w", destPath, err)
 	}
 
-	if _, err := s.runner.LookPath(updateCmd); err == nil {
-		out, err := s.runner.Run(updateCmd, updateArgs...)
+	if _, err := runner.LookPath(updateCmd); err == nil {
+		out, err := runner.Run(updateCmd, updateArgs...)
 		if err != nil {
 			return fmt.Errorf("failed to update CA trust store (%s): %s: %w", updateCmd, string(out), err)
 		}
@@ -153,15 +161,15 @@ func (s *SystemTrustStore) installLinux(certPEM []byte, certName string) error {
 	return nil
 }
 
-func (s *SystemTrustStore) uninstallLinux(certName string) error {
-	destPath, updateCmd, updateArgs := s.detectLinuxTrustPath(certName)
+func (p *linuxTrustProvider) uninstall(runner CommandRunner, certName string) error {
+	destPath, updateCmd, updateArgs := p.detectPath(runner, certName)
 
 	if err := os.Remove(destPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove %s (may require sudo): %w", destPath, err)
 	}
 
-	if _, err := s.runner.LookPath(updateCmd); err == nil {
-		out, err := s.runner.Run(updateCmd, updateArgs...)
+	if _, err := runner.LookPath(updateCmd); err == nil {
+		out, err := runner.Run(updateCmd, updateArgs...)
 		if err != nil {
 			return fmt.Errorf("failed to update CA trust store (%s): %s: %w", updateCmd, string(out), err)
 		}
@@ -169,8 +177,19 @@ func (s *SystemTrustStore) uninstallLinux(certName string) error {
 	return nil
 }
 
-// macOS implementation
-func (s *SystemTrustStore) installDarwin(certPEM []byte, certName string) error {
+func (p *linuxTrustProvider) isInstalled(runner CommandRunner, certName string) (bool, error) {
+	destPath, _, _ := p.detectPath(runner, certName)
+	if destPath == "" {
+		return false, nil
+	}
+	_, err := os.Stat(destPath)
+	return err == nil, nil
+}
+
+// macOS (Darwin) Trust Provider
+type darwinTrustProvider struct{}
+
+func (p *darwinTrustProvider) install(runner CommandRunner, certPEM []byte, certName string) error {
 	tmpFile, err := os.CreateTemp("", certName+"-*.crt")
 	if err != nil {
 		return err
@@ -184,12 +203,11 @@ func (s *SystemTrustStore) installDarwin(certPEM []byte, certName string) error 
 	tmpFile.Close()
 
 	// Add to System Keychain (or Login keychain fallback)
-	out, err := s.runner.Run("security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", "/Library/Keychains/System.keychain", tmpFile.Name())
+	out, err := runner.Run("security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", "/Library/Keychains/System.keychain", tmpFile.Name())
 	if err != nil {
-		// Fallback to login keychain if system keychain is unauthorized
 		home, _ := os.UserHomeDir()
 		loginKeychain := filepath.Join(home, "Library/Keychains/login.keychain-db")
-		out, err = s.runner.Run("security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", loginKeychain, tmpFile.Name())
+		out, err = runner.Run("security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", loginKeychain, tmpFile.Name())
 		if err != nil {
 			return fmt.Errorf("failed to add trusted cert to macOS keychain: %s: %w", string(out), err)
 		}
@@ -197,27 +215,44 @@ func (s *SystemTrustStore) installDarwin(certPEM []byte, certName string) error 
 	return nil
 }
 
-func (s *SystemTrustStore) uninstallDarwin(certName string) error {
-	block, _ := pem.Decode([]byte(certName))
-	commonName := certName
-	if block != nil {
-		if cert, err := x509.ParseCertificate(block.Bytes); err == nil {
-			commonName = cert.Subject.CommonName
-		}
-	}
-
-	out, err := s.runner.Run("security", "delete-certificate", "-c", commonName, "/Library/Keychains/System.keychain")
+func (p *darwinTrustProvider) uninstall(runner CommandRunner, certName string) error {
+	commonName := p.extractCommonName(certName)
+	out, err := runner.Run("security", "delete-certificate", "-c", commonName, "/Library/Keychains/System.keychain")
 	if err != nil {
 		home, _ := os.UserHomeDir()
 		loginKeychain := filepath.Join(home, "Library/Keychains/login.keychain-db")
-		s.runner.Run("security", "delete-certificate", "-c", commonName, loginKeychain)
+		runner.Run("security", "delete-certificate", "-c", commonName, loginKeychain)
 	}
 	_ = out
 	return nil
 }
 
-// Windows implementation
-func (s *SystemTrustStore) installWindows(certPEM []byte, certName string) error {
+func (p *darwinTrustProvider) isInstalled(runner CommandRunner, certName string) (bool, error) {
+	commonName := p.extractCommonName(certName)
+	_, err := runner.Run("security", "find-certificate", "-c", commonName, "/Library/Keychains/System.keychain")
+	if err == nil {
+		return true, nil
+	}
+	home, _ := os.UserHomeDir()
+	loginKeychain := filepath.Join(home, "Library/Keychains/login.keychain-db")
+	_, err = runner.Run("security", "find-certificate", "-c", commonName, loginKeychain)
+	return err == nil, nil
+}
+
+func (p *darwinTrustProvider) extractCommonName(certName string) string {
+	block, _ := pem.Decode([]byte(certName))
+	if block != nil {
+		if cert, err := x509.ParseCertificate(block.Bytes); err == nil && cert.Subject.CommonName != "" {
+			return cert.Subject.CommonName
+		}
+	}
+	return certName
+}
+
+// Windows Trust Provider
+type windowsTrustProvider struct{}
+
+func (p *windowsTrustProvider) install(runner CommandRunner, certPEM []byte, certName string) error {
 	tmpFile, err := os.CreateTemp("", certName+"-*.crt")
 	if err != nil {
 		return err
@@ -230,19 +265,41 @@ func (s *SystemTrustStore) installWindows(certPEM []byte, certName string) error
 	}
 	tmpFile.Close()
 
-	out, err := s.runner.Run("certutil", "-addstore", "-f", "ROOT", tmpFile.Name())
+	out, err := runner.Run("certutil", "-addstore", "-f", "ROOT", tmpFile.Name())
 	if err != nil {
 		return fmt.Errorf("certutil addstore failed: %s: %w", string(out), err)
 	}
 	return nil
 }
 
-func (s *SystemTrustStore) uninstallWindows(certName string) error {
-	out, err := s.runner.Run("certutil", "-delstore", "ROOT", certName)
+func (p *windowsTrustProvider) uninstall(runner CommandRunner, certName string) error {
+	out, err := runner.Run("certutil", "-delstore", "ROOT", certName)
 	if err != nil {
 		return fmt.Errorf("certutil delstore failed: %s: %w", string(out), err)
 	}
 	return nil
+}
+
+func (p *windowsTrustProvider) isInstalled(runner CommandRunner, certName string) (bool, error) {
+	_, err := runner.Run("certutil", "-verifystore", "ROOT", certName)
+	return err == nil, nil
+}
+
+// Unsupported OS Provider
+type unsupportedTrustProvider struct {
+	os string
+}
+
+func (p *unsupportedTrustProvider) install(runner CommandRunner, certPEM []byte, certName string) error {
+	return fmt.Errorf("unsupported operating system for trust store: %s", p.os)
+}
+
+func (p *unsupportedTrustProvider) uninstall(runner CommandRunner, certName string) error {
+	return fmt.Errorf("unsupported operating system for trust store: %s", p.os)
+}
+
+func (p *unsupportedTrustProvider) isInstalled(runner CommandRunner, certName string) (bool, error) {
+	return false, fmt.Errorf("unsupported operating system for trust store: %s", p.os)
 }
 
 // InMemoryTrustStore provides an in-memory test double for unit tests.

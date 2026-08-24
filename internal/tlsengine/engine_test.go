@@ -106,3 +106,53 @@ func TestHTTPSRedirectHandler(t *testing.T) {
 		t.Errorf("expected location 'https://worker-1.fabric.mesh/api/status', got %q", location)
 	}
 }
+
+func TestEngineACMEPolicyAndCustomMeshDomain(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "fabric-custom-domain-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	engine, err := tlsengine.New(tlsengine.Config{
+		CADir:        tmpDir,
+		MeshDomain:   "custom.internal",
+		PublicDomain: "example.com",
+		ActiveNodes: func() []string {
+			return []string{"node-1"}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tlsengine.New failed: %v", err)
+	}
+
+	mgr := engine.ACMEManager()
+	if mgr == nil {
+		t.Fatal("expected ACMEManager to be initialized")
+	}
+
+	// 1. Internal custom mesh domain should be disallowed by ACME HostPolicy
+	if err := mgr.HostPolicy(nil, "node-1.custom.internal"); err == nil {
+		t.Error("expected error for internal custom mesh domain in ACME host policy")
+	}
+	if err := mgr.HostPolicy(nil, "custom.internal"); err == nil {
+		t.Error("expected error for apex custom mesh domain in ACME host policy")
+	}
+	if err := mgr.HostPolicy(nil, "other.mesh"); err == nil {
+		t.Error("expected error for .mesh domain in ACME host policy")
+	}
+
+	// 2. Public domain and active node public subdomain should be allowed
+	if err := mgr.HostPolicy(nil, "example.com"); err != nil {
+		t.Errorf("expected example.com to be allowed by host policy: %v", err)
+	}
+	if err := mgr.HostPolicy(nil, "node-1.example.com"); err != nil {
+		t.Errorf("expected node-1.example.com to be allowed by host policy: %v", err)
+	}
+
+	// 3. GetCertificate for internal custom domain should route to internal CA
+	cert, err := engine.GetCertificate(&tls.ClientHelloInfo{ServerName: "node-1.custom.internal"})
+	if err != nil || cert == nil {
+		t.Fatalf("GetCertificate failed for internal custom mesh domain: %v", err)
+	}
+}

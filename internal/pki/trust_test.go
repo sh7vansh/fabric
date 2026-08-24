@@ -81,3 +81,49 @@ func TestSystemTrustStoreMockRunner(t *testing.T) {
 	err := store.UninstallCA("nonexistent-ca")
 	_ = err
 }
+
+func TestCrossPlatformTrustStores(t *testing.T) {
+	runner := &mockCommandRunner{}
+
+	// 1. Darwin
+	darwinStore := pki.NewCustomTrustStoreForOS(runner, "darwin")
+	runner.runFunc = func(name string, args ...string) ([]byte, error) {
+		if name == "security" && len(args) > 0 && args[0] == "find-certificate" {
+			return []byte("certificate found"), nil
+		}
+		return []byte("ok"), nil
+	}
+	installed, err := darwinStore.IsInstalled("fabric-ca")
+	if err != nil || !installed {
+		t.Errorf("darwin IsInstalled expected true, got %v (err: %v)", installed, err)
+	}
+
+	runner.runFunc = func(name string, args ...string) ([]byte, error) {
+		return nil, errors.New("not found")
+	}
+	installed, err = darwinStore.IsInstalled("fabric-ca")
+	if installed {
+		t.Errorf("darwin IsInstalled expected false when cert not found, got %v", installed)
+	}
+
+	// 2. Windows
+	winStore := pki.NewCustomTrustStoreForOS(runner, "windows")
+	runner.runFunc = func(name string, args ...string) ([]byte, error) {
+		if name == "certutil" && len(args) > 0 && args[0] == "-verifystore" {
+			return []byte("cert verified"), nil
+		}
+		return []byte("ok"), nil
+	}
+	installed, err = winStore.IsInstalled("fabric-ca")
+	if err != nil || !installed {
+		t.Errorf("windows IsInstalled expected true, got %v (err: %v)", installed, err)
+	}
+
+	runner.runFunc = func(name string, args ...string) ([]byte, error) {
+		return nil, errors.New("certutil error")
+	}
+	installed, err = winStore.IsInstalled("fabric-ca")
+	if installed {
+		t.Errorf("windows IsInstalled expected false when certutil fails, got %v", installed)
+	}
+}

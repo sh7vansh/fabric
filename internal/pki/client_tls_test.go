@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"fabric/internal/pki"
 
@@ -80,14 +79,9 @@ func TestLiveWSSHandshake(t *testing.T) {
 	defer srv.Close()
 
 	caCertPath := filepath.Join(tmpDir, "ca.crt")
-	tlsClientCfg, err := pki.BuildClientTLSConfig(caCertPath)
+	dialer, err := pki.NewWSSDialer(caCertPath)
 	if err != nil {
-		t.Fatalf("BuildClientTLSConfig failed: %v", err)
-	}
-
-	dialer := &websocket.Dialer{
-		TLSClientConfig:  tlsClientCfg,
-		HandshakeTimeout: 5 * time.Second,
+		t.Fatalf("NewWSSDialer failed: %v", err)
 	}
 
 	wssURL := fmt.Sprintf("wss://%s/ws", ln.Addr().String())

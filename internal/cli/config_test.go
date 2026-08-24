@@ -25,7 +25,7 @@ func TestLoadConfig(t *testing.T) {
 	configDir := filepath.Join(tempHome, ".fabric")
 	os.MkdirAll(configDir, 0755)
 	configFile := filepath.Join(configDir, "config.json")
-	os.WriteFile(configFile, []byte(`{"contexts": {"default": {"host": "ws://remote:8080/ws", "token": "file-secret"}}, "current_context": "default"}`), 0644)
+	os.WriteFile(configFile, []byte(`{"contexts": {"default": {"host": "ws://remote:8080/ws", "token": "file-secret", "ca_cert": "/etc/ca.crt"}}, "current_context": "default"}`), 0644)
 
 	cfg = LoadConfig("", "")
 	if cfg.Host != "ws://remote:8080/ws" {
@@ -34,12 +34,17 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.Token != "file-secret" {
 		t.Errorf("expected file token, got %s", cfg.Token)
 	}
+	if cfg.CACert != "/etc/ca.crt" {
+		t.Errorf("expected file ca_cert, got %s", cfg.CACert)
+	}
 
 	// 3. Test Env Vars
 	os.Setenv("FABRIC_HOST", "ws://env:8080/ws")
 	os.Setenv("FABRIC_TOKEN", "env-secret")
+	os.Setenv("FABRIC_CA_CERT", "/env/ca.crt")
 	defer os.Unsetenv("FABRIC_HOST")
 	defer os.Unsetenv("FABRIC_TOKEN")
+	defer os.Unsetenv("FABRIC_CA_CERT")
 
 	cfg = LoadConfig("", "")
 	if cfg.Host != "ws://env:8080/ws" {
@@ -48,13 +53,19 @@ func TestLoadConfig(t *testing.T) {
 	if cfg.Token != "env-secret" {
 		t.Errorf("expected env token, got %s", cfg.Token)
 	}
+	if cfg.CACert != "/env/ca.crt" {
+		t.Errorf("expected env ca_cert, got %s", cfg.CACert)
+	}
 
 	// 4. Test Flags
-	cfg = LoadConfig("ws://flag:8080/ws", "flag-secret")
+	cfg = LoadConfig("ws://flag:8080/ws", "flag-secret", "/flag/ca.crt")
 	if cfg.Host != "ws://flag:8080/ws" {
 		t.Errorf("expected flag host, got %s", cfg.Host)
 	}
 	if cfg.Token != "flag-secret" {
 		t.Errorf("expected flag token, got %s", cfg.Token)
+	}
+	if cfg.CACert != "/flag/ca.crt" {
+		t.Errorf("expected flag ca_cert, got %s", cfg.CACert)
 	}
 }

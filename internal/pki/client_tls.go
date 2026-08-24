@@ -4,10 +4,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // BuildClientTLSConfig constructs a tls.Config with system root CAs and discovered local cluster CAs.
@@ -52,6 +56,19 @@ func BuildClientTLSConfig(customCAPath string) (*tls.Config, error) {
 	return &tls.Config{
 		RootCAs:    pool,
 		MinVersion: tls.VersionTLS12,
+	}, nil
+}
+
+// NewWSSDialer constructs a websocket.Dialer configured with cluster root CAs and custom CA support.
+func NewWSSDialer(customCAPath string) (*websocket.Dialer, error) {
+	tlsCfg, err := BuildClientTLSConfig(customCAPath)
+	if err != nil {
+		return nil, err
+	}
+	return &websocket.Dialer{
+		Proxy:            http.ProxyFromEnvironment,
+		HandshakeTimeout: 15 * time.Second,
+		TLSClientConfig:  tlsCfg,
 	}, nil
 }
 

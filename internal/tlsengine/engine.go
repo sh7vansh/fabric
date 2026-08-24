@@ -117,6 +117,26 @@ func (e *Engine) ACMEManager() *autocert.Manager {
 	return e.acmeManager
 }
 
+func (e *Engine) matchesPublicDomain(host string) bool {
+	if e.publicDomain == "" {
+		return false
+	}
+	return host == e.publicDomain || strings.HasSuffix(host, "."+e.publicDomain)
+}
+
+func (e *Engine) isInternalOrLocal(host string) bool {
+	if host == "" || host == "localhost" || net.ParseIP(host) != nil {
+		return true
+	}
+	if strings.HasSuffix(host, ".mesh") {
+		return true
+	}
+	if e.meshDomain != "" && (host == e.meshDomain || strings.HasSuffix(host, "."+e.meshDomain)) {
+		return true
+	}
+	return false
+}
+
 func (e *Engine) acmeHostPolicy(ctx context.Context, host string) error {
 	host = strings.ToLower(strings.TrimSpace(host))
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -124,23 +144,21 @@ func (e *Engine) acmeHostPolicy(ctx context.Context, host string) error {
 	}
 
 	// Never send internal mesh or local hostnames to ACME
-	if strings.HasSuffix(host, ".mesh") || host == "localhost" || net.ParseIP(host) != nil {
+	if e.isInternalOrLocal(host) {
 		return fmt.Errorf("acme: internal or local hostname %q disallowed", host)
 	}
 
-	if e.publicDomain != "" {
-		if host == e.publicDomain || strings.HasSuffix(host, "."+e.publicDomain) {
-			if host == e.publicDomain {
-				return nil
-			}
+	if e.matchesPublicDomain(host) {
+		if host == e.publicDomain {
+			return nil
+		}
 
-			// Validate subdomains
-			sub := strings.TrimSuffix(host, "."+e.publicDomain)
-			if e.activeNodes != nil {
-				for _, n := range e.activeNodes() {
-					if strings.EqualFold(n, sub) {
-						return nil
-					}
+		// Validate subdomains
+		sub := strings.TrimSuffix(host, "."+e.publicDomain)
+		if e.activeNodes != nil {
+			for _, n := range e.activeNodes() {
+				if strings.EqualFold(n, sub) {
+					return nil
 				}
 			}
 		}
@@ -164,16 +182,13 @@ func (e *Engine) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 	}
 
 	// 1. If serverName is empty, localhost, IP address, or ends with .mesh / meshDomain:
-	if serverName == "" || serverName == "localhost" || net.ParseIP(serverName) != nil ||
-		strings.HasSuffix(serverName, ".mesh") || (e.meshDomain != "" && strings.HasSuffix(serverName, "."+e.meshDomain)) {
+	if e.isInternalOrLocal(serverName) {
 		return e.ca.GetCertificate(hello)
 	}
 
 	// 2. If ACME is configured and hostname matches public domain:
-	if e.acmeManager != nil && e.publicDomain != "" {
-		if serverName == e.publicDomain || strings.HasSuffix(serverName, "."+e.publicDomain) {
-			return e.acmeManager.GetCertificate(hello)
-		}
+	if e.acmeManager != nil && e.matchesPublicDomain(serverName) {
+		return e.acmeManager.GetCertificate(hello)
 	}
 
 	// 3. Fallback to Internal CA minting

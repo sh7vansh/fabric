@@ -20,6 +20,13 @@ func NewClient(cfg *Config) *Client {
 	return &Client{Config: cfg}
 }
 
+func (c *Client) caCertPath() string {
+	if c != nil && c.Config != nil {
+		return c.Config.CACert
+	}
+	return ""
+}
+
 func (c *Client) DialWebSocket() (*websocket.Conn, error) {
 	u, err := pki.NormalizeURL(c.Config.Host)
 	if err != nil {
@@ -31,14 +38,10 @@ func (c *Client) DialWebSocket() (*websocket.Conn, error) {
 
 	dialer := websocket.DefaultDialer
 	if u.Scheme == "wss" {
-		tlsCfg, err := pki.BuildClientTLSConfig("")
+		var err error
+		dialer, err = pki.NewWSSDialer(c.caCertPath())
 		if err != nil {
 			return nil, fmt.Errorf("failed to configure TLS: %w", err)
-		}
-		dialer = &websocket.Dialer{
-			Proxy:            http.ProxyFromEnvironment,
-			HandshakeTimeout: 15 * time.Second,
-			TLSClientConfig:  tlsCfg,
 		}
 	}
 
@@ -72,7 +75,7 @@ func (c *Client) DoHTTP(method, path string, body interface{}) (*http.Response, 
 
 	httpClient := http.DefaultClient
 	if scheme == "https" {
-		tlsCfg, err := pki.BuildClientTLSConfig("")
+		tlsCfg, err := pki.BuildClientTLSConfig(c.caCertPath())
 		if err != nil {
 			return nil, fmt.Errorf("failed to configure TLS: %w", err)
 		}

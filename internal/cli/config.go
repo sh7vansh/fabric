@@ -7,19 +7,21 @@ import (
 )
 
 type Config struct {
-	Host  string
-	Token string
+	Host   string
+	Token  string
+	CACert string
 }
 
 type FileConfig struct {
 	CurrentContext string `json:"current_context"`
 	Contexts       map[string]struct {
-		Host  string `json:"host"`
-		Token string `json:"token"`
+		Host   string `json:"host"`
+		Token  string `json:"token"`
+		CACert string `json:"ca_cert,omitempty"`
 	} `json:"contexts"`
 }
 
-func LoadConfig(hostFlag, tokenFlag string) *Config {
+func LoadConfig(hostFlag, tokenFlag string, caCertFlag ...string) *Config {
 	cfg := &Config{
 		Host:  "ws://localhost:8080/ws",
 		Token: "default-secret",
@@ -43,6 +45,9 @@ func LoadConfig(hostFlag, tokenFlag string) *Config {
 					if ctx.Token != "" {
 						cfg.Token = ctx.Token
 					}
+					if ctx.CACert != "" {
+						cfg.CACert = ctx.CACert
+					}
 				}
 			}
 		}
@@ -54,12 +59,18 @@ func LoadConfig(hostFlag, tokenFlag string) *Config {
 	if envToken := os.Getenv("FABRIC_TOKEN"); envToken != "" {
 		cfg.Token = envToken
 	}
+	if envCA := os.Getenv("FABRIC_CA_CERT"); envCA != "" {
+		cfg.CACert = envCA
+	}
 
 	if hostFlag != "" {
 		cfg.Host = hostFlag
 	}
 	if tokenFlag != "" {
 		cfg.Token = tokenFlag
+	}
+	if len(caCertFlag) > 0 && caCertFlag[0] != "" {
+		cfg.CACert = caCertFlag[0]
 	}
 
 	return cfg
@@ -80,12 +91,14 @@ func SaveConfig(cfg *Config) error {
 	fileCfg := FileConfig{
 		CurrentContext: "default",
 		Contexts: map[string]struct {
-			Host  string `json:"host"`
-			Token string `json:"token"`
+			Host   string `json:"host"`
+			Token  string `json:"token"`
+			CACert string `json:"ca_cert,omitempty"`
 		}{
 			"default": {
-				Host:  cfg.Host,
-				Token: cfg.Token,
+				Host:   cfg.Host,
+				Token:  cfg.Token,
+				CACert: cfg.CACert,
 			},
 		},
 	}
