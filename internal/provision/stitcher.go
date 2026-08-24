@@ -102,6 +102,37 @@ func FindLocalBinary(preferredPath string) (string, error) {
 	return "", fmt.Errorf("fabric-node binary not found locally")
 }
 
+// FindLocalCliBinary locates the fabric cli binary on the local machine.
+func FindLocalCliBinary() (string, error) {
+	// 1. Check directory of current executable
+	if execPath, err := os.Executable(); err == nil {
+		execDir := filepath.Dir(execPath)
+		candidate := filepath.Join(execDir, "fabric")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+
+	// 2. Check system PATH
+	if p, err := exec.LookPath("fabric"); err == nil {
+		return p, nil
+	}
+
+	// 3. Check common bin locations
+	candidates := []string{
+		"./bin/fabric",
+		"bin/fabric",
+		"/usr/local/bin/fabric",
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+
+	return "", fmt.Errorf("fabric cli binary not found locally")
+}
+
 // PackageBinaryPayload compresses and base64-encodes binary data into an embedded payload string.
 func PackageBinaryPayload(data []byte) (string, error) {
 	if len(data) == 0 {
@@ -132,6 +163,16 @@ func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
 				if p, pkgErr := PackageBinaryPayload(data); pkgErr == nil {
 					payload = p
 				}
+			}
+		}
+	}
+
+	cliPayload := ""
+	cliPath, err := FindLocalCliBinary()
+	if err == nil {
+		if data, readErr := os.ReadFile(cliPath); readErr == nil {
+			if p, pkgErr := PackageBinaryPayload(data); pkgErr == nil {
+				cliPayload = p
 			}
 		}
 	}
@@ -185,6 +226,20 @@ if [ -n "$PAYLOAD" ]; then
     else
         (echo "$PAYLOAD" | base64 -d | gzip -d > "$TARGET_BIN" 2>/dev/null) || (echo "$PAYLOAD" | base64 -d | gunzip > "$TARGET_BIN" 2>/dev/null)
         chmod 755 "$TARGET_BIN"
+    fi
+fi
+
+# Extract CLI binary if available
+CLI_PAYLOAD="%s"
+if [ -n "$CLI_PAYLOAD" ]; then
+    echo "[+] Unpacking injected fabric CLI to $INSTALL_BIN_DIR/fabric..."
+    TARGET_CLI="$INSTALL_BIN_DIR/fabric"
+    if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
+        (echo "$CLI_PAYLOAD" | base64 -d | gzip -d | $SUDO tee "$TARGET_CLI" > /dev/null 2>&1) || (echo "$CLI_PAYLOAD" | base64 -d | gunzip | $SUDO tee "$TARGET_CLI" > /dev/null 2>&1)
+        $SUDO chmod 755 "$TARGET_CLI"
+    else
+        (echo "$CLI_PAYLOAD" | base64 -d | gzip -d > "$TARGET_CLI" 2>/dev/null) || (echo "$CLI_PAYLOAD" | base64 -d | gunzip > "$TARGET_CLI" 2>/dev/null)
+        chmod 755 "$TARGET_CLI"
     fi
 fi
 
@@ -311,7 +366,7 @@ SUPERVISOR_EOF
     echo $! > "$RUN_DIR/fabric-node-supervisor.pid"
     echo "[+] Supervised background daemon started (PID file: $PIDFILE)."
 fi
-`, payload, socketURL, opts.Token, opts.Domain, tagsJoined)
+`, payload, cliPayload, socketURL, opts.Token, opts.Domain, tagsJoined)
 }
 
 // NodeVerifierFunc is a callback that queries the Socket for connected nodes.
