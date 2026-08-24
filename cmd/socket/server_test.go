@@ -11,11 +11,18 @@ import (
 	"time"
 
 	"fabric/internal/protocol"
+	"fabric/internal/relay"
 
 	"github.com/gorilla/websocket"
 )
 
-func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer) {
+func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer, *relay.Relay) {
+	meshRelay := relay.New(relay.Config{
+		Domain:   "fabric.mesh",
+		Token:    testToken,
+		PingFreq: 0,
+	})
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -34,9 +41,12 @@ func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer) {
 		router.HandleFunc(string(protocol.TypeHandshake), func(stream net.Conn, env []byte) {
 			defer stream.Close()
 			var hs protocol.Handshake
-			json.Unmarshal(env, &hs)
+			if err := json.Unmarshal(env, &hs); err != nil {
+				conn.Close()
+				return
+			}
 
-			if !protocol.ValidateToken(hs.Token, testToken) {
+			if !meshRelay.ValidateToken(hs.Token) {
 				conn.Close()
 				return
 			}
@@ -46,38 +56,22 @@ func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer) {
 				return
 			}
 
-			nodesLock.Lock()
-			if existing, exists := nodes[hs.Hostname]; exists {
-				if existing.Mux != nil && existing.Mux != smux {
-					go existing.Mux.Session.Close()
-				}
-			}
-
 			sessID := hs.SessionID
 			if sessID == "" {
 				sessID = fmt.Sprintf("sess-%s-%d", hs.Hostname, time.Now().UnixNano())
 			}
 
-			nodes[hs.Hostname] = &NodeState{
-				Mux: smux,
-				Metadata: protocol.NodeMetadata{
-					ID:        hs.Hostname,
-					SessionID: sessID,
-					Hostname:  hs.Hostname,
-					Status:    "online",
-				},
+			meta := protocol.NodeMetadata{
+				ID:        hs.Hostname,
+				SessionID: sessID,
+				Hostname:  hs.Hostname,
+				Status:    "online",
 			}
-			nodesLock.Unlock()
 
-			go func() {
-				<-smux.Session.CloseChan()
-				nodesLock.Lock()
-				if curr, ok := nodes[hs.Hostname]; ok && curr.Mux == smux {
-					delete(nodes, hs.Hostname)
-				}
-				nodesLock.Unlock()
+			if _, err := meshRelay.RegisterNode(meta, smux); err != nil {
 				conn.Close()
-			}()
+				return
+			}
 		})
 		router.Accept()
 	})
@@ -88,7 +82,7 @@ func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer) {
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			provided = strings.TrimPrefix(authHeader, "Bearer ")
 		}
-		if !protocol.ValidateToken(provided, testToken) {
+		if !meshRelay.ValidateToken(provided) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return false
 		}
@@ -99,25 +93,20 @@ func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer) {
 		if !authenticate(w, r) {
 			return
 		}
-		nodesLock.RLock()
-		defer nodesLock.RUnlock()
-		var list []protocol.NodeMetadata
-		for _, s := range nodes {
-			list = append(list, s.Metadata)
-		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(list)
+		json.NewEncoder(w).Encode(meshRelay.ListNodes())
 	})
 
 	server := httptest.NewServer(mux)
 	dialer := websocket.DefaultDialer
-	return server, dialer
+	return server, dialer, meshRelay
 }
 
 func TestServerHTTPAuth(t *testing.T) {
 	testToken := "test-secret-token-123"
-	ts, _ := setupTestServer(testToken)
+	ts, _, r := setupTestServer(testToken)
 	defer ts.Close()
+	defer r.Close()
 
 	// 1. Unauthorized request
 	resp, err := http.Get(ts.URL + "/nodes")
@@ -145,8 +134,9 @@ func TestServerHTTPAuth(t *testing.T) {
 
 func TestServerWebSocketHandshakeAuthAndReconnect(t *testing.T) {
 	testToken := "test-secret-token-123"
-	ts, dialer := setupTestServer(testToken)
+	ts, dialer, r := setupTestServer(testToken)
 	defer ts.Close()
+	defer r.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
 

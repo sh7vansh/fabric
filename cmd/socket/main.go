@@ -10,10 +10,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"fabric/internal/protocol"
+	"fabric/internal/relay"
 	"fabric/internal/tlsengine"
 
 	"github.com/gorilla/websocket"
@@ -22,16 +22,6 @@ import (
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
-
-type NodeState struct {
-	Mux      *protocol.StreamMultiplexer
-	Metadata protocol.NodeMetadata
-}
-
-var (
-	nodes     = make(map[string]*NodeState)
-	nodesLock sync.RWMutex
-)
 
 func main() {
 	defaultDomain := os.Getenv("FABRIC_DOMAIN")
@@ -54,6 +44,14 @@ func main() {
 		log.Fatal("Authentication token required: set FABRIC_TOKEN environment variable or pass --token")
 	}
 
+	// Initialize deep Relay control-plane module
+	meshRelay := relay.New(relay.Config{
+		Domain:   *domainFlag,
+		Token:    token,
+		PingFreq: 5 * time.Second,
+	})
+	defer meshRelay.Close()
+
 	// Initialize Dual-Mode TLS Engine (Internal CA + ACME Autocert)
 	tlsEng, err := tlsengine.New(tlsengine.Config{
 		CADir:        *caDirFlag,
@@ -62,11 +60,10 @@ func main() {
 		ACMEEmail:    *acmeEmailFlag,
 		ACMEStaging:  *acmeStagingFlag,
 		ActiveNodes: func() []string {
-			nodesLock.RLock()
-			defer nodesLock.RUnlock()
-			var list []string
-			for k := range nodes {
-				list = append(list, k)
+			nodes := meshRelay.ListNodes()
+			list := make([]string, len(nodes))
+			for i, n := range nodes {
+				list[i] = n.Hostname
 			}
 			return list
 		},
@@ -107,8 +104,6 @@ func main() {
 		}
 	}()
 
-	go pingNodes()
-
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -134,9 +129,12 @@ func main() {
 		router.HandleFunc(string(protocol.TypeHandshake), func(stream net.Conn, env []byte) {
 			defer stream.Close()
 			var hs protocol.Handshake
-			json.Unmarshal(env, &hs)
+			if err := json.Unmarshal(env, &hs); err != nil {
+				conn.Close()
+				return
+			}
 
-			if !protocol.ValidateToken(hs.Token, token) {
+			if !meshRelay.ValidateToken(hs.Token) {
 				log.Println("Unauthorized connection attempt from:", hs.Hostname)
 				conn.Close()
 				return
@@ -148,60 +146,41 @@ func main() {
 				return
 			}
 
-			nodesLock.Lock()
-			if existing, exists := nodes[hs.Hostname]; exists {
-				if existing.Mux != nil && existing.Mux != mux {
-					log.Printf("Renewing registration for hostname %q (displacing previous session)\n", hs.Hostname)
-					go existing.Mux.Session.Close()
-				}
-			}
-
 			sessID := hs.SessionID
 			if sessID == "" {
 				sessID = fmt.Sprintf("sess-%s-%d", hs.Hostname, time.Now().UnixNano())
 			}
 
-			log.Printf("Node connected successfully: %s (session: %s)\n", hs.Hostname, sessID)
-
-			nodes[hs.Hostname] = &NodeState{
-				Mux: mux,
-				Metadata: protocol.NodeMetadata{
-					ID:          hs.Hostname,
-					SessionID:   sessID,
-					Hostname:    hs.Hostname,
-					Domain:      hs.Domain,
-					OS:          hs.OS,
-					Arch:        hs.Arch,
-					Version:     hs.Version,
-					RemoteIP:    r.RemoteAddr,
-					Status:      "online",
-					ConnectedAt: time.Now().UTC().Format(time.RFC3339),
-					LastSeen:    time.Now().UTC().Format(time.RFC3339),
-				},
+			meta := protocol.NodeMetadata{
+				ID:          hs.Hostname,
+				SessionID:   sessID,
+				Hostname:    hs.Hostname,
+				Domain:      hs.Domain,
+				OS:          hs.OS,
+				Arch:        hs.Arch,
+				Version:     hs.Version,
+				RemoteIP:    r.RemoteAddr,
+				Status:      "online",
+				ConnectedAt: time.Now().UTC().Format(time.RFC3339),
 			}
-			nodesLock.Unlock()
-			go broadcastNodeSync()
 
-			go func() {
-				<-mux.Session.CloseChan()
-				nodesLock.Lock()
-				if curr, ok := nodes[hs.Hostname]; ok && curr.Mux == mux {
-					delete(nodes, hs.Hostname)
-				}
-				nodesLock.Unlock()
-				go broadcastNodeSync()
+			if _, err := meshRelay.RegisterNode(meta, mux); err != nil {
 				conn.Close()
-			}()
+				return
+			}
+			log.Printf("Node connected successfully: %s (session: %s)\n", hs.Hostname, sessID)
 		})
 
 		router.HandleFunc(string(protocol.TypeDNSQuery), func(stream net.Conn, env []byte) {
 			defer stream.Close()
 			var query protocol.DNSQuery
-			json.Unmarshal(env, &query)
+			if err := json.Unmarshal(env, &query); err != nil {
+				return
+			}
 
-			resp := ProcessDNSQuery(query, *domainFlag, proxyIP)
+			resp := meshRelay.ResolveDNS(query, proxyIP)
 			b, _ := json.Marshal(resp)
-			
+
 			outStream, err := mux.Session.Open()
 			if err == nil {
 				outStream.Write(b)
@@ -209,82 +188,37 @@ func main() {
 			}
 		})
 
-		// For CLI -> Node routing requests (Exec, Copy, Proxy)
 		router.HandleFunc(string(protocol.TypeExecRequest), func(stream net.Conn, env []byte) {
 			var req protocol.ExecRequest
-			json.Unmarshal(env, &req)
-
+			if err := json.Unmarshal(env, &req); err != nil {
+				stream.Close()
+				return
+			}
 			log.Printf("CLI requested exec on %s: %s\n", req.TargetHostname, req.Command)
-
-			nodesLock.RLock()
-			nodeState, ok := nodes[req.TargetHostname]
-			nodesLock.RUnlock()
-
-			if !ok {
-				log.Println("Target node not found:", req.TargetHostname)
-				stream.Close()
-				return
+			if err := meshRelay.RouteStream(req.TargetHostname, env, stream); err != nil {
+				log.Println("RouteStream error:", err)
 			}
-
-			targetStream, err := nodeState.Mux.Session.Open()
-			if err != nil {
-				stream.Close()
-				return
-			}
-
-			targetStream.Write(env)
-			go protocol.Proxy(stream, targetStream)
 		})
 
 		router.HandleFunc(string(protocol.TypeCopyRequest), func(stream net.Conn, env []byte) {
 			var req protocol.CopyRequest
-			json.Unmarshal(env, &req)
-
-			nodesLock.RLock()
-			nodeState, ok := nodes[req.TargetHostname]
-			nodesLock.RUnlock()
-
-			if !ok {
+			if err := json.Unmarshal(env, &req); err != nil {
 				stream.Close()
 				return
 			}
-
-			targetStream, err := nodeState.Mux.Session.Open()
-			if err != nil {
-				stream.Close()
-				return
+			if err := meshRelay.RouteStream(req.TargetHostname, env, stream); err != nil {
+				log.Println("RouteStream copy error:", err)
 			}
-
-			targetStream.Write(env)
-			go protocol.Proxy(stream, targetStream)
 		})
 
 		router.HandleFunc(string(protocol.TypeProxyRequest), func(stream net.Conn, env []byte) {
 			var req protocol.ProxyRequest
-			json.Unmarshal(env, &req)
-
-			nodesLock.RLock()
-			var targetNode *NodeState
-			if req.TargetHostname != "" {
-				targetNode = nodes[req.TargetHostname]
-			} else {
-				for _, n := range nodes {
-					targetNode = n
-					break
-				}
-			}
-			nodesLock.RUnlock()
-
-			if targetNode != nil {
-				targetStream, err := targetNode.Mux.Session.Open()
-				if err == nil {
-					targetStream.Write(env)
-					go protocol.Proxy(stream, targetStream)
-				} else {
-					stream.Close()
-				}
-			} else {
+			if err := json.Unmarshal(env, &req); err != nil {
 				stream.Close()
+				return
+			}
+			if err := meshRelay.RouteProxyStream(req.TargetHostname, env, stream); err != nil {
+				log.Println("RouteProxyStream error:", err)
 			}
 		})
 
@@ -297,7 +231,7 @@ func main() {
 		if strings.HasPrefix(authHeader, "Bearer ") {
 			provided = strings.TrimPrefix(authHeader, "Bearer ")
 		}
-		if !protocol.ValidateToken(provided, token) {
+		if !meshRelay.ValidateToken(provided) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return false
 		}
@@ -315,75 +249,24 @@ func main() {
 		if !authenticate(w, r) {
 			return
 		}
-
-		nodesLock.RLock()
-		defer nodesLock.RUnlock()
-
-		var list []protocol.NodeMetadata
-		for _, state := range nodes {
-			list = append(list, state.Metadata)
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(list)
+		json.NewEncoder(w).Encode(meshRelay.ListNodes())
 	})
 
 	http.HandleFunc("/nodes/", func(w http.ResponseWriter, r *http.Request) {
 		if !authenticate(w, r) {
 			return
 		}
-
 		hostname := r.URL.Path[len("/nodes/"):]
-
-		nodesLock.RLock()
-		defer nodesLock.RUnlock()
-
-		state, ok := nodes[hostname]
+		meta, ok := meshRelay.GetNode(hostname)
 		if !ok {
 			http.Error(w, "Not found", http.StatusNotFound)
 			return
 		}
-
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(state.Metadata)
+		json.NewEncoder(w).Encode(meta)
 	})
 
 	log.Println("Socket listening on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
-}
-
-func pingNodes() {
-	for {
-		time.Sleep(5 * time.Second)
-		nodesLock.RLock()
-		for _, state := range nodes {
-			state.Metadata.LastSeen = time.Now().UTC().Format(time.RFC3339)
-		}
-		nodesLock.RUnlock()
-	}
-}
-
-func broadcastNodeSync() {
-	nodesLock.RLock()
-	defer nodesLock.RUnlock()
-
-	var list []protocol.NodeMetadata
-	for _, state := range nodes {
-		list = append(list, state.Metadata)
-	}
-
-	syncMsg := protocol.NodeSync{
-		Type:  protocol.TypeNodeSync,
-		Nodes: list,
-	}
-
-	b, _ := json.Marshal(syncMsg)
-
-	for _, state := range nodes {
-		stream, err := state.Mux.Session.Open()
-		if err == nil {
-			stream.Write(b)
-			stream.Close()
-		}
-	}
 }

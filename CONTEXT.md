@@ -14,6 +14,8 @@ Fabric is a lightweight remote execution, service discovery, and networking mesh
 - **Stitch / Discover**: Automated subnet scanner and SSH provisioning mechanism to bootstrap remote targets into the mesh.
 - **StreamMultiplexer**: A deep module wrapping the raw WebSocket to natively multiplex `io.Reader/Writer` streams using a binary protocol, replacing manual JSON stream chunking.
 - **SystemDNSManager**: A deep module encapsulating local UDP DNS stub resolution, systemd-resolved split-DNS configuration, and `/etc/hosts` fallback mutation with deterministic teardown.
+- **MeshRelay**: The central control-plane domain module in `internal/relay` encapsulating node registration, session displacement, multiplexed stream routing (exec, copy, proxy), DNS wire resolution, and cluster-wide sync broadcasts.
+- **NodeAgent**: The autonomous daemon module in `internal/agent` encapsulating persistent outbound connection resilience, TLS negotiation, PTY/process execution streaming, tar chunking, and deterministic teardown.
 - **MeshClient**: A deep client module that encapsulates WebSocket session multiplexing, binary framing, terminal PTY state management, and RPC streaming for CLI operations (`Execute`, `Copy`, `ForwardPort`).
 - **Provisioner**: An autonomous domain module in `internal/provision` for subnet discovery probing, SSH script generation, and remote host bootstrapping into the mesh.
 - **RemoteExecutor**: An adapter abstracting the SSH transport for provisioning, allowing pure testing of script generation and host bootstrapping.
