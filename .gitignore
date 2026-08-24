@@ -4,7 +4,7 @@ bin/
 *.test
 *.out
 
-# Agent scratch & tracking
-.scratch/
-.wayfinder/
-scratch/
+
+*.scratch/
+*.wayfinder/
+*scratch/
