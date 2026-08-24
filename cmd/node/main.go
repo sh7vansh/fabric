@@ -50,26 +50,18 @@ func main() {
 		log.Fatal(err)
 	}
 
-	meshdns.RevertOS()
-	meshdns.CleanHostsBlock()
-
-	resolver := meshdns.NewResolver(*domainFlag)
-	if err := resolver.Start(); err != nil {
-		log.Fatalf("Failed to start DNS resolver: %v", err)
+	dnsMgr := meshdns.NewSystemDNSManager(*domainFlag)
+	if err := dnsMgr.Start(); err != nil {
+		log.Fatalf("Failed to start DNS manager: %v", err)
 	}
-
-	if err := meshdns.ConfigureOS(*domainFlag); err != nil {
-		log.Printf("Failed to configure OS DNS routing: %v", err)
-	}
+	defer dnsMgr.Teardown()
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigs
 		log.Println("Shutting down... Reverting OS DNS configuration.")
-		meshdns.RevertOS()
-		meshdns.CleanHostsBlock()
-		resolver.Stop()
+		dnsMgr.Teardown()
 		os.Exit(0)
 	}()
 
@@ -80,7 +72,7 @@ func main() {
 		c := ConnectWithRetry(*u, token, *caCertFlag)
 
 		mux, err := protocol.NewStreamMultiplexer(c, false)
-		resolver.SetMultiplexer(mux)
+		dnsMgr.SetMultiplexer(mux)
 		if err != nil {
 			log.Println("Multiplexer error:", err)
 			c.Close()
@@ -117,14 +109,14 @@ func main() {
 			defer s.Close()
 			var syncMsg protocol.NodeSync
 			json.Unmarshal(env, &syncMsg)
-			meshdns.UpdateHostsBlock(syncMsg.Nodes, *domainFlag, *serverURL)
+			dnsMgr.SyncNodes(syncMsg.Nodes, *serverURL)
 		})
 
 		router.HandleFunc(string(protocol.TypeDNSResponse), func(s net.Conn, env []byte) {
 			defer s.Close()
 			var resp protocol.DNSResponse
 			json.Unmarshal(env, &resp)
-			resolver.HandleDNSResponse(resp)
+			dnsMgr.HandleDNSResponse(resp)
 		})
 
 		router.HandleFunc(string(protocol.TypeExecRequest), handleExec)

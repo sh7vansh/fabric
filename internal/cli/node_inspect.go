@@ -21,22 +21,11 @@ func runNodeInspect(cmd *cobra.Command, args []string) error {
 	var results []protocol.NodeMetadata
 
 	for _, nodeName := range args {
-		resp, err := client.DoHTTP("GET", "/nodes/"+nodeName, nil)
+		meta, err := client.GetNode(nodeName)
 		if err != nil {
-			return fmt.Errorf("error inspecting node %s: %w", nodeName, err)
+			return err
 		}
-		if resp.StatusCode == 404 {
-			resp.Body.Close()
-			return fmt.Errorf("node not found: %s", nodeName)
-		}
-
-		var meta protocol.NodeMetadata
-		err = json.NewDecoder(resp.Body).Decode(&meta)
-		resp.Body.Close()
-		if err != nil {
-			return fmt.Errorf("error decoding response for node %s: %w", nodeName, err)
-		}
-		results = append(results, meta)
+		results = append(results, *meta)
 	}
 
 	b, err := json.MarshalIndent(results, "", "  ")

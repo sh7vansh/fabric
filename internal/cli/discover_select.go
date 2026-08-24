@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+
+	"fabric/internal/provision"
 )
 
 // StitchTarget holds resolved connection parameters for stitching a remote machine.
@@ -30,7 +32,7 @@ func (t StitchTarget) TargetSpec() string {
 }
 
 // PrintDiscoveryTable prints a formatted table of discovered SSH hosts.
-func PrintDiscoveryTable(w io.Writer, hosts []DiscoveredHost) {
+func PrintDiscoveryTable(w io.Writer, hosts []provision.DiscoveredHost) {
 	if len(hosts) == 0 {
 		fmt.Fprintln(w, "No SSH endpoints discovered.")
 		return
@@ -53,7 +55,7 @@ func PrintDiscoveryTable(w io.Writer, hosts []DiscoveredHost) {
 }
 
 // FormatDiscoveredOutput prints hosts in quiet or JSON format.
-func FormatDiscoveredOutput(w io.Writer, hosts []DiscoveredHost, quiet bool, format string) error {
+func FormatDiscoveredOutput(w io.Writer, hosts []provision.DiscoveredHost, quiet bool, format string) error {
 	if format == "json" {
 		b, err := json.MarshalIndent(hosts, "", "  ")
 		if err != nil {
@@ -80,7 +82,7 @@ func FormatDiscoveredOutput(w io.Writer, hosts []DiscoveredHost, quiet bool, for
 
 // ParseSelectionInput parses user selection expressions like:
 // "all", "1, 3", "admin@2", "3:2222", "root@4:2222", "1-3", "admin@1-3:2222"
-func ParseSelectionInput(input string, hosts []DiscoveredHost, defaultUser string) ([]StitchTarget, error) {
+func ParseSelectionInput(input string, hosts []provision.DiscoveredHost, defaultUser string) ([]StitchTarget, error) {
 	input = strings.TrimSpace(input)
 	if input == "" || strings.ToLower(input) == "q" || strings.ToLower(input) == "quit" || strings.ToLower(input) == "exit" {
 		return nil, nil
@@ -123,7 +125,6 @@ func ParseSelectionInput(input string, hosts []DiscoveredHost, defaultUser strin
 			targetIdentifier = targetIdentifier[:colonIdx]
 		}
 
-		// Check if targetIdentifier is a numeric range e.g. "1-3"
 		if strings.Contains(targetIdentifier, "-") {
 			rangeParts := strings.Split(targetIdentifier, "-")
 			if len(rangeParts) == 2 {
@@ -155,7 +156,6 @@ func ParseSelectionInput(input string, hosts []DiscoveredHost, defaultUser strin
 			}
 		}
 
-		// Check if targetIdentifier is a single index number (1-based)
 		idx, err := strconv.Atoi(targetIdentifier)
 		if err == nil {
 			if idx < 1 || idx > len(hosts) {
@@ -178,7 +178,6 @@ func ParseSelectionInput(input string, hosts []DiscoveredHost, defaultUser strin
 				})
 			}
 		} else {
-			// Direct IP or Hostname entered
 			port := "22"
 			if portOverride != "" {
 				port = portOverride

@@ -1,11 +1,8 @@
 package cli
 
 import (
-	"encoding/json"
-	"fabric/internal/protocol"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -37,58 +34,12 @@ func runCp(cmd *cobra.Command, args []string) error {
 	}
 
 	client := NewClient(GetConfig())
-	conn, err := client.DialWebSocket()
-	if err != nil {
-		return fmt.Errorf("failed to connect to socket: %w", err)
-	}
-	defer conn.Close()
-
-	mux, err := protocol.NewStreamMultiplexer(conn, false)
-	if err != nil {
-		return err
-	}
-
-	stream, err := mux.Session.Open()
-	if err != nil {
-		return err
-	}
-	defer stream.Close()
-
-	transferID := fmt.Sprintf("xfer-%d", time.Now().UnixNano())
 
 	if !srcIsRemote && destIsRemote {
 		// Upload: local -> remote node
-		req := protocol.CopyRequest{
-			Type:           protocol.TypeCopyRequest,
-			TransferID:     transferID,
-			TargetHostname: destNode,
-			Direction:      "upload",
-			RemotePath:     destPath,
-		}
-
-		b, _ := json.Marshal(req)
-		stream.Write(b)
-
-		if err := protocol.CreateTar(stream, srcPath); err != nil {
-			return fmt.Errorf("failed to create upload archive: %w", err)
-		}
-		return nil
+		return client.Upload(destNode, srcPath, destPath)
 	}
 
 	// Download: remote node -> local
-	req := protocol.CopyRequest{
-		Type:           protocol.TypeCopyRequest,
-		TransferID:     transferID,
-		TargetHostname: srcNode,
-		Direction:      "download",
-		RemotePath:     srcPath,
-	}
-
-	b, _ := json.Marshal(req)
-	stream.Write(b)
-
-	if err := protocol.ExtractTar(stream, destPath); err != nil {
-		return fmt.Errorf("failed to extract download archive: %w", err)
-	}
-	return nil
+	return client.Download(srcNode, srcPath, destPath)
 }

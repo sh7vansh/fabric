@@ -1,14 +1,48 @@
-package cli
+package provision
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 const MaxScanHosts = 65536 // Safety limit: up to a /16 subnet
+
+// DiscoveredHost represents an active SSH endpoint found on the network.
+type DiscoveredHost struct {
+	IP          string        `json:"ip"`
+	Port        int           `json:"port"`
+	Banner      string        `json:"banner"`
+	CleanBanner string        `json:"clean_banner"`
+	Latency     time.Duration `json:"latency_ms"`
+}
+
+// ScanOptions configures the concurrent network discovery scan.
+type ScanOptions struct {
+	Ports       []int
+	Concurrency int
+	Timeout     time.Duration
+}
+
+// DefaultScanOptions returns standard production scan parameters.
+func DefaultScanOptions() ScanOptions {
+	return ScanOptions{
+		Ports:       []int{22},
+		Concurrency: 128,
+		Timeout:     1000 * time.Millisecond,
+	}
+}
+
+type scanJob struct {
+	ip   string
+	port int
+}
 
 // GetDefaultLocalCIDR attempts to determine the primary network interface's IPv4 CIDR.
 func GetDefaultLocalCIDR() (string, error) {
@@ -23,7 +57,6 @@ func GetDefaultLocalCIDR() (string, error) {
 		return "", fmt.Errorf("detected non-IPv4 local address")
 	}
 
-	// Look for the interface matching this IP to extract the subnet mask
 	ifaces, err := net.Interfaces()
 	if err == nil {
 		for _, iface := range ifaces {
@@ -37,7 +70,6 @@ func GetDefaultLocalCIDR() (string, error) {
 			for _, addr := range addrs {
 				if ipNet, ok := addr.(*net.IPNet); ok {
 					if ipNet.IP.To4() != nil && ipNet.IP.Equal(localIP) {
-						// Return the network CIDR string, e.g. 192.168.1.0/24
 						maskSize, _ := ipNet.Mask.Size()
 						networkIP := ipNet.IP.Mask(ipNet.Mask)
 						return fmt.Sprintf("%s/%d", networkIP.String(), maskSize), nil
@@ -47,7 +79,6 @@ func GetDefaultLocalCIDR() (string, error) {
 		}
 	}
 
-	// Fallback to /24 on the local IP's subnet
 	return fmt.Sprintf("%d.%d.%d.0/24", localIP[0], localIP[1], localIP[2]), nil
 }
 
@@ -72,7 +103,6 @@ func ParseTargets(input string, defaultCIDR string) ([]string, error) {
 		}
 
 		if strings.Contains(part, "/") {
-			// CIDR block
 			ips, err := expandCIDR(part)
 			if err != nil {
 				return nil, err
@@ -84,7 +114,6 @@ func ParseTargets(input string, defaultCIDR string) ([]string, error) {
 				}
 			}
 		} else if strings.Contains(part, "-") && isIPRange(part) {
-			// IP range, e.g. 192.168.1.1-10 or 192.168.1.1-192.168.1.10
 			ips, err := expandIPRange(part)
 			if err != nil {
 				return nil, err
@@ -96,7 +125,6 @@ func ParseTargets(input string, defaultCIDR string) ([]string, error) {
 				}
 			}
 		} else {
-			// Single IP or Hostname
 			ip := net.ParseIP(part)
 			if ip != nil {
 				if ip4 := ip.To4(); ip4 != nil {
@@ -121,6 +149,122 @@ func ParseTargets(input string, defaultCIDR string) ([]string, error) {
 	return targets, nil
 }
 
+// ScanTargets scans a list of IP targets concurrently across the specified ports.
+func ScanTargets(targets []string, opts ScanOptions, onFound func(DiscoveredHost)) ([]DiscoveredHost, error) {
+	if len(opts.Ports) == 0 {
+		opts.Ports = []int{22}
+	}
+	if opts.Concurrency <= 0 {
+		opts.Concurrency = 128
+	}
+	if opts.Timeout <= 0 {
+		opts.Timeout = 1000 * time.Millisecond
+	}
+
+	jobs := make(chan scanJob, opts.Concurrency*2)
+	results := make(chan DiscoveredHost, len(targets)*len(opts.Ports))
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < opts.Concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				host, err := ProbeSSH(job.ip, job.port, opts.Timeout)
+				if err == nil && host != nil {
+					results <- *host
+					if onFound != nil {
+						onFound(*host)
+					}
+				}
+			}
+		}()
+	}
+
+	go func() {
+		for _, target := range targets {
+			for _, port := range opts.Ports {
+				jobs <- scanJob{ip: target, port: port}
+			}
+		}
+		close(jobs)
+	}()
+
+	wg.Wait()
+	close(results)
+
+	var discovered []DiscoveredHost
+	for res := range results {
+		discovered = append(discovered, res)
+	}
+
+	sort.Slice(discovered, func(i, j int) bool {
+		ipI := net.ParseIP(discovered[i].IP).To4()
+		ipJ := net.ParseIP(discovered[j].IP).To4()
+		if ipI != nil && ipJ != nil && !ipI.Equal(ipJ) {
+			return bytes.Compare(ipI, ipJ) < 0
+		}
+		if discovered[i].IP != discovered[j].IP {
+			return discovered[i].IP < discovered[j].IP
+		}
+		return discovered[i].Port < discovered[j].Port
+	})
+
+	return discovered, nil
+}
+
+// ProbeSSH performs a TCP connection and verifies the RFC 4253 SSH server identification string.
+func ProbeSSH(ip string, port int, timeout time.Duration) (*DiscoveredHost, error) {
+	addr := net.JoinHostPort(ip, strconv.Itoa(port))
+	start := time.Now()
+
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	latency := time.Since(start)
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+
+	reader := bufio.NewReader(conn)
+	for i := 0; i < 10; i++ {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+
+		rawBanner := strings.TrimSpace(line)
+		if rawBanner == "" {
+			continue
+		}
+
+		if strings.HasPrefix(rawBanner, "SSH-") {
+			clean := rawBanner
+			if strings.HasPrefix(clean, "SSH-2.0-") {
+				clean = strings.TrimPrefix(clean, "SSH-2.0-")
+			} else if strings.HasPrefix(clean, "SSH-1.99-") {
+				clean = strings.TrimPrefix(clean, "SSH-1.99-")
+			}
+
+			return &DiscoveredHost{
+				IP:          ip,
+				Port:        port,
+				Banner:      rawBanner,
+				CleanBanner: clean,
+				Latency:     latency.Round(time.Millisecond),
+			}, nil
+		}
+
+		if strings.HasPrefix(rawBanner, "HTTP/") || strings.HasPrefix(rawBanner, "<html") {
+			return nil, fmt.Errorf("non-SSH HTTP service on %s: %q", addr, rawBanner)
+		}
+	}
+
+	return nil, fmt.Errorf("no valid SSH banner received from %s", addr)
+}
+
 func isIPRange(s string) bool {
 	parts := strings.Split(s, "-")
 	if len(parts) != 2 {
@@ -130,7 +274,6 @@ func isIPRange(s string) bool {
 	return startIP != nil && startIP.To4() != nil
 }
 
-// expandIPRange expands a range like 192.168.1.1-10 or 192.168.1.1-192.168.1.10
 func expandIPRange(rangeStr string) ([]string, error) {
 	parts := strings.Split(rangeStr, "-")
 	if len(parts) != 2 {
@@ -180,7 +323,6 @@ func expandIPRange(rangeStr string) ([]string, error) {
 	return ips, nil
 }
 
-// expandCIDR generates all usable host IP addresses within an IPv4 CIDR range.
 func expandCIDR(cidr string) ([]string, error) {
 	ip, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
@@ -204,7 +346,6 @@ func expandCIDR(cidr string) ([]string, error) {
 	copy(curr, ipNet.IP)
 
 	for ipNet.Contains(curr) {
-		// For /31 and /32, keep all addresses. For standard subnets (<= /30), skip network and broadcast.
 		if ones <= 30 {
 			if !isNetworkOrBroadcast(curr, ipNet) {
 				ips = append(ips, curr.String())
@@ -235,10 +376,9 @@ func isNetworkOrBroadcast(ip net.IP, ipNet *net.IPNet) bool {
 
 	netIP := ipNet.IP.To4()
 	if ip4.Equal(netIP) {
-		return true // Network address (.0)
+		return true
 	}
 
-	// Calculate broadcast address: netIP | ^mask
 	broadcast := make(net.IP, 4)
 	for i := 0; i < 4; i++ {
 		broadcast[i] = netIP[i] | ^ipNet.Mask[i]

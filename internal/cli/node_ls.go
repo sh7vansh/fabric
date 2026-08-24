@@ -2,7 +2,6 @@ package cli
 
 import (
 	"encoding/json"
-	"fabric/internal/protocol"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -30,14 +29,8 @@ func init() {
 
 func runNodeLs(cmd *cobra.Command, args []string) error {
 	client := NewClient(GetConfig())
-	resp, err := client.DoHTTP("GET", "/nodes", nil)
+	nodes, err := client.ListNodes()
 	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var nodes []protocol.NodeMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
 		return err
 	}
 

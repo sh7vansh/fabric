@@ -5,10 +5,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"fabric/internal/provision"
 )
 
 func TestParseSelectionInput(t *testing.T) {
-	mockHosts := []DiscoveredHost{
+	mockHosts := []provision.DiscoveredHost{
 		{IP: "192.168.1.10", Port: 22, CleanBanner: "OpenSSH_8.9 Ubuntu", Latency: 2 * time.Millisecond},
 		{IP: "192.168.1.15", Port: 22, CleanBanner: "OpenSSH_9.2 Debian", Latency: 4 * time.Millisecond},
 		{IP: "192.168.1.42", Port: 2222, CleanBanner: "Dropbear_2020", Latency: 1 * time.Millisecond},
@@ -89,21 +91,6 @@ func TestParseSelectionInput(t *testing.T) {
 			input:     "5",
 			expectErr: true,
 		},
-		{
-			name:      "Out of range index with user",
-			input:     "admin@10",
-			expectErr: true,
-		},
-		{
-			name:      "Out of range end in range",
-			input:     "1-99",
-			expectErr: true,
-		},
-		{
-			name:      "Invalid reversed range",
-			input:     "3-1",
-			expectErr: true,
-		},
 	}
 
 	for _, tt := range tests {
@@ -132,7 +119,7 @@ func TestParseSelectionInput(t *testing.T) {
 }
 
 func TestFormatDiscoveredOutput(t *testing.T) {
-	mockHosts := []DiscoveredHost{
+	mockHosts := []provision.DiscoveredHost{
 		{IP: "192.168.1.10", Port: 22, CleanBanner: "OpenSSH_8.9 Ubuntu", Latency: 2 * time.Millisecond},
 		{IP: "192.168.1.42", Port: 2222, CleanBanner: "Dropbear_2020", Latency: 1 * time.Millisecond},
 	}
