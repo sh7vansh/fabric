@@ -2,10 +2,8 @@ package meshdns
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -22,6 +20,8 @@ import (
 type Resolver struct {
 	domain   string
 	wsConn   *websocket.Conn
+	cache    map[string]protocol.DNSResponse
+	cacheMux sync.RWMutex
 	pending  map[string]chan protocol.DNSResponse
 	pendMux  sync.Mutex
 	server   *dns.Server
@@ -30,6 +30,7 @@ type Resolver struct {
 func NewResolver(domain string) *Resolver {
 	return &Resolver{
 		domain:  domain,
+		cache:   make(map[string]protocol.DNSResponse),
 		pending: make(map[string]chan protocol.DNSResponse),
 	}
 }
@@ -39,6 +40,25 @@ func (r *Resolver) SetConnection(conn *websocket.Conn) {
 }
 
 func (r *Resolver) HandleDNSResponse(resp protocol.DNSResponse) {
+	if resp.RCode == dns.RcodeSuccess && resp.TTL > 0 {
+		replyWire, err := base64.StdEncoding.DecodeString(resp.Data)
+		if err == nil {
+			reply := new(dns.Msg)
+			if err := reply.Unpack(replyWire); err == nil && len(reply.Question) > 0 {
+				name := strings.ToLower(reply.Question[0].Name)
+				r.cacheMux.Lock()
+				r.cache[name] = resp
+				r.cacheMux.Unlock()
+
+				time.AfterFunc(time.Duration(resp.TTL)*time.Second, func() {
+					r.cacheMux.Lock()
+					delete(r.cache, name)
+					r.cacheMux.Unlock()
+				})
+			}
+		}
+	}
+
 	r.pendMux.Lock()
 	ch, ok := r.pending[resp.SessionID]
 	if ok {
@@ -63,6 +83,22 @@ func (r *Resolver) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if !strings.HasSuffix(name, "."+r.domain+".") {
 		dns.HandleFailed(w, req)
 		return
+	}
+
+	r.cacheMux.RLock()
+	cachedResp, found := r.cache[name]
+	r.cacheMux.RUnlock()
+
+	if found {
+		replyWire, err := base64.StdEncoding.DecodeString(cachedResp.Data)
+		if err == nil {
+			reply := new(dns.Msg)
+			if err := reply.Unpack(replyWire); err == nil {
+				reply.Id = req.Id
+				w.WriteMsg(reply)
+				return
+			}
+		}
 	}
 
 	reqWire, err := req.Pack()
@@ -168,34 +204,4 @@ func RevertOS() {
 	}
 }
 
-// SyncHostsFile pulls nodes from the Socket REST API and writes them to /etc/hosts
-// if systemd-resolved is not available.
-func SyncHostsFile(apiURL, token, domain, socketURL string) {
-	if HasSystemdResolved() {
-		return
-	}
 
-	req, err := http.NewRequest("GET", apiURL+"/nodes", nil)
-	if err != nil {
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return
-	}
-
-	var nodes []protocol.NodeMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
-		return
-	}
-
-	UpdateHostsBlock(nodes, domain, socketURL)
-}

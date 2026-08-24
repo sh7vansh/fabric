@@ -12,10 +12,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
-	"strings"
 	"sync"
 	"syscall"
-	"time"
 
 	"fabric/internal/meshdns"
 	"fabric/internal/protocol"
@@ -83,19 +81,7 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// Start a periodic background sync for /etc/hosts if needed
-	go func() {
-		// convert ws:// to http://
-		apiURL := strings.Replace(*serverURL, "ws://", "http://", 1)
-		apiURL = strings.Replace(apiURL, "wss://", "https://", 1)
-		// strip path /ws if present
-		apiURL = strings.Replace(apiURL, "/ws", "", 1)
-		
-		for {
-			meshdns.SyncHostsFile(apiURL, token, *domainFlag, *serverURL)
-			time.Sleep(10 * time.Second)
-		}
-	}()
+
 
 	for {
 		c := ConnectWithRetry(*u, token)
@@ -135,6 +121,12 @@ func main() {
 
 			envelopeType, _ := envelope["type"].(string)
 			switch protocol.EnvelopeType(envelopeType) {
+			case protocol.TypeNodeSync:
+				var syncMsg protocol.NodeSync
+				json.Unmarshal(message, &syncMsg)
+				
+				// Update /etc/hosts
+				meshdns.UpdateHostsBlock(syncMsg.Nodes, *domainFlag, *serverURL)
 			case protocol.TypeDNSResponse:
 				var resp protocol.DNSResponse
 				json.Unmarshal(message, &resp)

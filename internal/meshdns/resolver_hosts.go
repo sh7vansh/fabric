@@ -10,6 +10,36 @@ import (
 
 var HostsFilePath = "/etc/hosts"
 
+func readAndStripHostsBlock() ([]string, error) {
+	content, err := ioutil.ReadFile(HostsFilePath)
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(string(content), "\n")
+	var newLines []string
+	inBlock := false
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "# BEGIN FABRIC MESH" {
+			inBlock = true
+			continue
+		}
+		if strings.TrimSpace(line) == "# END FABRIC MESH" {
+			inBlock = false
+			continue
+		}
+		if !inBlock {
+			newLines = append(newLines, line)
+		}
+	}
+
+	for len(newLines) > 0 && strings.TrimSpace(newLines[len(newLines)-1]) == "" {
+		newLines = newLines[:len(newLines)-1]
+	}
+	return newLines, nil
+}
+
 func UpdateHostsBlock(nodes []protocol.NodeMetadata, domain, socketURL string) {
 	u, err := url.Parse(socketURL)
 	if err != nil {
@@ -22,37 +52,13 @@ func UpdateHostsBlock(nodes []protocol.NodeMetadata, domain, socketURL string) {
 	}
 	socketIP := ips[0].String()
 
-	content, err := ioutil.ReadFile(HostsFilePath)
+	newLines, err := readAndStripHostsBlock()
 	if err != nil {
 		return
 	}
 
-	lines := strings.Split(string(content), "\n")
-	var newLines []string
-	inBlock := false
-
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "# BEGIN FABRIC MESH" {
-			inBlock = true
-			continue
-		}
-		if strings.TrimSpace(line) == "# END FABRIC MESH" {
-			inBlock = false
-			continue
-		}
-		if !inBlock {
-			newLines = append(newLines, line)
-		}
-	}
-
-	// Remove trailing empty lines before appending
-	for len(newLines) > 0 && strings.TrimSpace(newLines[len(newLines)-1]) == "" {
-		newLines = newLines[:len(newLines)-1]
-	}
-
 	newLines = append(newLines, "", "# BEGIN FABRIC MESH")
 	for _, n := range nodes {
-		// e.g. 192.168.1.100 node-1.fabric.mesh
 		newLines = append(newLines, socketIP+" "+n.Hostname+"."+domain)
 	}
 	newLines = append(newLines, "# END FABRIC MESH")
@@ -61,36 +67,11 @@ func UpdateHostsBlock(nodes []protocol.NodeMetadata, domain, socketURL string) {
 }
 
 func CleanHostsBlock() {
-	content, err := ioutil.ReadFile(HostsFilePath)
+	newLines, err := readAndStripHostsBlock()
 	if err != nil {
 		return
 	}
 
-	lines := strings.Split(string(content), "\n")
-	var newLines []string
-	inBlock := false
-	changed := false
-
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "# BEGIN FABRIC MESH" {
-			inBlock = true
-			changed = true
-			continue
-		}
-		if strings.TrimSpace(line) == "# END FABRIC MESH" {
-			inBlock = false
-			continue
-		}
-		if !inBlock {
-			newLines = append(newLines, line)
-		}
-	}
-
-	if changed {
-		for len(newLines) > 0 && strings.TrimSpace(newLines[len(newLines)-1]) == "" {
-			newLines = newLines[:len(newLines)-1]
-		}
-		newLines = append(newLines, "")
-		ioutil.WriteFile(HostsFilePath, []byte(strings.Join(newLines, "\n")), 0644)
-	}
+	newLines = append(newLines, "")
+	ioutil.WriteFile(HostsFilePath, []byte(strings.Join(newLines, "\n")), 0644)
 }

@@ -80,6 +80,11 @@ func InstallService(role string) error {
 		userEnvPath = fmt.Sprintf("EnvironmentFile=-%s\n", filepath.Join(home, ".fabric", role+".env"))
 	}
 
+	execStopPost := ""
+	if role == "node" {
+		execStopPost = "ExecStopPost=/usr/bin/resolvectl revert lo\n"
+	}
+
 	unitContent := fmt.Sprintf(`[Unit]
 Description=Fabric Mesh Network %s
 After=network.target network-online.target
@@ -89,13 +94,13 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=-/etc/fabric/%s.env
 %sExecStart=%s
-Restart=always
+%sRestart=always
 RestartSec=3s
 LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
-`, roleDisplay, role, userEnvPath, binPath)
+`, roleDisplay, role, userEnvPath, binPath, execStopPost)
 
 	unitPath := filepath.Join("/etc/systemd/system", serviceName+".service")
 

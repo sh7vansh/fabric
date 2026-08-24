@@ -64,7 +64,13 @@ const (
 	TypeCopyStream  EnvelopeType = "copy_stream"
 	TypeDNSQuery    EnvelopeType = "dns_query"
 	TypeDNSResponse EnvelopeType = "dns_response"
+	TypeNodeSync    EnvelopeType = "node_sync"
 )
+
+type NodeSync struct {
+	Type  EnvelopeType   `json:"type"` // "node_sync"
+	Nodes []NodeMetadata `json:"nodes"`
+}
 
 type DNSQuery struct {
 	Type      EnvelopeType `json:"type"` // "dns_query"

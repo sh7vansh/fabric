@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -39,13 +40,7 @@ func main() {
 	}
 
 	domainFlag := flag.String("domain", defaultDomain, "Domain for the DNS server")
-	proxyIPFlag := flag.String("proxy-ip", os.Getenv("FABRIC_PROXY_IP"), "Public IP of the socket for DNS resolution")
 	flag.Parse()
-
-	proxyIP := *proxyIPFlag
-	if proxyIP == "" {
-		proxyIP = "127.0.0.1"
-	}
 
 	token := os.Getenv("FABRIC_TOKEN")
 	if token == "" {
@@ -107,11 +102,20 @@ func main() {
 				},
 			}
 			nodesLock.Unlock()
+			go broadcastNodeSync()
+
+			proxyIP := ""
+			if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
+				proxyIP = tcpAddr.IP.String()
+			} else {
+				proxyIP = "127.0.0.1" // Fallback
+			}
 
 			defer func() {
 				nodesLock.Lock()
 				delete(nodes, hs.Hostname)
 				nodesLock.Unlock()
+				go broadcastNodeSync()
 				conn.Close()
 			}()
 
@@ -343,5 +347,24 @@ func handleCLIMessages(cliConn *websocket.Conn, nodeConn *websocket.Conn) {
 		if protocol.EnvelopeType(envelopeType) == protocol.TypeExecStream || protocol.EnvelopeType(envelopeType) == protocol.TypeCopyStream {
 			nodeConn.WriteMessage(websocket.TextMessage, message)
 		}
+	}
+}
+
+func broadcastNodeSync() {
+	nodesLock.RLock()
+	defer nodesLock.RUnlock()
+
+	var list []protocol.NodeMetadata
+	for _, state := range nodes {
+		list = append(list, state.Metadata)
+	}
+
+	syncMsg := protocol.NodeSync{
+		Type:  protocol.TypeNodeSync,
+		Nodes: list,
+	}
+
+	for _, state := range nodes {
+		state.Conn.WriteJSON(syncMsg)
 	}
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"net"
 	"strings"
 
 	"fabric/internal/protocol"
@@ -55,14 +56,21 @@ func ProcessDNSQuery(req protocol.DNSQuery, domain string, proxyIP string) proto
 		_, isOnline := nodes[nodeID]
 		nodesLock.RUnlock()
 
-		if isOnline && (q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY) {
-			rr, err := dns.NewRR(q.Name + " 10 IN A " + proxyIP)
-			if err == nil {
-				reply.Answer = append(reply.Answer, rr)
+		if isOnline {
+			ip := net.ParseIP(proxyIP)
+			isIPv4 := ip != nil && ip.To4() != nil
+
+			if (q.Qtype == dns.TypeA || q.Qtype == dns.TypeANY) && isIPv4 {
+				rr, err := dns.NewRR(q.Name + " 10 IN A " + proxyIP)
+				if err == nil {
+					reply.Answer = append(reply.Answer, rr)
+				}
+			} else if (q.Qtype == dns.TypeAAAA || q.Qtype == dns.TypeANY) && !isIPv4 && ip != nil {
+				rr, err := dns.NewRR(q.Name + " 10 IN AAAA " + proxyIP)
+				if err == nil {
+					reply.Answer = append(reply.Answer, rr)
+				}
 			}
-		} else if isOnline {
-			// Online, but not an A record request
-			// We only synthesize A records for now.
 		} else {
 			reply.Rcode = dns.RcodeNameError
 		}
