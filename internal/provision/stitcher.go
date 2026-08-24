@@ -10,8 +10,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
+	"io"
+	"net/http"
 
 	"fabric/internal/protocol"
 )
@@ -27,6 +30,7 @@ type StitchHostOptions struct {
 	Tags         []string
 	BinaryPath   string
 	BinaryData   []byte
+	CliBinaryData []byte
 	NoWait       bool
 	SilentOutput bool
 }
@@ -34,6 +38,7 @@ type StitchHostOptions struct {
 // RemoteExecutor defines an interface for executing a bootstrap script on a remote host.
 type RemoteExecutor interface {
 	Run(script string) error
+	QueryArch() (string, string, error)
 }
 
 // SSHExecutor implements RemoteExecutor using the local OpenSSH client.
@@ -42,6 +47,27 @@ type SSHExecutor struct {
 	Port        string
 	IdentityKey string
 	Silent      bool
+}
+
+func (e *SSHExecutor) QueryArch() (string, string, error) {
+	var sshArgs []string
+	if e.Port != "" && e.Port != "22" {
+		sshArgs = append(sshArgs, "-p", e.Port)
+	}
+	if e.IdentityKey != "" {
+		sshArgs = append(sshArgs, "-i", e.IdentityKey)
+	}
+	sshArgs = append(sshArgs, "-o", "StrictHostKeyChecking=accept-new", e.Target, "uname -s && uname -m")
+
+	out, err := exec.Command("ssh", sshArgs...).Output()
+	if err != nil {
+		return "", "", err
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) >= 2 {
+		return strings.ToLower(strings.TrimSpace(lines[0])), strings.ToLower(strings.TrimSpace(lines[1])), nil
+	}
+	return "", "", fmt.Errorf("unexpected output from uname")
 }
 
 func (e *SSHExecutor) Run(script string) error {
@@ -133,6 +159,82 @@ func FindLocalCliBinary() (string, error) {
 	return "", fmt.Errorf("fabric cli binary not found locally")
 }
 
+// FetchReleaseBinary downloads a specific release binary from GitHub.
+func FetchReleaseBinary(role, osName, arch string) ([]byte, error) {
+	if osName != "linux" {
+		return nil, fmt.Errorf("only linux is supported by pre-compiled binaries")
+	}
+	fabricArch := "amd64"
+	switch arch {
+	case "x86_64", "amd64":
+		fabricArch = "amd64"
+	case "aarch64", "arm64":
+		fabricArch = "arm64"
+	case "armv7l", "armhf", "arm":
+		fabricArch = "arm"
+	default:
+		return nil, fmt.Errorf("unsupported arch: %s", arch)
+	}
+
+	binName := "fabric-linux-" + fabricArch
+	if role == "node" {
+		binName = "fabric-node-linux-" + fabricArch
+	} else if role == "socket" {
+		binName = "fabric-socket-linux-" + fabricArch
+	}
+
+	url := "https://github.com/sh7vansh/fabric/releases/latest/download/" + binName
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("failed to download %s: HTTP %d", url, resp.StatusCode)
+	}
+
+	return io.ReadAll(resp.Body)
+}
+
+// ResolveCrossPlatformBinaries returns node and cli binaries matching the requested remote architecture.
+func ResolveCrossPlatformBinaries(remoteOS, remoteArch string) (nodeBytes []byte, cliBytes []byte, err error) {
+	// Normalize local arch mapping for comparison
+	localArch := runtime.GOARCH
+	remoteMappedArch := "amd64"
+	switch remoteArch {
+	case "aarch64", "arm64":
+		remoteMappedArch = "arm64"
+	case "armv7l", "armhf", "arm":
+		remoteMappedArch = "arm"
+	}
+
+	// 1. If remote architecture matches local, use local binaries!
+	if runtime.GOOS == remoteOS && localArch == remoteMappedArch {
+		if p, err := FindLocalBinary(""); err == nil {
+			nodeBytes, _ = os.ReadFile(p)
+		}
+		if p, err := FindLocalCliBinary(); err == nil {
+			cliBytes, _ = os.ReadFile(p)
+		}
+		if len(nodeBytes) > 0 {
+			return nodeBytes, cliBytes, nil
+		}
+	}
+
+	// 2. Otherwise, fetch them directly from GitHub releases!
+	fmt.Printf("[+] Remote architecture (%s/%s) differs from local. Downloading correct binaries from GitHub...\n", remoteOS, remoteMappedArch)
+	
+	nodeBytes, err = FetchReleaseBinary("node", remoteOS, remoteArch)
+	if err != nil {
+		return nil, nil, fmt.Errorf("cross-platform fetch failed for node: %w", err)
+	}
+	
+	cliBytes, _ = FetchReleaseBinary("cli", remoteOS, remoteArch)
+	
+	return nodeBytes, cliBytes, nil
+}
+
 // PackageBinaryPayload compresses and base64-encodes binary data into an embedded payload string.
 func PackageBinaryPayload(data []byte) (string, error) {
 	if len(data) == 0 {
@@ -168,11 +270,17 @@ func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
 	}
 
 	cliPayload := ""
-	cliPath, err := FindLocalCliBinary()
-	if err == nil {
-		if data, readErr := os.ReadFile(cliPath); readErr == nil {
-			if p, pkgErr := PackageBinaryPayload(data); pkgErr == nil {
-				cliPayload = p
+	if len(opts.CliBinaryData) > 0 {
+		if p, err := PackageBinaryPayload(opts.CliBinaryData); err == nil {
+			cliPayload = p
+		}
+	} else {
+		cliPath, err := FindLocalCliBinary()
+		if err == nil {
+			if data, readErr := os.ReadFile(cliPath); readErr == nil {
+				if p, pkgErr := PackageBinaryPayload(data); pkgErr == nil {
+					cliPayload = p
+				}
 			}
 		}
 	}
@@ -393,8 +501,6 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 		fmt.Printf("[+] Target Socket URL: %s\n", socketURL)
 	}
 
-	bootstrapScript := GenerateStitchScript(opts, socketURL)
-
 	if exec == nil {
 		exec = &SSHExecutor{
 			Target:      opts.Target,
@@ -403,6 +509,29 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 			Silent:      opts.SilentOutput,
 		}
 	}
+
+	if len(opts.BinaryData) == 0 {
+		osName, arch, err := exec.QueryArch()
+		if err == nil {
+			nodeBytes, cliBytes, resolveErr := ResolveCrossPlatformBinaries(osName, arch)
+			if resolveErr == nil && len(nodeBytes) > 0 {
+				opts.BinaryData = nodeBytes
+				if len(cliBytes) > 0 {
+					opts.CliBinaryData = cliBytes
+				}
+			} else {
+				if !opts.SilentOutput {
+					fmt.Printf("[!] Warning: Could not resolve cross-platform binaries (%v). Falling back to local binaries...\n", resolveErr)
+				}
+			}
+		} else {
+			if !opts.SilentOutput {
+				fmt.Printf("[!] Warning: Could not query remote architecture (%v). Falling back to local binaries...\n", err)
+			}
+		}
+	}
+
+	bootstrapScript := GenerateStitchScript(opts, socketURL)
 
 	if err := exec.Run(bootstrapScript); err != nil {
 		return nil, fmt.Errorf("remote SSH bootstrap failed: %w", err)
