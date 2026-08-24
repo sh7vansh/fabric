@@ -6,23 +6,23 @@
 [![Release](https://img.shields.io/github/v/release/sh7vansh/fabric?style=flat&color=38bdf8)](https://github.com/sh7vansh/fabric/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Fabric connects distributed servers, edge devices, and local VMs behind firewalls and NATs into a unified, secure mesh without requiring open inbound ports or complex VPN infrastructure.
+Fabric connects distributed servers, edge devices, and local virtual machines behind firewalls and NATs into a unified, secure mesh without requiring open inbound ports or complex VPN infrastructure.
 
 ---
 
-## Key Features
+## Core Capabilities
 
-* 🔒 **Zero Inbound Firewall Holes**: Nodes maintain persistent outbound WebSocket tunnels to the central Socket.
-* 💻 **Interactive PTY & Fleet Execution**: Run non-interactive commands, attach full pseudo-terminals (`-i -t`), or execute across entire node fleets (`--all`, `--tag`) in parallel.
-* 🌐 **Built-in Mesh DNS (`.mesh`)**: Automatic RFC 1035 DNS name resolution between nodes with `systemd-resolved` split-DNS and `/etc/hosts` fallback.
-* 📦 **Safe Streaming File Transfers (`cp`)**: Stream directory trees and files over Tar-chunked pipes with built-in traversal and symlink guards.
-* 🔌 **TCP Port Forwarding (`port`)**: Securely bridge local ports directly to remote services across the mesh (`127.0.0.1:8080 -> worker.mesh:80`).
-* 🧵 **One-Shot SSH Stitching & Discovery**: Discover SSH hosts on your subnet (`stitch discover`) and bootstrap them air-gapped into the mesh with a single command.
-* 🔄 **Inverted & Dual-Mode mTLS**: Optional direct peer-to-peer mTLS listener mode for edge-to-CLI operations without relaying through a central socket.
+* **Zero Inbound Firewall Holes**: Nodes maintain persistent outbound WebSocket tunnels to the central Socket.
+* **Interactive PTY and Fleet Execution**: Run non-interactive commands, attach full pseudo-terminals (`-i -t`), or execute across entire node fleets (`--all`, `--tag`) in parallel.
+* **Embedded Mesh DNS (`.mesh`)**: Automatic RFC 1035 DNS name resolution between nodes with `systemd-resolved` split-DNS and `/etc/hosts` fallback.
+* **Safe Streaming File Transfers (`cp`)**: Stream directory trees and files over Tar-chunked pipes with built-in path traversal and symlink guards.
+* **TCP Port Forwarding (`port`)**: Securely bridge local ports directly to remote services across the mesh (`127.0.0.1:8080 -> worker.mesh:80`).
+* **One-Shot SSH Stitching and Discovery**: Discover SSH hosts on your subnet (`stitch discover`) and bootstrap them air-gapped into the mesh with a single command.
+* **Inverted and Dual-Mode mTLS**: Optional direct peer-to-peer mTLS listener mode for edge-to-CLI operations without relaying through a central socket.
 
 ---
 
-## ⚡ Quick Start
+## Quick Start
 
 ### 1. Installation
 
@@ -65,7 +65,7 @@ fabric stitch discover 192.168.1.0/24
 
 ---
 
-## 🛠️ CLI Cheat Sheet
+## Command Reference
 
 ### Node Management
 ```bash
@@ -99,7 +99,7 @@ fabric cp ./app.tar.gz worker-1:/opt/app/
 fabric cp worker-1:/var/log/ ./logs/
 ```
 
-### Port Forwarding & Networking
+### Port Forwarding and Networking
 ```bash
 # Forward local port 8080 to remote node's internal port 80
 fabric port worker-1 8080:80
@@ -117,7 +117,7 @@ fabric service uninstall node       # Cleanly remove systemd/supervisor service
 
 ---
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
 ```text
 [ fabric CLI ] ────── WebSocket / Yamux ─────► [ fabric-socket ] ◄───── Persistent Outbound WS ───── [ fabric-node Agent ]
@@ -130,11 +130,11 @@ fabric service uninstall node       # Cleanly remove systemd/supervisor service
 
 ---
 
-## 🔒 Security Invariants
+## Security Invariants
 
 * **mTLS Direct Mode**: Inverted node listeners enforce Mutual TLS client certificate authentication minted by the mesh Root CA.
 * **Safe Extraction**: Tar extraction enforces decompressed byte limits (5 GB max) and strict symlink escape checks to prevent zip-slip attacks.
-* **Egress Filtering**: TCP proxy tunnels reject loopback/cloud-metadata IPs (e.g. AWS/GCP `169.254.169.254` and `metadata.google.internal`).
+* **Egress Filtering**: TCP proxy tunnels reject loopback and cloud-metadata IPs (e.g., AWS/GCP `169.254.169.254` and `metadata.google.internal`).
 * **Constant-Time Verification**: All cluster auth tokens use cryptographic constant-time comparison.
 
 ---
