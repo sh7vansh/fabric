@@ -11,8 +11,23 @@ import (
 )
 
 var serviceCmd = &cobra.Command{
-	Use:   "service",
-	Short: "Manage systemd service units for Fabric Socket and Node",
+	Use:     "service",
+	Short:   "Manage systemd service units for Fabric Socket and Node",
+	GroupID: "system",
+	Long: `Manage the lifecycle of background systemd service units for fabric-socket and fabric-node.
+
+Supports installing unit definitions, checking status, and starting/stopping/restarting daemons.`,
+	Example: `  # Install and start fabric-node as a background systemd service
+  fabric service install node
+
+  # Check the status of the local socket service
+  fabric service status socket
+
+  # Restart the agent daemon
+  fabric service restart node
+
+  # Uninstall and remove systemd service
+  fabric service uninstall node`,
 }
 
 var serviceInstallCmd = &cobra.Command{

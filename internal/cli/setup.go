@@ -25,8 +25,20 @@ var (
 )
 
 var setupCmd = &cobra.Command{
-	Use:   "setup",
-	Short: "Interactive setup wizard to configure this machine as a Socket or Node",
+	Use:     "setup [flags]",
+	Short:   "Interactive setup wizard to configure this machine as a Socket or Node",
+	GroupID: "cluster",
+	Long: `Interactive onboarding wizard to configure the local machine as either a central
+Fabric Socket (control plane) or a Fabric Node (agent daemon). Supports interactive prompts
+or non-interactive automation flags.`,
+	Example: `  # Launch interactive setup wizard
+  fabric setup
+
+  # Set up as a socket control plane non-interactively
+  fabric setup --role=socket --domain=fabric.mesh --auto-token -y
+
+  # Set up as a node connecting to an existing socket
+  fabric setup --role=node --host=ws://192.168.1.50:8080/ws --token=secret-token -y`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		reader := bufio.NewReader(os.Stdin)
 

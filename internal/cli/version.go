@@ -8,8 +8,11 @@ import (
 )
 
 var versionCmd = &cobra.Command{
-	Use:   "version",
-	Short: "Show Fabric version information",
+	Use:     "version",
+	Short:   "Show Fabric version information for client and socket",
+	GroupID: "system",
+	Example: `  # Display client version and query socket version
+  fabric version`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		clientVersion := "1.0.0"
 		fmt.Printf("Client Version: %s\n", clientVersion)

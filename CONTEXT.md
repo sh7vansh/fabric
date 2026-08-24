@@ -32,3 +32,49 @@ Fabric is a lightweight remote execution, service discovery, and networking mesh
 1. **Outbound Only**: Nodes must never require inbound firewall holes; all communication originates outbound from nodes to the Socket.
 2. **Deterministic Teardown**: DNS hooks (`/etc/hosts` modifications) and PTY processes must be cleanly cleaned up on node shutdown or disconnect.
 3. **Streaming Transfers**: File copies (`cp`) and execution streams must operate incrementally over chunked tar/stream envelopes without holding unbounded memory buffers.
+
+---
+
+## CLI Commands & Subcommands
+
+```
+fabric
+├── exec              # Execute a command or interactive shell on a remote node
+├── ps                # List active nodes (convenience shorthand for node ls)
+├── cp                # Copy files/directories to/from a remote node
+├── port              # Forward/proxy TCP ports across the mesh
+├── setup             # Interactive CLI and configuration onboarding wizard
+├── version           # Print version, build commit, and date
+├── node              # Manage fabric nodes
+│   ├── ls            # List all connected online nodes
+│   └── inspect       # Show detailed metadata and telemetry for a specific node
+├── stitch            # Bootstrap & provision a remote host over SSH into the mesh
+│   └── discover      # Scan local or specified CIDR subnet for SSH hosts to stitch
+├── service           # Manage background systemd service lifecycle
+│   ├── install       # Install fabric as a systemd service
+│   ├── start         # Start the fabric service
+│   ├── stop          # Stop the fabric service
+│   ├── restart       # Restart the fabric service
+│   ├── status        # Inspect fabric service status
+│   └── uninstall     # Remove the systemd service
+└── help [topic]      # Help topics & guides (architecture, networking, security, workflows)
+```
+
+### Command Reference
+
+| Command | Description |
+|---|---|
+| `fabric exec <node> [cmd]` | Run commands or attach an interactive PTY session |
+| `fabric ps` | Quick node listing |
+| `fabric cp <src> <dst>` | Stream Tar-chunked files/directories |
+| `fabric port <local:remote>` | TCP port forwarding across the mesh |
+| `fabric node ls` | List connected nodes with uptime and OS |
+| `fabric node inspect <node>` | Detailed node inspect output (JSON/table) |
+| `fabric stitch <host>` | SSH provision and join a remote node |
+| `fabric stitch discover [CIDR]` | Subnet scan and batch SSH provisioning |
+| `fabric setup` | Interactive setup helper for config/keys |
+| `fabric service <action>` | Manage background `systemd` service unit |
+| `fabric version` | Display version info |
+| `fabric help <topic>` | In-depth topic guides (`architecture`, `networking`, `security`, `workflows`) |
+
+

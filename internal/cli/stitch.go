@@ -41,15 +41,38 @@ var (
 )
 
 var stitchCmd = &cobra.Command{
-	Use:   "stitch [flags] [user@]hostname[:port]",
-	Short: "Bootstrap and stitch a remote host into the Fabric mesh over SSH",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runStitch,
+	Use:     "stitch [flags] [user@]hostname[:port]",
+	Short:   "Bootstrap and stitch a remote host into the Fabric mesh over SSH",
+	GroupID: "network",
+	Long: `Automate provisioning of remote machines into the Fabric mesh over SSH.
+
+The command connects via SSH, installs the fabric-node binary, creates systemd units,
+configures environment variables with cluster tokens, and verifies active mesh connection.`,
+	Example: `  # Stitch a remote machine with default SSH credentials
+  fabric stitch root@192.168.1.50
+
+  # Stitch using a specific SSH key and port
+  fabric stitch -i ~/.ssh/id_ed25519 -p 2222 ubuntu@10.0.0.12
+
+  # Scan network and batch stitch discovered machines
+  fabric stitch discover 192.168.1.0/24`,
+	Args:    cobra.ExactArgs(1),
+	RunE:    runStitch,
 }
 
 var stitchDiscoverCmd = &cobra.Command{
 	Use:   "discover [flags] [CIDR]",
 	Short: "Scan local or specified network for SSH endpoints and batch stitch into the mesh",
+	Long: `Scan a CIDR block for open SSH ports, prompt for host selection, and automatically
+stitch the selected machines into the Fabric mesh.`,
+	Example: `  # Scan default local interface subnet
+  fabric stitch discover
+
+  # Scan specific CIDR block
+  fabric stitch discover 192.168.1.0/24
+
+  # Scan with custom SSH port and default user
+  fabric stitch discover -p 22,2222 -u ubuntu 10.0.0.0/24`,
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runStitchDiscover,
 }
