@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -172,6 +173,32 @@ func promptTopology(isBatch bool) string {
 	return "normal"
 }
 
+func registerInvertedIfApplicable(target, listenPort string, node *protocol.NodeMetadata) {
+	if node == nil {
+		return
+	}
+	isInverted := strings.Contains(node.Status, "inverted")
+	for _, t := range node.Tags {
+		if t == "inverted" {
+			isInverted = true
+			break
+		}
+	}
+	if isInverted {
+		targetHostOnly := target
+		if atIdx := strings.LastIndex(target, "@"); atIdx != -1 {
+			targetHostOnly = target[atIdx+1:]
+		}
+		directAddr := net.JoinHostPort(targetHostOnly, listenPort)
+		if node.Hostname != "" {
+			_ = RegisterDirectNode(node.Hostname, directAddr, node.Tags)
+		}
+		if targetHostOnly != "" && targetHostOnly != node.Hostname {
+			_ = RegisterDirectNode(targetHostOnly, directAddr, node.Tags)
+		}
+	}
+}
+
 func interactiveKeyPrompt(target string, keys []string) (string, error) {
 	fmt.Println("\n[!] SSH Authentication Failed (Permission denied).")
 	fmt.Println("\nAvailable SSH keys found in ~/.ssh:")
@@ -211,6 +238,9 @@ func runStitch(cmd *cobra.Command, args []string) error {
 	mode := stitchModeFlag
 	if stitchInvertedFlag {
 		mode = "inverted"
+	}
+	if mode != "" && mode != "normal" && mode != "inverted" {
+		return fmt.Errorf("invalid mode %q: must be 'normal' or 'inverted'", mode)
 	}
 	if mode == "" {
 		if isTerminalInput() {
@@ -255,26 +285,7 @@ func runStitch(cmd *cobra.Command, args []string) error {
 	}
 
 	if node != nil {
-		targetHostOnly := target
-		if atIdx := strings.LastIndex(target, "@"); atIdx != -1 {
-			targetHostOnly = target[atIdx+1:]
-		}
-
-		isInverted := false
-		if mode == "inverted" || strings.Contains(node.Status, "inverted") {
-			isInverted = true
-		}
-		for _, t := range node.Tags {
-			if t == "inverted" {
-				isInverted = true
-				break
-			}
-		}
-
-		if isInverted {
-			directAddr := targetHostOnly + ":" + listenPort
-			_ = RegisterDirectNode(node.Hostname, directAddr, node.Tags)
-		}
+		registerInvertedIfApplicable(target, listenPort, node)
 
 		fmt.Println("\n==================================================")
 		fmt.Println("         Node Stitched Successfully!              ")
@@ -387,6 +398,9 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 	if discoverInvertedFlag {
 		mode = "inverted"
 	}
+	if mode != "" && mode != "normal" && mode != "inverted" {
+		return fmt.Errorf("invalid mode %q: must be 'normal' or 'inverted'", mode)
+	}
 	if mode == "" {
 		if isTerminalInput() && !discoverAutoStitchFlag {
 			mode = promptTopology(true)
@@ -450,24 +464,7 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 		if r.Success {
 			successCount++
 			if r.Node != nil {
-				isInverted := false
-				if mode == "inverted" || strings.Contains(r.Node.Status, "inverted") {
-					isInverted = true
-				}
-				for _, t := range r.Node.Tags {
-					if t == "inverted" {
-						isInverted = true
-						break
-					}
-				}
-				if isInverted {
-					th := r.Target
-					if atIdx := strings.LastIndex(th, "@"); atIdx != -1 {
-						th = th[atIdx+1:]
-					}
-					directAddr := th + ":" + listenPort
-					_ = RegisterDirectNode(r.Hostname, directAddr, r.Node.Tags)
-				}
+				registerInvertedIfApplicable(r.Target, listenPort, r.Node)
 			}
 			fmt.Printf(" [✓] %-25s -> %s (Online)\n", r.Target, r.Hostname)
 		} else {

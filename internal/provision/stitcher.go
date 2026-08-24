@@ -646,32 +646,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 		if !opts.SilentOutput {
 			fmt.Printf("[+] Verifying inverted node listener via direct mTLS probe (%s)...", targetProbeAddr)
 		}
-		if err := proberFn(targetProbeAddr, caCertPath, 5*time.Second); err != nil {
-			if !opts.SilentOutput {
-				fmt.Println(" (failed)")
-				fmt.Printf("\n[!] Direct mTLS probe failed to connect to %s: %v\n", targetProbeAddr, err)
-				fmt.Println("\nTroubleshooting Suggestions:")
-				fmt.Printf("  1. Verify incoming TCP port %s is open: ssh %s 'sudo ufw allow %s/tcp'\n", listenPort, opts.Target, listenPort)
-				fmt.Printf("  2. Check node service logs: ssh %s journalctl -u fabric-node -n 30 --no-pager\n", opts.Target)
-				fmt.Printf("  3. Verify port is listening: ssh %s 'ss -tulpn | grep %s'\n\n", opts.Target, listenPort)
-			}
-			return nil, fmt.Errorf("inverted node direct mTLS probe failed: %w", err)
-		}
-
-		if !opts.SilentOutput {
-			fmt.Println(" Connected!")
-			fmt.Printf("[+] Direct mTLS connection to :%s verified successfully.\n", listenPort)
-		}
-
-		return &protocol.NodeMetadata{
-			ID:          "direct-" + targetHostOnly,
-			Hostname:    targetHostOnly,
-			RemoteIP:    targetProbeAddr,
-			Status:      "online [MODE: inverted]",
-			Tags:        append(opts.Tags, "inverted"),
-			Domain:      opts.Domain,
-			ConnectedAt: time.Now().UTC().Format(time.RFC3339),
-		}, nil
+		return verifyDirectInvertedProbe(proberFn, targetProbeAddr, caCertPath, targetHostOnly, listenPort, opts, false)
 	}
 
 	// 2. Normal Mode Verification with Automatic Fallback State Machine
@@ -724,32 +699,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 				fmt.Printf("[+] Probing inverted node via direct mTLS (%s)...", targetProbeAddr)
 			}
 
-			if err := proberFn(targetProbeAddr, caCertPath, 5*time.Second); err != nil {
-				if !opts.SilentOutput {
-					fmt.Println(" (failed)")
-					fmt.Printf("\n[!] Fallback direct mTLS probe failed to connect to %s: %v\n", targetProbeAddr, err)
-					fmt.Println("\nTroubleshooting Suggestions:")
-					fmt.Printf("  1. Verify incoming TCP port %s is open: ssh %s 'sudo ufw allow %s/tcp'\n", listenPort, opts.Target, listenPort)
-					fmt.Printf("  2. Check node service logs: ssh %s journalctl -u fabric-node -n 30 --no-pager\n", opts.Target)
-					fmt.Printf("  3. Verify port is listening: ssh %s 'ss -tulpn | grep %s'\n\n", opts.Target, listenPort)
-				}
-				return nil, fmt.Errorf("fallback inverted direct mTLS probe failed: %w", err)
-			}
-
-			if !opts.SilentOutput {
-				fmt.Println(" Connected!")
-				fmt.Printf("[+] Remote node switched to Inverted Mode successfully (listening on :%s)!\n", listenPort)
-			}
-
-			return &protocol.NodeMetadata{
-				ID:          "direct-" + targetHostOnly,
-				Hostname:    targetHostOnly,
-				RemoteIP:    targetProbeAddr,
-				Status:      "online [MODE: inverted]",
-				Tags:        append(opts.Tags, "inverted"),
-				Domain:      opts.Domain,
-				ConnectedAt: time.Now().UTC().Format(time.RFC3339),
-			}, nil
+			return verifyDirectInvertedProbe(proberFn, targetProbeAddr, caCertPath, targetHostOnly, listenPort, opts, true)
 
 		case <-ticker.C:
 			if !opts.SilentOutput {
@@ -774,6 +724,43 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 			}
 		}
 	}
+}
+
+func verifyDirectInvertedProbe(proberFn DirectProberFunc, targetProbeAddr, caCertPath, targetHostOnly, listenPort string, opts StitchHostOptions, isFallback bool) (*protocol.NodeMetadata, error) {
+	prefix := "Direct"
+	if isFallback {
+		prefix = "Fallback direct"
+	}
+	if err := proberFn(targetProbeAddr, caCertPath, 5*time.Second); err != nil {
+		if !opts.SilentOutput {
+			fmt.Println(" (failed)")
+			fmt.Printf("\n[!] %s mTLS probe failed to connect to %s: %v\n", prefix, targetProbeAddr, err)
+			fmt.Println("\nTroubleshooting Suggestions:")
+			fmt.Printf("  1. Verify incoming TCP port %s is open: ssh %s 'sudo ufw allow %s/tcp'\n", listenPort, opts.Target, listenPort)
+			fmt.Printf("  2. Check node service logs: ssh %s journalctl -u fabric-node -n 30 --no-pager\n", opts.Target)
+			fmt.Printf("  3. Verify port is listening: ssh %s 'ss -tulpn | grep %s'\n\n", opts.Target, listenPort)
+		}
+		return nil, fmt.Errorf("%s inverted direct mTLS probe failed: %w", strings.ToLower(prefix), err)
+	}
+
+	if !opts.SilentOutput {
+		fmt.Println(" Connected!")
+		if isFallback {
+			fmt.Printf("[+] Remote node switched to Inverted Mode successfully (listening on :%s)!\n", listenPort)
+		} else {
+			fmt.Printf("[+] Direct mTLS connection to :%s verified successfully.\n", listenPort)
+		}
+	}
+
+	return &protocol.NodeMetadata{
+		ID:          "direct-" + targetHostOnly,
+		Hostname:    targetHostOnly,
+		RemoteIP:    targetProbeAddr,
+		Status:      "online [MODE: inverted]",
+		Tags:        append(opts.Tags, "inverted"),
+		Domain:      opts.Domain,
+		ConnectedAt: time.Now().UTC().Format(time.RFC3339),
+	}, nil
 }
 
 // GetOutboundIP determines preferred local outbound IPv4 address.

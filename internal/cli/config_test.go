@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"fabric/internal/protocol"
 )
 
 func TestLoadConfig(t *testing.T) {
@@ -108,4 +110,36 @@ func TestDirectNodeRegistry(t *testing.T) {
 		t.Errorf("expected 192.168.1.99:8443 in loaded config, got %s", cfg.DirectNodes["edge-1"].Address)
 	}
 }
+
+func TestRegisterInvertedIfApplicable(t *testing.T) {
+	tempHome := t.TempDir()
+	os.Setenv("HOME", tempHome)
+	defer os.Unsetenv("HOME")
+
+	// 1. Inverted node by status
+	node := &protocol.NodeMetadata{
+		Hostname: "my-edge-server",
+		Status:   "online [MODE: inverted]",
+		Tags:     []string{"edge"},
+	}
+
+	registerInvertedIfApplicable("root@10.0.0.50", "8443", node)
+
+	entryHost, okHost := LookupDirectNode("my-edge-server")
+	if !okHost {
+		t.Fatalf("expected hostname 'my-edge-server' to be registered")
+	}
+	if entryHost.Address != "10.0.0.50:8443" {
+		t.Errorf("expected address 10.0.0.50:8443, got: %s", entryHost.Address)
+	}
+
+	entryIP, okIP := LookupDirectNode("10.0.0.50")
+	if !okIP {
+		t.Fatalf("expected target host '10.0.0.50' to also be registered")
+	}
+	if entryIP.Address != "10.0.0.50:8443" {
+		t.Errorf("expected address 10.0.0.50:8443, got: %s", entryIP.Address)
+	}
+}
+
 
