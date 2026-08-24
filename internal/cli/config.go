@@ -64,3 +64,37 @@ func LoadConfig(hostFlag, tokenFlag string) *Config {
 
 	return cfg
 }
+
+func SaveConfig(cfg *Config) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	fabricDir := filepath.Join(home, ".fabric")
+	if err := os.MkdirAll(fabricDir, 0755); err != nil {
+		return err
+	}
+
+	configPath := filepath.Join(fabricDir, "config.json")
+	fileCfg := FileConfig{
+		CurrentContext: "default",
+		Contexts: map[string]struct {
+			Host  string `json:"host"`
+			Token string `json:"token"`
+		}{
+			"default": {
+				Host:  cfg.Host,
+				Token: cfg.Token,
+			},
+		},
+	}
+
+	b, err := json.MarshalIndent(fileCfg, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(configPath, b, 0600)
+}
+

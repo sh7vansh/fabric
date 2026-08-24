@@ -31,6 +31,7 @@ func init() {
 	rootCmd.AddCommand(cpCmd)
 	rootCmd.AddCommand(portCmd)
 	rootCmd.AddCommand(nodeCmd)
+	rootCmd.AddCommand(setupCmd)
 
 	nodeCmd.AddCommand(nodeLsCmd)
 	nodeCmd.AddCommand(nodeInspectCmd)

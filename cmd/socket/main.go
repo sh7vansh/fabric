@@ -33,13 +33,19 @@ var (
 )
 
 func main() {
-	domainFlag := flag.String("domain", "fabric.mesh", "Domain for the DNS server")
+	defaultDomain := os.Getenv("FABRIC_DOMAIN")
+	if defaultDomain == "" {
+		defaultDomain = "fabric.mesh"
+	}
+
+	domainFlag := flag.String("domain", defaultDomain, "Domain for the DNS server")
 	flag.Parse()
 
 	token := os.Getenv("FABRIC_TOKEN")
 	if token == "" {
 		token = "default-secret"
 	}
+
 
 	go StartDNSServer("127.0.0.1", *domainFlag)
 	go StartTCPProxy()

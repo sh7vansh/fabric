@@ -1,14 +1,19 @@
 ## Destination
 
-Full Docker CLI parity for Fabric: A modern Cobra-powered CLI supporting Docker-style top-level commands (`fabric exec`, `fabric ps`, `fabric cp`, `fabric port`), management subcommands (`fabric node ls/inspect`), standard flags (`-i`, `-t`, `-d`, `-e`, `-w`), socket endpoint discovery via `FABRIC_HOST` / `-H` / `~/.fabric/config.json`, and the underlying multi-session & file transfer protocols.
+Zero-touch Linux deployment and automated remote onboarding: A one-liner install script (`install.sh`), an interactive `fabric setup` command that detects/configures Socket or Node roles with native `systemd` service lifecycle management, and a `fabric stitch <ssh-target>` command that remotely bootstraps and connects remote nodes to the active socket over SSH.
 
 ## Notes
 
-- **Domain:** Distributed systems, overlay networking, Go concurrency, CLI UX (Cobra/pflag), Docker command parity.
-- **Preferences:** Pre-shared tokens for auth, aggressive in-memory node reconnection, both TCP proxying and exec routing over the same WebSocket, SSH-like streaming output, Docker-identical flag conventions.
+- **Domain:** Linux systems administration, systemd service management, SSH automation (`crypto/ssh`), shell script bootstrapping, CLI UX (prompts/surveys).
+- **Preferences:** Linux-first (systemd), pre-shared token propagation, zero-config automatic defaults, secure background daemonization, SSH remote push provisioning.
 - **Tracker:** Local Markdown
 
 ## Decisions so far
+
+- [013-fabric-stitch-ssh-bootstrapping.md](tickets/013-fabric-stitch-ssh-bootstrapping.md) — Built `fabric stitch [user@]host` to remotely bootstrap node daemon configs and verify live WebSocket connection.
+- [012-systemd-service-lifecycle-management.md](tickets/012-systemd-service-lifecycle-management.md) — Built `fabric service` CLI and daemon environment integration for systemd service generation, installation, and lifecycle.
+- [011-interactive-fabric-setup-wizard.md](tickets/011-interactive-fabric-setup-wizard.md) — Implemented `fabric setup` wizard with role selection (Socket/Node), secure token generation, config persistence, and join output.
+- [010-one-liner-installer-script.md](tickets/010-one-liner-installer-script.md) — Built `install.sh` for Linux (`amd64`/`arm64`) with `/usr/local/bin` installation, sudo fallback, and interactive handover to `fabric setup`.
 - [009-fabric-port-and-forwarding.md](tickets/009-fabric-port-and-forwarding.md) — Designed dual-mode `fabric port` for mesh port inspection and interactive local-to-remote TCP port forwarding tunnels via `ProxyStream` (`TargetPort`).
 - [008-fabric-cp-file-transfer.md](tickets/008-fabric-cp-file-transfer.md) — Implemented bidirectional `archive/tar` chunk streaming over WebSockets for `fabric cp` (matching Docker's file/folder copy mechanics).
 - [007-fabric-exec-docker-parity.md](tickets/007-fabric-exec-docker-parity.md) — Implemented Docker `-it`, `-d`, `-e`, `-w` flags, per-session ID multiplexing across Socket/Node, and local terminal raw mode via `golang.org/x/term`.
@@ -20,11 +25,13 @@ Full Docker CLI parity for Fabric: A modern Cobra-powered CLI supporting Docker-
 - [001-websocket-handshake.md](tickets/001-websocket-handshake.md) — Go modules initialized; WebSocket handshake with pre-shared token auth is working.
 
 ## Not yet specified
-- Terminal window resize event (`SIGWINCH`) propagation across the WebSocket stream.
-- Shell autocompletion generators (`fabric completion bash/zsh/fish`).
+
+- Sudo/root privilege escalation handling during remote `fabric stitch` over SSH when authenticated as a non-root user.
+- Idempotency and auto-update / re-stitch behavior for nodes that already have a previous version installed.
+- Real-time post-stitch connectivity verification loop and timeout rollback.
 
 ## Out of scope
-- Socket load-balancing / scaling (The architecture explicitly assumes a singleton Socket for v1 due to in-memory routing).
-- Container runtime management (Fabric manages bare-metal host nodes, not OCI containers/images).
-- "Stitcher" automated subnet scanning and SSH payload injection (removed from design).
-- Mutual TLS (mTLS) and role-based execution policies (deferred to future phases).
+
+- Non-Linux OS service management (macOS launchd, Windows services) for initial setup/systemd flows.
+- Multi-cloud infrastructure provisioning APIs (AWS/GCP/Terraform integrations) — Fabric stitches via direct SSH.
+- Mutual TLS (mTLS) certificate authority generation (deferred to future security phase).

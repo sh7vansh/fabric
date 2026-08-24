@@ -25,8 +25,21 @@ var (
 )
 
 func main() {
-	serverURL := flag.String("url", "ws://localhost:8080/ws", "Socket URL (ws:// or wss://)")
-	domainFlag := flag.String("domain", "fabric.mesh", "Domain to register with the mesh")
+	defaultURL := os.Getenv("FABRIC_SOCKET_URL")
+	if defaultURL == "" {
+		defaultURL = os.Getenv("FABRIC_HOST")
+	}
+	if defaultURL == "" {
+		defaultURL = "ws://localhost:8080/ws"
+	}
+
+	defaultDomain := os.Getenv("FABRIC_DOMAIN")
+	if defaultDomain == "" {
+		defaultDomain = "fabric.mesh"
+	}
+
+	serverURL := flag.String("url", defaultURL, "Socket URL (ws:// or wss://)")
+	domainFlag := flag.String("domain", defaultDomain, "Domain to register with the mesh")
 	flag.Parse()
 
 	token := os.Getenv("FABRIC_TOKEN")
@@ -38,6 +51,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+
 
 	for {
 		c := ConnectWithRetry(*u, token)
