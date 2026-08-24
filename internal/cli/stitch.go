@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -26,7 +25,7 @@ var (
 )
 
 var stitchCmd = &cobra.Command{
-	Use:   "stitch [flags] [user@]hostname",
+	Use:   "stitch [flags] [user@]hostname[:port]",
 	Short: "Bootstrap and stitch a remote host into the Fabric mesh over SSH",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runStitch,
@@ -43,8 +42,20 @@ func init() {
 }
 
 func runStitch(cmd *cobra.Command, args []string) error {
-	target := args[0]
+	rawTarget := args[0]
 	cfg := GetConfig()
+
+	// Parse optional :port suffix from target (e.g. user@host:2222)
+	sshPort := stitchPortFlag
+	target := rawTarget
+	if colonIdx := strings.LastIndex(rawTarget, ":"); colonIdx != -1 {
+		// Ensure it's not an IPv6 address without user
+		portCandidate := rawTarget[colonIdx+1:]
+		if !strings.Contains(portCandidate, "]") {
+			target = rawTarget[:colonIdx]
+			sshPort = portCandidate
+		}
+	}
 
 	socketURL := stitchSocketURL
 	if socketURL == "" {
@@ -68,7 +79,7 @@ func runStitch(cmd *cobra.Command, args []string) error {
 		token = cfg.Token
 	}
 
-	fmt.Printf("[+] Stitching target '%s' into Fabric mesh...\n", target)
+	fmt.Printf("[+] Stitching target '%s' (port %s) into Fabric mesh...\n", target, sshPort)
 	fmt.Printf("[+] Target Socket URL: %s\n", socketURL)
 
 	// Build remote bootstrap script
@@ -119,8 +130,8 @@ fi
 
 	// Build ssh command
 	var sshArgs []string
-	if stitchPortFlag != "" && stitchPortFlag != "22" {
-		sshArgs = append(sshArgs, "-p", stitchPortFlag)
+	if sshPort != "" && sshPort != "22" {
+		sshArgs = append(sshArgs, "-p", sshPort)
 	}
 	if stitchIdentityFlag != "" {
 		sshArgs = append(sshArgs, "-i", stitchIdentityFlag)
@@ -154,9 +165,6 @@ fi
 	targetHostOnly := target
 	if atIdx := strings.LastIndex(target, "@"); atIdx != -1 {
 		targetHostOnly = target[atIdx+1:]
-	}
-	if colonIdx := strings.Index(targetHostOnly, ":"); colonIdx != -1 {
-		targetHostOnly = targetHostOnly[:colonIdx]
 	}
 
 	for {
@@ -198,6 +206,3 @@ fi
 		}
 	}
 }
-
-// Silence unused package warning
-var _ = bytes.Buffer{}

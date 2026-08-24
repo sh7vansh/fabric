@@ -25,42 +25,6 @@ var serviceInstallCmd = &cobra.Command{
 	},
 }
 
-var serviceStartCmd = &cobra.Command{
-	Use:   "start [socket|node]",
-	Short: "Start the fabric systemd service",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSystemctl("start", "fabric-"+strings.ToLower(args[0]))
-	},
-}
-
-var serviceStopCmd = &cobra.Command{
-	Use:   "stop [socket|node]",
-	Short: "Stop the fabric systemd service",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSystemctl("stop", "fabric-"+strings.ToLower(args[0]))
-	},
-}
-
-var serviceRestartCmd = &cobra.Command{
-	Use:   "restart [socket|node]",
-	Short: "Restart the fabric systemd service",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSystemctl("restart", "fabric-"+strings.ToLower(args[0]))
-	},
-}
-
-var serviceStatusCmd = &cobra.Command{
-	Use:   "status [socket|node]",
-	Short: "Check the status of the fabric systemd service",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSystemctl("status", "fabric-"+strings.ToLower(args[0]))
-	},
-}
-
 var serviceUninstallCmd = &cobra.Command{
 	Use:   "uninstall [socket|node]",
 	Short: "Stop, disable, and remove the systemd service",
@@ -71,13 +35,24 @@ var serviceUninstallCmd = &cobra.Command{
 	},
 }
 
+func newServiceActionCmd(action, desc string) *cobra.Command {
+	return &cobra.Command{
+		Use:   action + " [socket|node]",
+		Short: desc,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSystemctl(action, "fabric-"+strings.ToLower(args[0]))
+		},
+	}
+}
+
 func init() {
 	rootCmd.AddCommand(serviceCmd)
 	serviceCmd.AddCommand(serviceInstallCmd)
-	serviceCmd.AddCommand(serviceStartCmd)
-	serviceCmd.AddCommand(serviceStopCmd)
-	serviceCmd.AddCommand(serviceRestartCmd)
-	serviceCmd.AddCommand(serviceStatusCmd)
+	serviceCmd.AddCommand(newServiceActionCmd("start", "Start the fabric systemd service"))
+	serviceCmd.AddCommand(newServiceActionCmd("stop", "Stop the fabric systemd service"))
+	serviceCmd.AddCommand(newServiceActionCmd("restart", "Restart the fabric systemd service"))
+	serviceCmd.AddCommand(newServiceActionCmd("status", "Check the status of the fabric systemd service"))
 	serviceCmd.AddCommand(serviceUninstallCmd)
 }
 
@@ -94,11 +69,15 @@ func InstallService(role string) error {
 		binPath = "/usr/local/bin/" + binaryName
 	}
 
-	var envFile string
-	if role == "socket" {
-		envFile = "/etc/fabric/socket.env"
-	} else {
-		envFile = "/etc/fabric/node.env"
+	roleDisplay := "Socket"
+	if role == "node" {
+		roleDisplay = "Node"
+	}
+
+	home, _ := os.UserHomeDir()
+	userEnvPath := ""
+	if home != "" {
+		userEnvPath = fmt.Sprintf("EnvironmentFile=-%s\n", filepath.Join(home, ".fabric", role+".env"))
 	}
 
 	unitContent := fmt.Sprintf(`[Unit]
@@ -108,19 +87,17 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=-%s
-EnvironmentFile=-%%h/.fabric/%s.env
-ExecStart=%s
+EnvironmentFile=-/etc/fabric/%s.env
+%sExecStart=%s
 Restart=always
 RestartSec=3s
 LimitNOFILE=65536
 
 [Install]
 WantedBy=multi-user.target
-`, strings.Title(role), envFile, role, binPath)
+`, roleDisplay, role, userEnvPath, binPath)
 
 	unitPath := filepath.Join("/etc/systemd/system", serviceName+".service")
-	sudo := getSudoPrefix()
 
 	tmpFile, err := os.CreateTemp("", serviceName+"-*.service")
 	if err != nil {
@@ -133,19 +110,21 @@ WantedBy=multi-user.target
 	}
 	tmpFile.Close()
 
-	// Copy into /etc/systemd/system
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("%s cp %s %s && %s chmod 644 %s", sudo, tmpFile.Name(), unitPath, sudo, unitPath))
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("installing unit file to %s: %w", unitPath, err)
+	// Copy into /etc/systemd/system and set permissions
+	if err := runPrivilegedCommand("cp", tmpFile.Name(), unitPath); err != nil {
+		return fmt.Errorf("copying unit file to %s: %w", unitPath, err)
+	}
+	if err := runPrivilegedCommand("chmod", "644", unitPath); err != nil {
+		return fmt.Errorf("setting permissions on %s: %w", unitPath, err)
 	}
 
 	fmt.Printf("[+] Installed %s\n", unitPath)
 
 	// Daemon reload & enable
-	_ = exec.Command("sh", "-c", fmt.Sprintf("%s systemctl daemon-reload", sudo)).Run()
-	if err := exec.Command("sh", "-c", fmt.Sprintf("%s systemctl enable --now %s", sudo, serviceName)).Run(); err != nil {
+	if err := runPrivilegedCommand("systemctl", "daemon-reload"); err != nil {
+		fmt.Printf("[!] Warning: systemctl daemon-reload failed: %v\n", err)
+	}
+	if err := runPrivilegedCommand("systemctl", "enable", "--now", serviceName); err != nil {
 		fmt.Printf("[!] Warning: Could not enable service automatically: %v\n", err)
 	} else {
 		fmt.Printf("[+] Service %s enabled and started!\n", serviceName)
@@ -157,31 +136,33 @@ WantedBy=multi-user.target
 func UninstallService(role string) error {
 	serviceName := "fabric-" + role
 	unitPath := filepath.Join("/etc/systemd/system", serviceName+".service")
-	sudo := getSudoPrefix()
 
-	_ = exec.Command("sh", "-c", fmt.Sprintf("%s systemctl stop %s", sudo, serviceName)).Run()
-	_ = exec.Command("sh", "-c", fmt.Sprintf("%s systemctl disable %s", sudo, serviceName)).Run()
-	_ = exec.Command("sh", "-c", fmt.Sprintf("%s rm -f %s", sudo, unitPath)).Run()
-	_ = exec.Command("sh", "-c", fmt.Sprintf("%s systemctl daemon-reload", sudo)).Run()
+	_ = runPrivilegedCommand("systemctl", "stop", serviceName)
+	_ = runPrivilegedCommand("systemctl", "disable", serviceName)
+	_ = runPrivilegedCommand("rm", "-f", unitPath)
+	_ = runPrivilegedCommand("systemctl", "daemon-reload")
 
 	fmt.Printf("[+] Uninstalled service %s\n", serviceName)
 	return nil
 }
 
 func runSystemctl(action, service string) error {
-	sudo := getSudoPrefix()
-	cmd := exec.Command("sh", "-c", fmt.Sprintf("%s systemctl %s %s", sudo, action, service))
+	return runPrivilegedCommand("systemctl", action, service)
+}
+
+func runPrivilegedCommand(name string, args ...string) error {
+	var cmd *exec.Cmd
+	if os.Geteuid() != 0 {
+		if _, err := exec.LookPath("sudo"); err == nil {
+			cmd = exec.Command("sudo", append([]string{name}, args...)...)
+		} else {
+			cmd = exec.Command(name, args...)
+		}
+	} else {
+		cmd = exec.Command(name, args...)
+	}
+
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
-}
-
-func getSudoPrefix() string {
-	if os.Geteuid() == 0 {
-		return ""
-	}
-	if _, err := exec.LookPath("sudo"); err == nil {
-		return "sudo"
-	}
-	return ""
 }

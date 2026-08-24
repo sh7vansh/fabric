@@ -10,17 +10,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	setupRoleFlag     string
-	setupHostFlag     string
-	setupTokenFlag    string
-	setupDomainFlag   string
-	setupAutoToken    bool
-	setupNonInteract  bool
+	setupRoleFlag    string
+	setupHostFlag    string
+	setupTokenFlag   string
+	setupDomainFlag  string
+	setupAutoToken   bool
+	setupNonInteract bool
 )
 
 var setupCmd = &cobra.Command{
@@ -104,39 +105,9 @@ func runSocketSetup(reader *bufio.Reader) error {
 		fmt.Println("[+] CLI configuration saved to ~/.fabric/config.json")
 	}
 
-	// 2. Save Socket environment file
-	socketEnvDir := "/etc/fabric"
-	if err := os.MkdirAll(socketEnvDir, 0755); err != nil {
-		home, _ := os.UserHomeDir()
-		socketEnvDir = filepath.Join(home, ".fabric")
-		os.MkdirAll(socketEnvDir, 0755)
-	}
-
+	// 2. Save environment file and optionally install service
 	envContent := fmt.Sprintf("FABRIC_TOKEN=%s\nFABRIC_DOMAIN=%s\n", token, domain)
-	envPath := filepath.Join(socketEnvDir, "socket.env")
-	if err := os.WriteFile(envPath, []byte(envContent), 0600); err != nil {
-		fmt.Printf("[!] Warning: Could not write %s: %v\n", envPath, err)
-	} else {
-		fmt.Printf("[+] Socket environment written to %s\n", envPath)
-	}
-
-	// 3. Systemd service installation
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		installSvc := false
-		if setupNonInteract {
-			installSvc = true
-		} else {
-			resp := prompt(reader, "Install and start fabric-socket as a systemd service? (Y/n)", "Y")
-			if strings.ToLower(resp) == "y" || strings.ToLower(resp) == "yes" {
-				installSvc = true
-			}
-		}
-		if installSvc {
-			if err := InstallService("socket"); err != nil {
-				fmt.Printf("[!] Note: Could not auto-install systemd service: %v\n", err)
-			}
-		}
-	}
+	saveDaemonConfigAndService(reader, "socket", envContent)
 
 	fmt.Println("\n==================================================")
 	fmt.Println("         Socket Setup Complete!                   ")
@@ -190,39 +161,9 @@ func runNodeSetup(reader *bufio.Reader) error {
 		fmt.Println("[+] CLI configuration saved to ~/.fabric/config.json")
 	}
 
-	// 2. Save Node environment file
-	nodeEnvDir := "/etc/fabric"
-	if err := os.MkdirAll(nodeEnvDir, 0755); err != nil {
-		home, _ := os.UserHomeDir()
-		nodeEnvDir = filepath.Join(home, ".fabric")
-		os.MkdirAll(nodeEnvDir, 0755)
-	}
-
+	// 2. Save environment file and optionally install service
 	envContent := fmt.Sprintf("FABRIC_SOCKET_URL=%s\nFABRIC_TOKEN=%s\nFABRIC_DOMAIN=%s\n", host, token, domain)
-	envPath := filepath.Join(nodeEnvDir, "node.env")
-	if err := os.WriteFile(envPath, []byte(envContent), 0600); err != nil {
-		fmt.Printf("[!] Warning: Could not write %s: %v\n", envPath, err)
-	} else {
-		fmt.Printf("[+] Node environment written to %s\n", envPath)
-	}
-
-	// 3. Systemd service installation
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		installSvc := false
-		if setupNonInteract {
-			installSvc = true
-		} else {
-			resp := prompt(reader, "Install and start fabric-node as a systemd service? (Y/n)", "Y")
-			if strings.ToLower(resp) == "y" || strings.ToLower(resp) == "yes" {
-				installSvc = true
-			}
-		}
-		if installSvc {
-			if err := InstallService("node"); err != nil {
-				fmt.Printf("[!] Note: Could not auto-install systemd service: %v\n", err)
-			}
-		}
-	}
+	saveDaemonConfigAndService(reader, "node", envContent)
 
 	fmt.Println("\n==================================================")
 	fmt.Println("          Node Setup Complete!                    ")
@@ -235,6 +176,47 @@ func runNodeSetup(reader *bufio.Reader) error {
 	fmt.Println("==================================================")
 
 	return nil
+}
+
+func saveDaemonConfigAndService(reader *bufio.Reader, role, envContent string) {
+	envDir := "/etc/fabric"
+	if err := runPrivilegedCommand("mkdir", "-p", envDir); err != nil {
+		home, _ := os.UserHomeDir()
+		envDir = filepath.Join(home, ".fabric")
+		_ = os.MkdirAll(envDir, 0755)
+	}
+
+	envPath := filepath.Join(envDir, role+".env")
+	if os.Geteuid() == 0 || !strings.HasPrefix(envDir, "/etc") {
+		_ = os.WriteFile(envPath, []byte(envContent), 0600)
+	} else {
+		tmpFile, err := os.CreateTemp("", role+"-env-*")
+		if err == nil {
+			_, _ = tmpFile.WriteString(envContent)
+			tmpFile.Close()
+			_ = runPrivilegedCommand("cp", tmpFile.Name(), envPath)
+			_ = runPrivilegedCommand("chmod", "600", envPath)
+			_ = os.Remove(tmpFile.Name())
+		}
+	}
+	fmt.Printf("[+] %s environment written to %s\n", strings.Title(role), envPath)
+
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		installSvc := false
+		if setupNonInteract {
+			installSvc = true
+		} else {
+			resp := prompt(reader, fmt.Sprintf("Install and start fabric-%s as a systemd service? (Y/n)", role), "Y")
+			if strings.ToLower(resp) == "y" || strings.ToLower(resp) == "yes" {
+				installSvc = true
+			}
+		}
+		if installSvc {
+			if err := InstallService(role); err != nil {
+				fmt.Printf("[!] Note: Could not auto-install systemd service: %v\n", err)
+			}
+		}
+	}
 }
 
 func prompt(reader *bufio.Reader, message, defaultValue string) string {
@@ -259,7 +241,7 @@ func generateSecureToken() string {
 	b := make([]byte, 16)
 	_, err := rand.Read(b)
 	if err != nil {
-		return "secret-" + fmt.Sprintf("%d", rand.Reader)
+		return fmt.Sprintf("secret-%x", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
 }

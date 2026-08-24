@@ -85,10 +85,23 @@ if [ -n "$REPO_DIR" ] && [ -f "$REPO_DIR/go.mod" ] && command -v go >/dev/null 2
     (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric-socket" ./cmd/socket)
     (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric-node" ./cmd/node)
 else
-    # Fallback to Go build if Go is available on the machine
-    if command -v go >/dev/null 2>&1; then
-        echo "[+] Building Fabric binaries using Go..."
-        GOBIN="$TMP_DIR" go install fabric/cmd/cli@latest || true
+    # Check if download URL or release is configured
+    RELEASE_TAG="${FABRIC_VERSION:-latest}"
+    DOWNLOAD_BASE="${FABRIC_DOWNLOAD_URL:-https://github.com/shivansh/fabric/releases/download}"
+    
+    echo "[+] Attempting to download Fabric ($RELEASE_TAG) for linux/$FABRIC_ARCH..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$DOWNLOAD_BASE/$RELEASE_TAG/fabric-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric" 2>/dev/null || true
+        curl -fsSL "$DOWNLOAD_BASE/$RELEASE_TAG/fabric-socket-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-socket" 2>/dev/null || true
+        curl -fsSL "$DOWNLOAD_BASE/$RELEASE_TAG/fabric-node-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-node" 2>/dev/null || true
+    fi
+
+    # Fallback to Go build if binaries were not downloaded and Go is available
+    if [ ! -f "$TMP_DIR/fabric" ] && command -v go >/dev/null 2>&1; then
+        echo "[+] Building Fabric binaries using Go toolchain..."
+        GOBIN="$TMP_DIR" go install fabric/cmd/cli@latest 2>/dev/null || true
+        GOBIN="$TMP_DIR" go install fabric/cmd/socket@latest 2>/dev/null || true
+        GOBIN="$TMP_DIR" go install fabric/cmd/node@latest 2>/dev/null || true
     fi
 fi
 
