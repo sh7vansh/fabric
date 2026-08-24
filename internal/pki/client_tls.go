@@ -142,3 +142,35 @@ func FormatTLSError(err error) error {
 
 	return err
 }
+
+// ProbeDirectMTLS performs a direct mTLS WebSocket probe to verify an inverted node listener.
+func ProbeDirectMTLS(targetAddr, customCAPath string, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	target := targetAddr
+	if !strings.Contains(target, "://") {
+		target = "wss://" + target
+	}
+
+	u, err := NormalizeURL(target)
+	if err != nil {
+		return fmt.Errorf("invalid probe url: %w", err)
+	}
+
+	dialer, err := NewWSSDialer(customCAPath)
+	if err != nil {
+		return fmt.Errorf("failed to build mTLS dialer: %w", err)
+	}
+	dialer.HandshakeTimeout = timeout
+
+	conn, _, err := dialer.Dial(u.String(), nil)
+	if err != nil {
+		return FormatTLSError(fmt.Errorf("direct mTLS probe (%s) failed: %w", u.String(), err))
+	}
+	defer conn.Close()
+
+	return nil
+}
+

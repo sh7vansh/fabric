@@ -4,28 +4,42 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"time"
 )
+
+// DirectNodeEntry stores registration metadata for an inverted mode node.
+type DirectNodeEntry struct {
+	Address      string    `json:"address"`
+	Tags         []string  `json:"tags,omitempty"`
+	RegisteredAt time.Time `json:"registered_at"`
+}
+
+type ContextConfig struct {
+	Host        string                     `json:"host"`
+	Token       string                     `json:"token"`
+	CACert      string                     `json:"ca_cert,omitempty"`
+	DirectNodes map[string]DirectNodeEntry `json:"direct_nodes,omitempty"`
+}
 
 type Config struct {
 	Host          string
 	Token         string
 	CACert        string
 	DirectAddress string
+	DirectNodes   map[string]DirectNodeEntry
 }
 
 type FileConfig struct {
-	CurrentContext string `json:"current_context"`
-	Contexts       map[string]struct {
-		Host   string `json:"host"`
-		Token  string `json:"token"`
-		CACert string `json:"ca_cert,omitempty"`
-	} `json:"contexts"`
+	CurrentContext string                     `json:"current_context"`
+	Contexts       map[string]ContextConfig   `json:"contexts"`
+	DirectNodes    map[string]DirectNodeEntry `json:"direct_nodes,omitempty"`
 }
 
 func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *Config {
 	cfg := &Config{
-		Host:  "ws://localhost:8080/ws",
-		Token: "default-secret",
+		Host:        "ws://localhost:8080/ws",
+		Token:       "default-secret",
+		DirectNodes: make(map[string]DirectNodeEntry),
 	}
 
 	home, err := os.UserHomeDir()
@@ -48,6 +62,18 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 					}
 					if ctx.CACert != "" {
 						cfg.CACert = ctx.CACert
+					}
+					if ctx.DirectNodes != nil {
+						for k, v := range ctx.DirectNodes {
+							cfg.DirectNodes[k] = v
+						}
+					}
+				}
+				if fileCfg.DirectNodes != nil {
+					for k, v := range fileCfg.DirectNodes {
+						if _, exists := cfg.DirectNodes[k]; !exists {
+							cfg.DirectNodes[k] = v
+						}
 					}
 				}
 			}
@@ -92,20 +118,28 @@ func SaveConfig(cfg *Config) error {
 	}
 
 	configPath := filepath.Join(fabricDir, "config.json")
-	fileCfg := FileConfig{
-		CurrentContext: "default",
-		Contexts: map[string]struct {
-			Host   string `json:"host"`
-			Token  string `json:"token"`
-			CACert string `json:"ca_cert,omitempty"`
-		}{
-			"default": {
-				Host:   cfg.Host,
-				Token:  cfg.Token,
-				CACert: cfg.CACert,
-			},
-		},
+	var fileCfg FileConfig
+	if b, err := os.ReadFile(configPath); err == nil {
+		_ = json.Unmarshal(b, &fileCfg)
 	}
+
+	if fileCfg.Contexts == nil {
+		fileCfg.Contexts = make(map[string]ContextConfig)
+	}
+
+	ctxName := fileCfg.CurrentContext
+	if ctxName == "" {
+		ctxName = "default"
+		fileCfg.CurrentContext = ctxName
+	}
+
+	ctx := fileCfg.Contexts[ctxName]
+	ctx.Host = cfg.Host
+	ctx.Token = cfg.Token
+	ctx.CACert = cfg.CACert
+	ctx.DirectNodes = cfg.DirectNodes
+	fileCfg.Contexts[ctxName] = ctx
+	fileCfg.DirectNodes = cfg.DirectNodes
 
 	b, err := json.MarshalIndent(fileCfg, "", "  ")
 	if err != nil {
@@ -114,4 +148,40 @@ func SaveConfig(cfg *Config) error {
 
 	return os.WriteFile(configPath, b, 0600)
 }
+
+// RegisterDirectNode records an inverted mode node into local direct registry config.
+func RegisterDirectNode(hostname, address string, tags []string) error {
+	cfg := GetConfig()
+	if cfg.DirectNodes == nil {
+		cfg.DirectNodes = make(map[string]DirectNodeEntry)
+	}
+	hasInvertedTag := false
+	for _, t := range tags {
+		if t == "inverted" {
+			hasInvertedTag = true
+			break
+		}
+	}
+	if !hasInvertedTag {
+		tags = append(tags, "inverted")
+	}
+
+	cfg.DirectNodes[hostname] = DirectNodeEntry{
+		Address:      address,
+		Tags:         tags,
+		RegisteredAt: time.Now().UTC(),
+	}
+	return SaveConfig(cfg)
+}
+
+// LookupDirectNode retrieves a registered direct node from configuration.
+func LookupDirectNode(hostname string) (DirectNodeEntry, bool) {
+	cfg := GetConfig()
+	if cfg == nil || cfg.DirectNodes == nil {
+		return DirectNodeEntry{}, false
+	}
+	entry, ok := cfg.DirectNodes[hostname]
+	return entry, ok
+}
+
 

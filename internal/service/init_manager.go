@@ -21,12 +21,16 @@ const (
 
 // BootstrapScriptOptions holds parameters needed to render the remote air-gapped bootstrap shell script.
 type BootstrapScriptOptions struct {
-	SocketURL      string
-	Token          string
-	Domain         string
-	Tags           []string
-	NodePayload    string
-	CliPayload     string
+	SocketURL   string
+	ListenAddr  string
+	Token       string
+	Domain      string
+	Tags        []string
+	NodePayload string
+	CliPayload  string
+	CAPayload   string
+	CertPayload string
+	KeyPayload  string
 }
 
 // InitManager is the deep module encapsulating multi-tier init rules,
@@ -500,8 +504,46 @@ if [ ! -s "$TARGET_BIN" ] || [ ! -x "$TARGET_BIN" ]; then
 fi
 echo "[+] Validated binary integrity: $TARGET_BIN"
 
-# 5. Write Environment Configuration
+# 5. Extract Injected mTLS PKI Payloads
+CA_PAYLOAD="%s"
+if [ -n "$CA_PAYLOAD" ]; then
+    echo "[+] Unpacking Root CA certificate to $CONFIG_DIR/ca.crt..."
+    if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
+        echo "$CA_PAYLOAD" | base64 -d | $SUDO tee "$CONFIG_DIR/ca.crt" > /dev/null
+        $SUDO chmod 644 "$CONFIG_DIR/ca.crt"
+    else
+        echo "$CA_PAYLOAD" | base64 -d > "$CONFIG_DIR/ca.crt"
+        chmod 644 "$CONFIG_DIR/ca.crt"
+    fi
+fi
+
+CERT_PAYLOAD="%s"
+if [ -n "$CERT_PAYLOAD" ]; then
+    echo "[+] Unpacking node leaf certificate to $CONFIG_DIR/client.crt..."
+    if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
+        echo "$CERT_PAYLOAD" | base64 -d | $SUDO tee "$CONFIG_DIR/client.crt" > /dev/null
+        $SUDO chmod 644 "$CONFIG_DIR/client.crt"
+    else
+        echo "$CERT_PAYLOAD" | base64 -d > "$CONFIG_DIR/client.crt"
+        chmod 644 "$CONFIG_DIR/client.crt"
+    fi
+fi
+
+KEY_PAYLOAD="%s"
+if [ -n "$KEY_PAYLOAD" ]; then
+    echo "[+] Unpacking node leaf private key to $CONFIG_DIR/client.key..."
+    if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
+        echo "$KEY_PAYLOAD" | base64 -d | $SUDO tee "$CONFIG_DIR/client.key" > /dev/null
+        $SUDO chmod 600 "$CONFIG_DIR/client.key"
+    else
+        echo "$KEY_PAYLOAD" | base64 -d > "$CONFIG_DIR/client.key"
+        chmod 600 "$CONFIG_DIR/client.key"
+    fi
+fi
+
+# 6. Write Environment Configuration
 ENV_CONTENT="FABRIC_SOCKET_URL=%s
+FABRIC_LISTEN=%s
 FABRIC_TOKEN=%s
 FABRIC_DOMAIN=%s
 FABRIC_TAGS=%s"
@@ -514,7 +556,7 @@ else
     chmod 600 "$ENV_FILE"
 fi
 
-# 6. Multi-Tier Init Selection & Service Activation
+# 7. Multi-Tier Init Selection & Service Activation
 if [ "$IS_ROOT" -eq 1 ] && [ "$HAS_SYSTEMD" -eq 1 ]; then
     # Tier 1: Root / Sudo with systemd (System service)
     echo "[+] Configuring systemd system service (/etc/systemd/system/fabric-node.service)..."
@@ -594,5 +636,66 @@ else
     echo $! > "$RUN_DIR/fabric-node-supervisor.pid"
     echo "[+] Supervised background daemon started (PID file: $PIDFILE)."
 fi
-`, opts.NodePayload, opts.CliPayload, opts.SocketURL, opts.Token, opts.Domain, tagsJoined)
+`, opts.NodePayload, opts.CliPayload, opts.CAPayload, opts.CertPayload, opts.KeyPayload, opts.SocketURL, opts.ListenAddr, opts.Token, opts.Domain, tagsJoined)
 }
+
+// RenderInvertedSwitchScript renders a lightweight SSH command to switch an existing node to Inverted Mode.
+func (m *InitManager) RenderInvertedSwitchScript(listenPort string) string {
+	if !strings.HasPrefix(listenPort, ":") {
+		listenPort = ":" + listenPort
+	}
+
+	return fmt.Sprintf(`#!/usr/bin/env bash
+set -e
+
+PORT="%s"
+
+# Locate environment file
+ENV_FILE="/etc/fabric/node.env"
+if [ ! -f "$ENV_FILE" ] && [ -f "$HOME/.config/fabric/node.env" ]; then
+    ENV_FILE="$HOME/.config/fabric/node.env"
+fi
+
+if [ -f "$ENV_FILE" ]; then
+    if grep -q "FABRIC_LISTEN=" "$ENV_FILE" 2>/dev/null; then
+        if [ "$EUID" -eq 0 ]; then
+            sed -i "s|^FABRIC_LISTEN=.*|FABRIC_LISTEN=$PORT|" "$ENV_FILE"
+        elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            sudo sed -i "s|^FABRIC_LISTEN=.*|FABRIC_LISTEN=$PORT|" "$ENV_FILE"
+        else
+            sed -i "s|^FABRIC_LISTEN=.*|FABRIC_LISTEN=$PORT|" "$ENV_FILE"
+        fi
+    else
+        if [ "$EUID" -eq 0 ]; then
+            echo "FABRIC_LISTEN=$PORT" >> "$ENV_FILE"
+        elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            echo "FABRIC_LISTEN=$PORT" | sudo tee -a "$ENV_FILE" > /dev/null
+        else
+            echo "FABRIC_LISTEN=$PORT" >> "$ENV_FILE"
+        fi
+    fi
+fi
+
+# Restart service across tiers
+if [ "$EUID" -eq 0 ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    systemctl restart fabric-node || true
+elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    sudo systemctl restart fabric-node || true
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user restart fabric-node 2>/dev/null || true
+fi
+
+# Standalone supervisor daemon check
+RUN_DIR="/var/run/fabric"
+[ -f "$HOME/.fabric/fabric-node.pid" ] && RUN_DIR="$HOME/.fabric"
+if [ -f "$RUN_DIR/fabric-node.pid" ]; then
+    PID=$(cat "$RUN_DIR/fabric-node.pid" 2>/dev/null || true)
+    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+        kill "$PID" 2>/dev/null || true
+    fi
+fi
+`, listenPort)
+}
+

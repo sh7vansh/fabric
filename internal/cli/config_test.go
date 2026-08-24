@@ -69,3 +69,43 @@ func TestLoadConfig(t *testing.T) {
 		t.Errorf("expected flag ca_cert, got %s", cfg.CACert)
 	}
 }
+
+func TestDirectNodeRegistry(t *testing.T) {
+	tempHome := t.TempDir()
+	os.Setenv("HOME", tempHome)
+	defer os.Unsetenv("HOME")
+
+	// Register a direct node
+	err := RegisterDirectNode("edge-1", "192.168.1.99:8443", []string{"gateway"})
+	if err != nil {
+		t.Fatalf("RegisterDirectNode failed: %v", err)
+	}
+
+	// Lookup direct node
+	entry, ok := LookupDirectNode("edge-1")
+	if !ok {
+		t.Fatalf("LookupDirectNode failed to find registered node 'edge-1'")
+	}
+	if entry.Address != "192.168.1.99:8443" {
+		t.Errorf("expected address 192.168.1.99:8443, got %s", entry.Address)
+	}
+	hasInverted := false
+	for _, tag := range entry.Tags {
+		if tag == "inverted" {
+			hasInverted = true
+		}
+	}
+	if !hasInverted {
+		t.Errorf("expected 'inverted' tag in entry: %v", entry.Tags)
+	}
+
+	// Reload config from disk
+	cfg := LoadConfig("", "", "")
+	if len(cfg.DirectNodes) != 1 {
+		t.Fatalf("expected 1 direct node in loaded config, got %d", len(cfg.DirectNodes))
+	}
+	if cfg.DirectNodes["edge-1"].Address != "192.168.1.99:8443" {
+		t.Errorf("expected 192.168.1.99:8443 in loaded config, got %s", cfg.DirectNodes["edge-1"].Address)
+	}
+}
+

@@ -17,24 +17,30 @@ import (
 	"io"
 	"net/http"
 
+	"fabric/internal/pki"
 	"fabric/internal/protocol"
 	"fabric/internal/service"
 )
 
 // StitchHostOptions defines parameters for provisioning a remote machine into the mesh.
 type StitchHostOptions struct {
-	Target       string
-	SSHPort      string
-	IdentityKey  string
-	SocketURL    string
-	Token        string
-	Domain       string
-	Tags         []string
-	BinaryPath   string
-	BinaryData   []byte
+	Target        string
+	SSHPort       string
+	IdentityKey   string
+	SocketURL     string
+	Token         string
+	Domain        string
+	Tags          []string
+	BinaryPath    string
+	BinaryData    []byte
 	CliBinaryData []byte
-	NoWait       bool
-	SilentOutput bool
+	NoWait        bool
+	SilentOutput  bool
+	Mode          string        // "normal" or "inverted"
+	ListenPort    string        // default "8443"
+	NoFallback    bool          // disable auto-fallback from normal to inverted
+	VerifyTimeout time.Duration // timeout for socket connection verification (default 15s)
+	CADir         string        // optional CA directory
 }
 
 // RemoteExecutor defines an interface for executing a bootstrap script on a remote host.
@@ -287,14 +293,87 @@ func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
 		}
 	}
 
+	domain := opts.Domain
+	if domain == "" {
+		domain = "fabric.mesh"
+	}
+
+	// Locate and load CA to mint leaf certificate
+	caDir := opts.CADir
+	if caDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			cand := filepath.Join(home, ".fabric", "ca")
+			if _, err := os.Stat(filepath.Join(cand, "ca.crt")); err == nil {
+				caDir = cand
+			} else if _, err := os.Stat(filepath.Join(home, ".fabric", "ca.crt")); err == nil {
+				caDir = filepath.Join(home, ".fabric")
+			}
+		}
+		if caDir == "" {
+			if _, err := os.Stat("/etc/fabric/ca.crt"); err == nil {
+				caDir = "/etc/fabric"
+			}
+		}
+		if caDir == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				caDir = filepath.Join(home, ".fabric", "ca")
+			} else {
+				caDir = "/etc/fabric"
+			}
+		}
+	}
+
+	targetHostOnly := opts.Target
+	if atIdx := strings.LastIndex(opts.Target, "@"); atIdx != -1 {
+		targetHostOnly = opts.Target[atIdx+1:]
+	}
+	if colonIdx := strings.LastIndex(targetHostOnly, ":"); colonIdx != -1 {
+		targetHostOnly = targetHostOnly[:colonIdx]
+	}
+
+	caPayload := ""
+	certPayload := ""
+	keyPayload := ""
+
+	if ca, err := pki.LoadOrInitCA(caDir, domain); err == nil && ca != nil {
+		hosts := []string{targetHostOnly}
+		if net.ParseIP(targetHostOnly) == nil && !strings.Contains(targetHostOnly, ".") && domain != "" {
+			hosts = append(hosts, targetHostOnly+"."+domain)
+		}
+		if domain != "" {
+			hosts = append(hosts, "*."+domain)
+		}
+		if certPEM, keyPEM, err := ca.MintCertificatePEM(hosts, 90*24*time.Hour); err == nil {
+			caPayload = base64.StdEncoding.EncodeToString(ca.CertPEM())
+			certPayload = base64.StdEncoding.EncodeToString(certPEM)
+			keyPayload = base64.StdEncoding.EncodeToString(keyPEM)
+		}
+	}
+
+	listenAddr := ""
+	if opts.Mode == "inverted" {
+		port := opts.ListenPort
+		if port == "" {
+			port = "8443"
+		}
+		if !strings.HasPrefix(port, ":") {
+			port = ":" + port
+		}
+		listenAddr = port
+	}
+
 	mgr := service.NewInitManager()
 	return mgr.RenderBootstrapScript(service.BootstrapScriptOptions{
 		SocketURL:   socketURL,
+		ListenAddr:  listenAddr,
 		Token:       opts.Token,
 		Domain:      opts.Domain,
 		Tags:        opts.Tags,
 		NodePayload: payload,
 		CliPayload:  cliPayload,
+		CAPayload:   caPayload,
+		CertPayload: certPayload,
+		KeyPayload:  keyPayload,
 	})
 }
 
@@ -303,6 +382,9 @@ type KeyPromptFunc func(target string, availableKeys []string) (string, error)
 
 // ProgressFunc reports status during batch or multi-stage operations.
 type ProgressFunc func(current, total int, target, msg string)
+
+// DirectProberFunc is a callback that verifies direct mTLS connectivity to an inverted node.
+type DirectProberFunc func(targetAddr, caPath string, timeout time.Duration) error
 
 // ProvisionResult stores the outcome of provisioning a target host into the mesh.
 type ProvisionResult struct {
@@ -317,6 +399,7 @@ type ProvisionResult struct {
 type Provisioner struct {
 	exec       RemoteExecutor
 	verifier   NodeVerifierFunc
+	prober     DirectProberFunc
 	keyPrompt  KeyPromptFunc
 	onProgress ProgressFunc
 }
@@ -327,6 +410,12 @@ func NewProvisioner(exec RemoteExecutor, verifier NodeVerifierFunc) *Provisioner
 		exec:     exec,
 		verifier: verifier,
 	}
+}
+
+// WithDirectProber sets a custom direct probe callback for inverted node verification.
+func (p *Provisioner) WithDirectProber(fn DirectProberFunc) *Provisioner {
+	p.prober = fn
+	return p
 }
 
 // WithKeyPrompt sets an interactive key prompt callback on SSH auth failure.
@@ -367,14 +456,14 @@ func DiscoverLocalSSHKeys() []string {
 
 // Provision stitches a single remote target host into the mesh with automatic key retry.
 func (p *Provisioner) Provision(opts StitchHostOptions) (*protocol.NodeMetadata, error) {
-	node, err := ExecuteStitchHost(opts, p.exec, p.verifier)
+	node, err := ExecuteStitchHost(opts, p.exec, p.verifier, p.prober)
 	if err != nil && strings.Contains(err.Error(), "exit status 255") && p.keyPrompt != nil {
 		keys := DiscoverLocalSSHKeys()
 		if len(keys) > 0 {
 			chosenKey, promptErr := p.keyPrompt(opts.Target, keys)
 			if promptErr == nil && chosenKey != "" {
 				opts.IdentityKey = chosenKey
-				return ExecuteStitchHost(opts, p.exec, p.verifier)
+				return ExecuteStitchHost(opts, p.exec, p.verifier, p.prober)
 			}
 		}
 	}
@@ -457,7 +546,7 @@ func (p *Provisioner) ProvisionBatch(targets []StitchHostOptions) ([]ProvisionRe
 type NodeVerifierFunc func(socketURL, token string) ([]protocol.NodeMetadata, error)
 
 // ExecuteStitchHost performs the full bootstrap and mesh join verification workflow.
-func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier NodeVerifierFunc) (*protocol.NodeMetadata, error) {
+func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier NodeVerifierFunc, prober ...DirectProberFunc) (*protocol.NodeMetadata, error) {
 	socketURL := opts.SocketURL
 	u, err := url.Parse(socketURL)
 	if err == nil {
@@ -472,9 +561,29 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 		}
 	}
 
+	listenPort := opts.ListenPort
+	if listenPort == "" {
+		listenPort = "8443"
+	}
+	opts.ListenPort = listenPort
+
+	targetHostOnly := opts.Target
+	if atIdx := strings.LastIndex(opts.Target, "@"); atIdx != -1 {
+		targetHostOnly = opts.Target[atIdx+1:]
+	}
+	if colonIdx := strings.LastIndex(targetHostOnly, ":"); colonIdx != -1 {
+		targetHostOnly = targetHostOnly[:colonIdx]
+	}
+
 	if !opts.SilentOutput {
-		fmt.Printf("[+] Stitching target '%s' (port %s) into Fabric mesh...\n", opts.Target, opts.SSHPort)
-		fmt.Printf("[+] Target Socket URL: %s\n", socketURL)
+		modeStr := "Normal"
+		if opts.Mode == "inverted" {
+			modeStr = fmt.Sprintf("Inverted (:%s)", listenPort)
+		}
+		fmt.Printf("[+] Stitching target '%s' (port %s, mode: %s) into Fabric mesh...\n", opts.Target, opts.SSHPort, modeStr)
+		if opts.Mode != "inverted" {
+			fmt.Printf("[+] Target Socket URL: %s\n", socketURL)
+		}
 	}
 
 	if exec == nil {
@@ -517,7 +626,56 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 		fmt.Println("[+] Remote bootstrap executed successfully.")
 	}
 
-	if opts.NoWait || verifier == nil {
+	if opts.NoWait {
+		return nil, nil
+	}
+
+	var proberFn DirectProberFunc = pki.ProbeDirectMTLS
+	if len(prober) > 0 && prober[0] != nil {
+		proberFn = prober[0]
+	}
+
+	targetProbeAddr := net.JoinHostPort(targetHostOnly, listenPort)
+	caCertPath := ""
+	if opts.CADir != "" {
+		caCertPath = filepath.Join(opts.CADir, "ca.crt")
+	}
+
+	// 1. Explicit Inverted Mode Verification
+	if opts.Mode == "inverted" {
+		if !opts.SilentOutput {
+			fmt.Printf("[+] Verifying inverted node listener via direct mTLS probe (%s)...", targetProbeAddr)
+		}
+		if err := proberFn(targetProbeAddr, caCertPath, 5*time.Second); err != nil {
+			if !opts.SilentOutput {
+				fmt.Println(" (failed)")
+				fmt.Printf("\n[!] Direct mTLS probe failed to connect to %s: %v\n", targetProbeAddr, err)
+				fmt.Println("\nTroubleshooting Suggestions:")
+				fmt.Printf("  1. Verify incoming TCP port %s is open: ssh %s 'sudo ufw allow %s/tcp'\n", listenPort, opts.Target, listenPort)
+				fmt.Printf("  2. Check node service logs: ssh %s journalctl -u fabric-node -n 30 --no-pager\n", opts.Target)
+				fmt.Printf("  3. Verify port is listening: ssh %s 'ss -tulpn | grep %s'\n\n", opts.Target, listenPort)
+			}
+			return nil, fmt.Errorf("inverted node direct mTLS probe failed: %w", err)
+		}
+
+		if !opts.SilentOutput {
+			fmt.Println(" Connected!")
+			fmt.Printf("[+] Direct mTLS connection to :%s verified successfully.\n", listenPort)
+		}
+
+		return &protocol.NodeMetadata{
+			ID:          "direct-" + targetHostOnly,
+			Hostname:    targetHostOnly,
+			RemoteIP:    targetProbeAddr,
+			Status:      "online [MODE: inverted]",
+			Tags:        append(opts.Tags, "inverted"),
+			Domain:      opts.Domain,
+			ConnectedAt: time.Now().UTC().Format(time.RFC3339),
+		}, nil
+	}
+
+	// 2. Normal Mode Verification with Automatic Fallback State Machine
+	if verifier == nil {
 		return nil, nil
 	}
 
@@ -525,24 +683,74 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 		fmt.Print("[+] Waiting for node to establish WebSocket connection to Socket...")
 	}
 
-	timeout := time.After(15 * time.Second)
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	targetHostOnly := opts.Target
-	if atIdx := strings.LastIndex(opts.Target, "@"); atIdx != -1 {
-		targetHostOnly = opts.Target[atIdx+1:]
+	verifyTimeout := opts.VerifyTimeout
+	if verifyTimeout <= 0 {
+		verifyTimeout = 15 * time.Second
 	}
+	timeout := time.After(verifyTimeout)
+	tickerInterval := 1 * time.Second
+	if verifyTimeout < 1*time.Second {
+		tickerInterval = 10 * time.Millisecond
+	}
+	ticker := time.NewTicker(tickerInterval)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-timeout:
+			if opts.NoFallback {
+				if !opts.SilentOutput {
+					fmt.Println(" (timeout)")
+					fmt.Println("[!] Warning: Node did not show up in the mesh within 15 seconds.")
+					fmt.Println("    Check target logs via SSH: ssh " + opts.Target + " journalctl -u fabric-node -n 20")
+				}
+				return nil, fmt.Errorf("node connection verification timed out after %v", verifyTimeout)
+			}
+
+			// Automatic Fallback Trigger
 			if !opts.SilentOutput {
 				fmt.Println(" (timeout)")
-				fmt.Println("[!] Warning: Node did not show up in the mesh within 15 seconds.")
-				fmt.Println("    Check target logs via SSH: ssh " + opts.Target + " journalctl -u fabric-node -n 20")
+				fmt.Println("[!] Normal connection verification timed out (socket unreachable).")
+				fmt.Printf("[+] Automatically switching remote node to Inverted Mode (:%s)...\n", listenPort)
 			}
-			return nil, fmt.Errorf("node connection verification timed out after 15s")
+
+			mgr := service.NewInitManager()
+			switchScript := mgr.RenderInvertedSwitchScript(listenPort)
+			if err := exec.Run(switchScript); err != nil {
+				return nil, fmt.Errorf("failed to switch node to inverted mode: %w", err)
+			}
+
+			if !opts.SilentOutput {
+				fmt.Printf("[+] Probing inverted node via direct mTLS (%s)...", targetProbeAddr)
+			}
+
+			if err := proberFn(targetProbeAddr, caCertPath, 5*time.Second); err != nil {
+				if !opts.SilentOutput {
+					fmt.Println(" (failed)")
+					fmt.Printf("\n[!] Fallback direct mTLS probe failed to connect to %s: %v\n", targetProbeAddr, err)
+					fmt.Println("\nTroubleshooting Suggestions:")
+					fmt.Printf("  1. Verify incoming TCP port %s is open: ssh %s 'sudo ufw allow %s/tcp'\n", listenPort, opts.Target, listenPort)
+					fmt.Printf("  2. Check node service logs: ssh %s journalctl -u fabric-node -n 30 --no-pager\n", opts.Target)
+					fmt.Printf("  3. Verify port is listening: ssh %s 'ss -tulpn | grep %s'\n\n", opts.Target, listenPort)
+				}
+				return nil, fmt.Errorf("fallback inverted direct mTLS probe failed: %w", err)
+			}
+
+			if !opts.SilentOutput {
+				fmt.Println(" Connected!")
+				fmt.Printf("[+] Remote node switched to Inverted Mode successfully (listening on :%s)!\n", listenPort)
+			}
+
+			return &protocol.NodeMetadata{
+				ID:          "direct-" + targetHostOnly,
+				Hostname:    targetHostOnly,
+				RemoteIP:    targetProbeAddr,
+				Status:      "online [MODE: inverted]",
+				Tags:        append(opts.Tags, "inverted"),
+				Domain:      opts.Domain,
+				ConnectedAt: time.Now().UTC().Format(time.RFC3339),
+			}, nil
+
 		case <-ticker.C:
 			if !opts.SilentOutput {
 				fmt.Print(".")

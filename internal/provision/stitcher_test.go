@@ -1,8 +1,10 @@
 package provision
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"fabric/internal/protocol"
 )
@@ -179,3 +181,137 @@ func TestProvisionerBatch(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateStitchScript_MTLSPayloads(t *testing.T) {
+	tmpDir := t.TempDir()
+	opts := StitchHostOptions{
+		Target:     "node-direct",
+		SocketURL:  "ws://10.0.0.1:8080/ws",
+		Token:      "tok-direct",
+		Domain:     "fabric.test",
+		CADir:      tmpDir,
+		Mode:       "inverted",
+		ListenPort: "8443",
+		BinaryData: []byte("mock-bin"),
+	}
+
+	script := GenerateStitchScript(opts, opts.SocketURL)
+
+	if !strings.Contains(script, "FABRIC_LISTEN=:8443") {
+		t.Errorf("missing FABRIC_LISTEN in inverted mode script: %s", script)
+	}
+	if !strings.Contains(script, "Unpacking Root CA certificate") {
+		t.Errorf("missing CA unpacking in script: %s", script)
+	}
+	if !strings.Contains(script, "Unpacking node leaf certificate") {
+		t.Errorf("missing leaf cert unpacking in script: %s", script)
+	}
+	if !strings.Contains(script, "Unpacking node leaf private key") {
+		t.Errorf("missing private key unpacking in script: %s", script)
+	}
+}
+
+func TestExecuteStitchHost_ExplicitInvertedMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	mockExec := &mockExecutor{}
+	opts := StitchHostOptions{
+		Target:     "192.168.1.55",
+		Mode:       "inverted",
+		ListenPort: "9443",
+		Token:      "tok-inv",
+		CADir:      tmpDir,
+		BinaryData: []byte("mock-bin"),
+	}
+
+	probedAddr := ""
+	mockProber := func(targetAddr, caPath string, timeout time.Duration) error {
+		probedAddr = targetAddr
+		return nil
+	}
+
+	node, err := ExecuteStitchHost(opts, mockExec, nil, mockProber)
+	if err != nil {
+		t.Fatalf("ExecuteStitchHost inverted mode failed: %v", err)
+	}
+
+	if node == nil || node.Hostname != "192.168.1.55" {
+		t.Errorf("unexpected node: %+v", node)
+	}
+	if probedAddr != "192.168.1.55:9443" {
+		t.Errorf("expected probe addr 192.168.1.55:9443, got: %s", probedAddr)
+	}
+	if !strings.Contains(mockExec.lastScript, "FABRIC_LISTEN=:9443") {
+		t.Errorf("script did not configure FABRIC_LISTEN=:9443")
+	}
+}
+
+func TestExecuteStitchHost_AutoFallbackOnTimeout(t *testing.T) {
+	tmpDir := t.TempDir()
+	mockExec := &mockExecutor{}
+	opts := StitchHostOptions{
+		Target:        "192.168.1.77",
+		Mode:          "normal",
+		ListenPort:    "8443",
+		Token:         "tok-fallback",
+		CADir:         tmpDir,
+		VerifyTimeout: 50 * time.Millisecond,
+		BinaryData:    []byte("mock-bin"),
+	}
+
+	// Verifier that always returns empty (simulating unreachable socket)
+	verifier := func(socketURL, token string) ([]protocol.NodeMetadata, error) {
+		return nil, nil
+	}
+
+	fallbackProbed := false
+	mockProber := func(targetAddr, caPath string, timeout time.Duration) error {
+		if targetAddr == "192.168.1.77:8443" {
+			fallbackProbed = true
+			return nil
+		}
+		return fmt.Errorf("unexpected probe addr: %s", targetAddr)
+	}
+
+	// We test with ExecuteStitchHost and short timeout verification flow
+	node, err := ExecuteStitchHost(opts, mockExec, verifier, mockProber)
+	if err != nil {
+		t.Fatalf("expected auto-fallback to succeed, got: %v", err)
+	}
+
+	if node == nil || node.Hostname != "192.168.1.77" {
+		t.Errorf("expected node 192.168.1.77, got: %+v", node)
+	}
+	if !fallbackProbed {
+		t.Errorf("expected fallback direct mTLS probe to be executed")
+	}
+	if !strings.Contains(mockExec.lastScript, `PORT=":8443"`) || !strings.Contains(mockExec.lastScript, "FABRIC_LISTEN=") {
+		t.Errorf("fallback switch script was not executed: %s", mockExec.lastScript)
+	}
+}
+
+func TestExecuteStitchHost_NoFallbackFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+	mockExec := &mockExecutor{}
+	opts := StitchHostOptions{
+		Target:        "192.168.1.88",
+		Mode:          "normal",
+		NoFallback:    true,
+		Token:         "tok-nofallback",
+		CADir:         tmpDir,
+		VerifyTimeout: 50 * time.Millisecond,
+		BinaryData:    []byte("mock-bin"),
+	}
+
+	verifier := func(socketURL, token string) ([]protocol.NodeMetadata, error) {
+		return nil, nil
+	}
+
+	node, err := ExecuteStitchHost(opts, mockExec, verifier)
+	if err == nil {
+		t.Fatalf("expected timeout error when --no-fallback is true, got node: %+v", node)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected timed out error, got: %v", err)
+	}
+}
+

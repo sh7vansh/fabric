@@ -15,13 +15,17 @@ import (
 )
 
 var (
-	stitchIdentityFlag string
-	stitchPortFlag     string
-	stitchSocketURL    string
-	stitchTokenFlag    string
-	stitchDomainFlag   string
-	stitchTagsFlag     string
-	stitchNoWait       bool
+	stitchIdentityFlag   string
+	stitchPortFlag       string
+	stitchSocketURL      string
+	stitchTokenFlag      string
+	stitchDomainFlag     string
+	stitchTagsFlag       string
+	stitchNoWait         bool
+	stitchModeFlag       string
+	stitchInvertedFlag   bool
+	stitchListenPortFlag string
+	stitchNoFallback     bool
 
 	// Discover flags
 	discoverPortFlag        string
@@ -37,6 +41,10 @@ var (
 	discoverTokenFlag       string
 	discoverDomainFlag      string
 	discoverTagsFlag        string
+	discoverModeFlag        string
+	discoverInvertedFlag    bool
+	discoverListenPortFlag  string
+	discoverNoFallback      bool
 )
 
 var stitchCmd = &cobra.Command{
@@ -51,8 +59,11 @@ configures environment variables with cluster tokens, and verifies active mesh c
 	Example: `  # Stitch a remote machine with default SSH credentials
   fabric stitch root@192.168.1.50
 
-  # Stitch using a specific SSH key, port, and custom tags
-  fabric stitch -i ~/.ssh/id_ed25519 -p 2222 --tags web,prod ubuntu@10.0.0.12
+  # Stitch using explicit inverted mode (node listens directly with mTLS)
+  fabric stitch --mode inverted --listen-port 8443 ubuntu@10.0.0.12
+
+  # Stitch with custom tags and disabled fallback
+  fabric stitch -i ~/.ssh/id_ed25519 -p 2222 --tags web,prod --no-fallback ubuntu@10.0.0.12
 
   # Scan network and batch stitch discovered machines
   fabric stitch discover 192.168.1.0/24`,
@@ -69,8 +80,8 @@ stitch the selected machines into the Fabric mesh.`,
 	Example: `  # Scan default local interface subnet
   fabric stitch discover
 
-  # Scan specific CIDR block
-  fabric stitch discover 192.168.1.0/24
+  # Scan specific CIDR block in inverted mode
+  fabric stitch discover --inverted --listen-port 8443 192.168.1.0/24
 
   # Scan with custom SSH port and default user
   fabric stitch discover -p 22,2222 -u ubuntu --tags worker 10.0.0.0/24`,
@@ -89,6 +100,10 @@ func init() {
 	stitchCmd.Flags().StringVar(&stitchDomainFlag, "domain", "fabric.mesh", "Domain to register on the mesh")
 	stitchCmd.Flags().StringVar(&stitchTagsFlag, "tags", "", "Comma-separated metadata tags to assign to the node (e.g. web,prod)")
 	stitchCmd.Flags().BoolVar(&stitchNoWait, "no-wait", false, "Do not wait for mesh connection verification")
+	stitchCmd.Flags().StringVar(&stitchModeFlag, "mode", "", "Connection mode topology: 'normal' or 'inverted'")
+	stitchCmd.Flags().BoolVar(&stitchInvertedFlag, "inverted", false, "Shorthand for --mode inverted")
+	stitchCmd.Flags().StringVar(&stitchListenPortFlag, "listen-port", "8443", "Port for inverted mode node to listen on")
+	stitchCmd.Flags().BoolVar(&stitchNoFallback, "no-fallback", false, "Disable automatic fallback to inverted mode if normal verification times out")
 
 	// Discover command flags
 	stitchDiscoverCmd.Flags().StringVarP(&discoverPortFlag, "port", "p", "22", "Port(s) to scan (comma-separated, e.g. 22,2222)")
@@ -105,6 +120,10 @@ func init() {
 	stitchDiscoverCmd.Flags().StringVar(&discoverTokenFlag, "token", "", "Cluster token override")
 	stitchDiscoverCmd.Flags().StringVar(&discoverDomainFlag, "domain", "fabric.mesh", "Domain to register on the mesh")
 	stitchDiscoverCmd.Flags().StringVar(&discoverTagsFlag, "tags", "", "Comma-separated metadata tags to assign to discovered nodes")
+	stitchDiscoverCmd.Flags().StringVar(&discoverModeFlag, "mode", "", "Connection mode topology: 'normal' or 'inverted'")
+	stitchDiscoverCmd.Flags().BoolVar(&discoverInvertedFlag, "inverted", false, "Shorthand for --mode inverted")
+	stitchDiscoverCmd.Flags().StringVar(&discoverListenPortFlag, "listen-port", "8443", "Port for inverted mode nodes to listen on")
+	stitchDiscoverCmd.Flags().BoolVar(&discoverNoFallback, "no-fallback", false, "Disable automatic fallback to inverted mode")
 }
 
 func nodeVerifier(socketURL, token string) ([]protocol.NodeMetadata, error) {
@@ -124,6 +143,33 @@ func parseTags(raw string) []string {
 		}
 	}
 	return tags
+}
+
+func isTerminalInput() bool {
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
+func promptTopology(isBatch bool) string {
+	if isBatch {
+		fmt.Println("\nSelect connection topology for discovered hosts:")
+	} else {
+		fmt.Println("\nSelect connection topology:")
+	}
+	fmt.Println("  [1] Normal (Outbound WebSocket to relay — default)")
+	fmt.Println("  [2] Inverted (Node listens with mTLS for direct CLI access)")
+	fmt.Print("Choice [1]: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+	if input == "2" || strings.ToLower(input) == "inverted" {
+		return "inverted"
+	}
+	return "normal"
 }
 
 func interactiveKeyPrompt(target string, keys []string) (string, error) {
@@ -162,6 +208,23 @@ func runStitch(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	mode := stitchModeFlag
+	if stitchInvertedFlag {
+		mode = "inverted"
+	}
+	if mode == "" {
+		if isTerminalInput() {
+			mode = promptTopology(false)
+		} else {
+			mode = "normal"
+		}
+	}
+
+	listenPort := stitchListenPortFlag
+	if listenPort == "" {
+		listenPort = "8443"
+	}
+
 	opts := provision.StitchHostOptions{
 		Target:      target,
 		SSHPort:     sshPort,
@@ -171,6 +234,9 @@ func runStitch(cmd *cobra.Command, args []string) error {
 		Domain:      stitchDomainFlag,
 		Tags:        parseTags(stitchTagsFlag),
 		NoWait:      stitchNoWait,
+		Mode:        mode,
+		ListenPort:  listenPort,
+		NoFallback:  stitchNoFallback,
 	}
 
 	if opts.SocketURL == "" {
@@ -189,6 +255,27 @@ func runStitch(cmd *cobra.Command, args []string) error {
 	}
 
 	if node != nil {
+		targetHostOnly := target
+		if atIdx := strings.LastIndex(target, "@"); atIdx != -1 {
+			targetHostOnly = target[atIdx+1:]
+		}
+
+		isInverted := false
+		if mode == "inverted" || strings.Contains(node.Status, "inverted") {
+			isInverted = true
+		}
+		for _, t := range node.Tags {
+			if t == "inverted" {
+				isInverted = true
+				break
+			}
+		}
+
+		if isInverted {
+			directAddr := targetHostOnly + ":" + listenPort
+			_ = RegisterDirectNode(node.Hostname, directAddr, node.Tags)
+		}
+
 		fmt.Println("\n==================================================")
 		fmt.Println("         Node Stitched Successfully!              ")
 		fmt.Println("==================================================")
@@ -296,6 +383,23 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	mode := discoverModeFlag
+	if discoverInvertedFlag {
+		mode = "inverted"
+	}
+	if mode == "" {
+		if isTerminalInput() && !discoverAutoStitchFlag {
+			mode = promptTopology(true)
+		} else {
+			mode = "normal"
+		}
+	}
+
+	listenPort := discoverListenPortFlag
+	if listenPort == "" {
+		listenPort = "8443"
+	}
+
 	cfg := GetConfig()
 	socketURL := discoverSocketURL
 	if socketURL == "" {
@@ -306,7 +410,7 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 		token = cfg.Token
 	}
 
-	fmt.Printf("\n[+] Starting batch stitch of %d selected host(s)...\n\n", len(selectedTargets))
+	fmt.Printf("\n[+] Starting batch stitch of %d selected host(s) (mode: %s)...\n\n", len(selectedTargets), mode)
 
 	var batchOpts []provision.StitchHostOptions
 	for _, st := range selectedTargets {
@@ -319,6 +423,9 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 			Domain:      discoverDomainFlag,
 			Tags:        parseTags(discoverTagsFlag),
 			NoWait:      discoverNoWaitFlag,
+			Mode:        mode,
+			ListenPort:  listenPort,
+			NoFallback:  discoverNoFallback,
 		}
 		if st.User != "" {
 			opts.Target = st.User + "@" + st.Host
@@ -342,6 +449,26 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 	for _, r := range results {
 		if r.Success {
 			successCount++
+			if r.Node != nil {
+				isInverted := false
+				if mode == "inverted" || strings.Contains(r.Node.Status, "inverted") {
+					isInverted = true
+				}
+				for _, t := range r.Node.Tags {
+					if t == "inverted" {
+						isInverted = true
+						break
+					}
+				}
+				if isInverted {
+					th := r.Target
+					if atIdx := strings.LastIndex(th, "@"); atIdx != -1 {
+						th = th[atIdx+1:]
+					}
+					directAddr := th + ":" + listenPort
+					_ = RegisterDirectNode(r.Hostname, directAddr, r.Node.Tags)
+				}
+			}
 			fmt.Printf(" [✓] %-25s -> %s (Online)\n", r.Target, r.Hostname)
 		} else {
 			fmt.Printf(" [✗] %-25s -> Failed: %v\n", r.Target, r.Error)

@@ -1,6 +1,7 @@
 package pki
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -322,6 +323,38 @@ func (c *CA) MintCertificate(hosts []string, validity time.Duration) (*tls.Certi
 	}
 
 	return &tlsCert, nil
+}
+
+// MintCertificatePEM creates or retrieves a TLS leaf certificate and returns PEM-encoded cert and private key bytes.
+func (c *CA) MintCertificatePEM(hosts []string, validity time.Duration) ([]byte, []byte, error) {
+	tlsCert, err := c.MintCertificate(hosts, validity)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var certBuf bytes.Buffer
+	for _, certBytes := range tlsCert.Certificate {
+		if err := pem.Encode(&certBuf, &pem.Block{Type: "CERTIFICATE", Bytes: certBytes}); err != nil {
+			return nil, nil, fmt.Errorf("pem encode cert: %w", err)
+		}
+	}
+
+	ecKey, ok := tlsCert.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, nil, errors.New("private key is not an ECDSA private key")
+	}
+
+	keyBytes, err := x509.MarshalECPrivateKey(ecKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal ec private key: %w", err)
+	}
+
+	var keyBuf bytes.Buffer
+	if err := pem.Encode(&keyBuf, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}); err != nil {
+		return nil, nil, fmt.Errorf("pem encode private key: %w", err)
+	}
+
+	return certBuf.Bytes(), keyBuf.Bytes(), nil
 }
 
 // GetCertificate returns a tls.Config.GetCertificate SNI handler.

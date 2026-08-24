@@ -122,11 +122,23 @@ func (c *Client) caCertPath() string {
 
 // DialWebSocket dials the central socket control plane or a direct node.
 func (c *Client) DialWebSocket() (*websocket.Conn, error) {
+	return c.DialWebSocketForNode("")
+}
+
+// DialWebSocketForNode dials the target node directly if registered or overrides direct address, otherwise dials socket.
+func (c *Client) DialWebSocketForNode(targetNode string) (*websocket.Conn, error) {
 	targetHost := c.Config.Host
 	if c.DirectAddress != "" {
 		targetHost = c.DirectAddress
 		if !strings.Contains(targetHost, "://") {
 			targetHost = "wss://" + targetHost
+		}
+	} else if targetNode != "" && c.Config != nil && c.Config.DirectNodes != nil {
+		if entry, ok := c.Config.DirectNodes[targetNode]; ok && entry.Address != "" {
+			targetHost = entry.Address
+			if !strings.Contains(targetHost, "://") {
+				targetHost = "wss://" + targetHost
+			}
 		}
 	}
 
@@ -195,27 +207,67 @@ func (c *Client) DoHTTP(method, path string, body interface{}) (*http.Response, 
 	return resp, nil
 }
 
-// ListNodes retrieves metadata for all connected mesh nodes.
+// ListNodes retrieves metadata for all connected mesh nodes, merging direct inverted nodes.
 func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
-	resp, err := c.DoHTTP("GET", "/nodes", nil)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to list nodes: HTTP %s", resp.Status)
-	}
-
 	var nodes []protocol.NodeMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&nodes); err != nil {
-		return nil, err
+	var socketErr error
+
+	resp, err := c.DoHTTP("GET", "/nodes", nil)
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			_ = json.NewDecoder(resp.Body).Decode(&nodes)
+		} else {
+			socketErr = fmt.Errorf("failed to list nodes: HTTP %s", resp.Status)
+		}
+	} else {
+		socketErr = err
 	}
+
+	// Merge direct nodes from local configuration
+	if c.Config != nil && len(c.Config.DirectNodes) > 0 {
+		seen := make(map[string]bool)
+		for _, n := range nodes {
+			seen[n.Hostname] = true
+		}
+		for name, entry := range c.Config.DirectNodes {
+			if !seen[name] {
+				nodes = append(nodes, protocol.NodeMetadata{
+					ID:          "direct-" + name,
+					Hostname:    name,
+					RemoteIP:    entry.Address,
+					Status:      "online [MODE: inverted]",
+					Tags:        entry.Tags,
+					Domain:      "direct",
+					ConnectedAt: entry.RegisteredAt.Format(time.RFC3339),
+				})
+			}
+		}
+	}
+
+	if socketErr != nil && len(nodes) == 0 {
+		return nil, socketErr
+	}
+
 	return nodes, nil
 }
 
-// GetNode retrieves metadata for a single mesh node.
+// GetNode retrieves metadata for a single mesh node from socket or local direct registry.
 func (c *Client) GetNode(hostname string) (*protocol.NodeMetadata, error) {
+	if c.Config != nil && c.Config.DirectNodes != nil {
+		if entry, ok := c.Config.DirectNodes[hostname]; ok {
+			return &protocol.NodeMetadata{
+				ID:          "direct-" + hostname,
+				Hostname:    hostname,
+				RemoteIP:    entry.Address,
+				Status:      "online [MODE: inverted]",
+				Tags:        entry.Tags,
+				Domain:      "direct",
+				ConnectedAt: entry.RegisteredAt.Format(time.RFC3339),
+			}, nil
+		}
+	}
+
 	resp, err := c.DoHTTP("GET", "/nodes/"+hostname, nil)
 	if err != nil {
 		return nil, err
@@ -388,7 +440,7 @@ func (c *Client) executeFleet(opts ExecOptions, out, errOut io.Writer) (*FleetRe
 }
 
 func (c *Client) executeSingle(opts ExecOptions, in io.Reader, out, errOut io.Writer) error {
-	conn, err := c.DialWebSocket()
+	conn, err := c.DialWebSocketForNode(opts.Target)
 	if err != nil {
 		return err
 	}
@@ -482,7 +534,7 @@ func (c *Client) executeSingle(opts ExecOptions, in io.Reader, out, errOut io.Wr
 
 // Upload streams a local file or directory as a Tar archive to a remote node destination.
 func (c *Client) Upload(targetNode, localPath, remotePath string) error {
-	conn, err := c.DialWebSocket()
+	conn, err := c.DialWebSocketForNode(targetNode)
 	if err != nil {
 		return fmt.Errorf("failed to connect to socket: %w", err)
 	}
@@ -518,7 +570,7 @@ func (c *Client) Upload(targetNode, localPath, remotePath string) error {
 
 // Download streams a remote node path as a Tar archive and extracts it to a local destination.
 func (c *Client) Download(targetNode, remotePath, localPath string) error {
-	conn, err := c.DialWebSocket()
+	conn, err := c.DialWebSocketForNode(targetNode)
 	if err != nil {
 		return fmt.Errorf("failed to connect to socket: %w", err)
 	}
@@ -554,7 +606,7 @@ func (c *Client) Download(targetNode, remotePath, localPath string) error {
 
 // ForwardPort binds a local port and forwards incoming TCP connections to the remote node.
 func (c *Client) ForwardPort(targetNode string, localPort, remotePort int) error {
-	conn, err := c.DialWebSocket()
+	conn, err := c.DialWebSocketForNode(targetNode)
 	if err != nil {
 		return fmt.Errorf("failed to dial socket: %w", err)
 	}
