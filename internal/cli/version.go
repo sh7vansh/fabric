@@ -25,6 +25,15 @@ var versionCmd = &cobra.Command{
 		}
 		defer resp.Body.Close()
 
+		if resp.StatusCode != 200 {
+			if len(client.Config.DirectNodes) > 0 {
+				fmt.Printf("Socket Version: <not configured: direct mTLS mode>\n")
+			} else {
+				fmt.Printf("Socket Version: <offline>\n")
+			}
+			return nil
+		}
+
 		var ver struct {
 			Version string `json:"version"`
 		}
