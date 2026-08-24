@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -27,12 +28,15 @@ var (
 )
 
 func main() {
+	domainFlag := flag.String("domain", "fabric.mesh", "Domain for the DNS server")
+	flag.Parse()
+
 	token := os.Getenv("FABRIC_TOKEN")
 	if token == "" {
 		token = "default-secret"
 	}
 
-	go StartDNSServer("127.0.0.1")
+	go StartDNSServer("127.0.0.1", *domainFlag)
 	go StartTCPProxy()
 	go pingNodes()
 

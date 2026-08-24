@@ -24,6 +24,7 @@ var (
 
 func main() {
 	serverURL := flag.String("url", "ws://localhost:8080/ws", "Socket URL (ws:// or wss://)")
+	domainFlag := flag.String("domain", "fabric.mesh", "Domain to register with the mesh")
 	flag.Parse()
 
 	token := os.Getenv("FABRIC_TOKEN")
@@ -43,6 +44,7 @@ func main() {
 		hs := protocol.Handshake{
 			Type:     protocol.TypeHandshake,
 			Hostname: hostname,
+			Domain:   *domainFlag,
 			Token:    token,
 		}
 

@@ -18,6 +18,7 @@ const (
 type Handshake struct {
 	Type     EnvelopeType `json:"type"`
 	Hostname string       `json:"hostname"`
+	Domain   string       `json:"domain,omitempty"`
 	Token    string       `json:"token"`
 }
 
