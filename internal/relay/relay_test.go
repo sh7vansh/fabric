@@ -230,3 +230,108 @@ func TestRelayRouteStream(t *testing.T) {
 		t.Errorf("timed out waiting for routed stream")
 	}
 }
+
+func TestRelayServeMuxEndToEnd(t *testing.T) {
+	r := New(Config{
+		Domain:   "fabric.mesh",
+		Token:    "cluster-token",
+		PingFreq: 0,
+	})
+	defer r.Close()
+
+	sMux, cMux := createMockMultiplexers(t)
+	defer sMux.Session.Close()
+	defer cMux.Session.Close()
+
+	// Run ServeMux in background
+	go func() {
+		_ = r.ServeMux(sMux, "192.168.1.100:54321", "10.0.0.1")
+	}()
+
+	// 1. Send Handshake from node agent side
+	handshakeStream, err := cMux.Session.Open()
+	if err != nil {
+		t.Fatalf("failed to open handshake stream: %v", err)
+	}
+
+	hsPayload := `{"type":"handshake","hostname":"node-alpha","token":"cluster-token","domain":"fabric.mesh","os":"linux","arch":"amd64","tags":["worker"]}`
+	_, _ = handshakeStream.Write([]byte(hsPayload))
+	handshakeStream.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify node registered automatically
+	node, ok := r.GetNode("node-alpha")
+	if !ok {
+		t.Fatalf("expected node-alpha to be registered via ServeMux handshake")
+	}
+	if node.RemoteIP != "192.168.1.100:54321" {
+		t.Errorf("expected remote IP 192.168.1.100:54321, got: %s", node.RemoteIP)
+	}
+	if len(node.Tags) != 1 || node.Tags[0] != "worker" {
+		t.Errorf("expected tag 'worker', got: %v", node.Tags)
+	}
+
+	// 2. Query DNS via ServeMux router
+	dnsStream, err := cMux.Session.Open()
+	if err != nil {
+		t.Fatalf("failed to open dns stream: %v", err)
+	}
+
+	m := new(dns.Msg)
+	m.SetQuestion("node-alpha.fabric.mesh.", dns.TypeA)
+	wire, _ := m.Pack()
+
+	dnsQueryPayload := `{"type":"dns_query","sessionId":"test-dns-1","data":"` + base64.StdEncoding.EncodeToString(wire) + `"}`
+	_, _ = dnsStream.Write([]byte(dnsQueryPayload))
+	dnsStream.Close()
+
+	// Wait for DNS response stream opened by Relay
+	respStream, err := cMux.Session.Accept()
+	if err != nil {
+		t.Fatalf("failed to accept dns response stream: %v", err)
+	}
+	defer respStream.Close()
+
+	buf := make([]byte, 2048)
+	n, _ := respStream.Read(buf)
+	if n == 0 {
+		t.Fatalf("expected non-empty DNS response")
+	}
+}
+
+func TestRelayServeMuxUnauthorized(t *testing.T) {
+	r := New(Config{
+		Domain:   "fabric.mesh",
+		Token:    "correct-secret",
+		PingFreq: 0,
+	})
+	defer r.Close()
+
+	sMux, cMux := createMockMultiplexers(t)
+
+	go func() {
+		_ = r.ServeMux(sMux, "10.0.0.2:12345", "10.0.0.1")
+	}()
+
+	stream, err := cMux.Session.Open()
+	if err != nil {
+		t.Fatalf("failed to open stream: %v", err)
+	}
+
+	// Send wrong token
+	_, _ = stream.Write([]byte(`{"type":"handshake","hostname":"bad-node","token":"wrong-secret"}`))
+	stream.Close()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Node should NOT be registered
+	if _, ok := r.GetNode("bad-node"); ok {
+		t.Errorf("unauthorized node should not be registered")
+	}
+
+	// Session should be closed
+	if !sMux.Session.IsClosed() {
+		t.Errorf("expected unauthorized session to be closed")
+	}
+}

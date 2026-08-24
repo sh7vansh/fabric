@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -127,6 +126,28 @@ func parseTags(raw string) []string {
 	return tags
 }
 
+func interactiveKeyPrompt(target string, keys []string) (string, error) {
+	fmt.Println("\n[!] SSH Authentication Failed (Permission denied).")
+	fmt.Println("\nAvailable SSH keys found in ~/.ssh:")
+	for i, key := range keys {
+		fmt.Printf("  [%d] %s\n", i+1, key)
+	}
+	fmt.Printf("  [c] Cancel\n")
+	fmt.Printf("\nSelect a key to retry, or press 'c' to cancel: ")
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
+	if input == "c" || input == "C" || input == "" {
+		return "", fmt.Errorf("aborted")
+	}
+	if idx, parseErr := strconv.Atoi(input); parseErr == nil && idx > 0 && idx <= len(keys) {
+		chosen := keys[idx-1]
+		fmt.Printf("\n[+] Retrying with identity key: %s\n", chosen)
+		return chosen, nil
+	}
+	return "", fmt.Errorf("invalid selection")
+}
+
 func runStitch(cmd *cobra.Command, args []string) error {
 	rawTarget := args[0]
 	cfg := GetConfig()
@@ -159,52 +180,12 @@ func runStitch(cmd *cobra.Command, args []string) error {
 		opts.Token = cfg.Token
 	}
 
-	node, err := provision.ExecuteStitchHost(opts, nil, nodeVerifier)
+	provisioner := provision.NewProvisioner(nil, nodeVerifier).
+		WithKeyPrompt(interactiveKeyPrompt)
+
+	node, err := provisioner.Provision(opts)
 	if err != nil {
-		if strings.Contains(err.Error(), "exit status 255") {
-			fmt.Println("\n[!] SSH Authentication Failed (Permission denied).")
-			
-			home, _ := os.UserHomeDir()
-			sshDir := filepath.Join(home, ".ssh")
-			files, _ := os.ReadDir(sshDir)
-			var keys []string
-			for _, f := range files {
-				if !f.IsDir() && !strings.HasSuffix(f.Name(), ".pub") && !strings.HasPrefix(f.Name(), "known_hosts") && !strings.HasPrefix(f.Name(), "config") && !strings.HasPrefix(f.Name(), "authorized_keys") {
-					keys = append(keys, filepath.Join(sshDir, f.Name()))
-				}
-			}
-			
-			if len(keys) > 0 {
-				fmt.Println("\nAvailable SSH keys found in ~/.ssh:")
-				for i, key := range keys {
-					fmt.Printf("  [%d] %s\n", i+1, key)
-				}
-				fmt.Printf("  [c] Cancel\n")
-				fmt.Printf("\nSelect a key to retry, or press 'c' to cancel: ")
-				reader := bufio.NewReader(os.Stdin)
-				input, _ := reader.ReadString('\n')
-				input = strings.TrimSpace(input)
-				if input == "c" || input == "C" || input == "" {
-					return fmt.Errorf("aborted")
-				}
-				if idx, parseErr := strconv.Atoi(input); parseErr == nil && idx > 0 && idx <= len(keys) {
-					opts.IdentityKey = keys[idx-1]
-					fmt.Printf("\n[+] Retrying with identity key: %s\n", opts.IdentityKey)
-					node, err = provision.ExecuteStitchHost(opts, nil, nodeVerifier)
-					if err != nil {
-						return fmt.Errorf("retry failed: %w", err)
-					}
-				} else {
-					return fmt.Errorf("invalid selection")
-				}
-			} else {
-				fmt.Println("\nHint: You may need to specify a password or add your SSH key using:")
-				fmt.Printf("  ssh-copy-id %s\n", opts.Target)
-				return err
-			}
-		} else {
-			return err
-		}
+		return err
 	}
 
 	if node != nil {
@@ -327,20 +308,8 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("\n[+] Starting batch stitch of %d selected host(s)...\n\n", len(selectedTargets))
 
-	type stitchResult struct {
-		Target   string
-		Hostname string
-		Success  bool
-		Error    string
-	}
-
-	var results []stitchResult
-
-	for i, st := range selectedTargets {
-		fmt.Printf("--------------------------------------------------\n")
-		fmt.Printf("[*] [%d/%d] Stitching %s...\n", i+1, len(selectedTargets), st.TargetSpec())
-		fmt.Printf("--------------------------------------------------\n")
-
+	var batchOpts []provision.StitchHostOptions
+	for _, st := range selectedTargets {
 		opts := provision.StitchHostOptions{
 			Target:      st.Host,
 			SSHPort:     st.Port,
@@ -354,28 +323,11 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 		if st.User != "" {
 			opts.Target = st.User + "@" + st.Host
 		}
-
-		node, err := provision.ExecuteStitchHost(opts, nil, nodeVerifier)
-		if err != nil {
-			fmt.Printf("[✗] Failed to stitch %s: %v\n\n", st.TargetSpec(), err)
-			results = append(results, stitchResult{
-				Target:  st.TargetSpec(),
-				Success: false,
-				Error:   err.Error(),
-			})
-		} else {
-			hostname := st.Host
-			if node != nil {
-				hostname = node.Hostname
-			}
-			fmt.Printf("[✓] %s successfully stitched as '%s'!\n\n", st.TargetSpec(), hostname)
-			results = append(results, stitchResult{
-				Target:   st.TargetSpec(),
-				Hostname: hostname,
-				Success:  true,
-			})
-		}
+		batchOpts = append(batchOpts, opts)
 	}
+
+	provisioner := provision.NewProvisioner(nil, nodeVerifier)
+	results, _ := provisioner.ProvisionBatch(batchOpts)
 
 	fmt.Println("\n==================================================")
 	fmt.Println("             Batch Stitch Summary                 ")
@@ -386,7 +338,7 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 			successCount++
 			fmt.Printf(" [✓] %-25s -> %s (Online)\n", r.Target, r.Hostname)
 		} else {
-			fmt.Printf(" [✗] %-25s -> Failed: %s\n", r.Target, r.Error)
+			fmt.Printf(" [✗] %-25s -> Failed: %v\n", r.Target, r.Error)
 		}
 	}
 	fmt.Println("==================================================")

@@ -12,6 +12,7 @@ import (
 
 	"fabric/internal/protocol"
 
+	"github.com/gorilla/websocket"
 	"github.com/miekg/dns"
 )
 
@@ -60,6 +61,131 @@ func New(cfg Config) *Relay {
 	}
 
 	return r
+}
+
+// ServeWS upgrades and serves a WebSocket connection, managing the entire multiplexed session lifecycle.
+func (r *Relay) ServeWS(conn *websocket.Conn, remoteAddr string) error {
+	defer conn.Close()
+
+	mux, err := protocol.NewStreamMultiplexer(conn, true)
+	if err != nil {
+		return err
+	}
+
+	proxyIP := "127.0.0.1"
+	if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
+		proxyIP = tcpAddr.IP.String()
+	}
+
+	return r.ServeMux(mux, remoteAddr, proxyIP)
+}
+
+// ServeMux manages an incoming stream multiplexer, routing handshakes, DNS queries, and execution streams.
+func (r *Relay) ServeMux(mux *protocol.StreamMultiplexer, remoteAddr, proxyIP string) error {
+	if proxyIP == "" {
+		proxyIP = "127.0.0.1"
+	}
+
+	router := protocol.NewRouter(mux.Session)
+
+	router.HandleFunc(string(protocol.TypeHandshake), func(stream net.Conn, env []byte) {
+		defer stream.Close()
+		var hs protocol.Handshake
+		if err := json.Unmarshal(env, &hs); err != nil {
+			mux.Session.Close()
+			return
+		}
+
+		if !r.ValidateToken(hs.Token) {
+			log.Println("[Relay] Unauthorized connection attempt from:", hs.Hostname)
+			mux.Session.Close()
+			return
+		}
+
+		if hs.Hostname == "" {
+			log.Println("[Relay] Handshake rejected: empty hostname")
+			mux.Session.Close()
+			return
+		}
+
+		sessID := hs.SessionID
+		if sessID == "" {
+			sessID = fmt.Sprintf("sess-%s-%d", hs.Hostname, time.Now().UnixNano())
+		}
+
+		meta := protocol.NodeMetadata{
+			ID:          hs.Hostname,
+			SessionID:   sessID,
+			Hostname:    hs.Hostname,
+			Domain:      hs.Domain,
+			OS:          hs.OS,
+			Arch:        hs.Arch,
+			Version:     hs.Version,
+			RemoteIP:    remoteAddr,
+			Status:      "online",
+			ConnectedAt: time.Now().UTC().Format(time.RFC3339),
+			Tags:        hs.Tags,
+		}
+
+		if _, err := r.RegisterNode(meta, mux); err != nil {
+			mux.Session.Close()
+			return
+		}
+		log.Printf("[Relay] Node connected successfully: %s (session: %s)\n", hs.Hostname, sessID)
+	})
+
+	router.HandleFunc(string(protocol.TypeDNSQuery), func(stream net.Conn, env []byte) {
+		defer stream.Close()
+		var query protocol.DNSQuery
+		if err := json.Unmarshal(env, &query); err != nil {
+			return
+		}
+
+		resp := r.ResolveDNS(query, proxyIP)
+		b, _ := json.Marshal(resp)
+
+		outStream, err := mux.Session.Open()
+		if err == nil {
+			outStream.Write(b)
+			outStream.Close()
+		}
+	})
+
+	router.HandleFunc(string(protocol.TypeExecRequest), func(stream net.Conn, env []byte) {
+		var req protocol.ExecRequest
+		if err := json.Unmarshal(env, &req); err != nil {
+			stream.Close()
+			return
+		}
+		log.Printf("[Relay] Exec request targeting %s: %s\n", req.TargetHostname, req.Command)
+		if err := r.RouteStream(req.TargetHostname, env, stream); err != nil {
+			log.Println("[Relay] RouteStream error:", err)
+		}
+	})
+
+	router.HandleFunc(string(protocol.TypeCopyRequest), func(stream net.Conn, env []byte) {
+		var req protocol.CopyRequest
+		if err := json.Unmarshal(env, &req); err != nil {
+			stream.Close()
+			return
+		}
+		if err := r.RouteStream(req.TargetHostname, env, stream); err != nil {
+			log.Println("[Relay] RouteStream copy error:", err)
+		}
+	})
+
+	router.HandleFunc(string(protocol.TypeProxyRequest), func(stream net.Conn, env []byte) {
+		var req protocol.ProxyRequest
+		if err := json.Unmarshal(env, &req); err != nil {
+			stream.Close()
+			return
+		}
+		if err := r.RouteProxyStream(req.TargetHostname, env, stream); err != nil {
+			log.Println("[Relay] RouteProxyStream error:", err)
+		}
+	})
+
+	return router.Accept()
 }
 
 func (r *Relay) pingLoop(freq time.Duration) {

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"fabric/internal/protocol"
 	"fabric/internal/relay"
 	"fabric/internal/tlsengine"
 
@@ -111,119 +110,11 @@ func main() {
 			return
 		}
 
-		mux, err := protocol.NewStreamMultiplexer(conn, true)
-		if err != nil {
-			conn.Close()
-			return
-		}
-
-		router := protocol.NewRouter(mux.Session)
-
-		proxyIP := ""
-		if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
-			proxyIP = tcpAddr.IP.String()
-		} else {
-			proxyIP = "127.0.0.1"
-		}
-
-		router.HandleFunc(string(protocol.TypeHandshake), func(stream net.Conn, env []byte) {
-			defer stream.Close()
-			var hs protocol.Handshake
-			if err := json.Unmarshal(env, &hs); err != nil {
-				conn.Close()
-				return
+		go func() {
+			if err := meshRelay.ServeWS(conn, r.RemoteAddr); err != nil {
+				log.Printf("[Relay] Session ended for %s: %v\n", r.RemoteAddr, err)
 			}
-
-			if !meshRelay.ValidateToken(hs.Token) {
-				log.Println("Unauthorized connection attempt from:", hs.Hostname)
-				conn.Close()
-				return
-			}
-
-			if hs.Hostname == "" {
-				log.Println("Handshake rejected: empty hostname")
-				conn.Close()
-				return
-			}
-
-			sessID := hs.SessionID
-			if sessID == "" {
-				sessID = fmt.Sprintf("sess-%s-%d", hs.Hostname, time.Now().UnixNano())
-			}
-
-			meta := protocol.NodeMetadata{
-				ID:          hs.Hostname,
-				SessionID:   sessID,
-				Hostname:    hs.Hostname,
-				Domain:      hs.Domain,
-				OS:          hs.OS,
-				Arch:        hs.Arch,
-				Version:     hs.Version,
-				RemoteIP:    r.RemoteAddr,
-				Status:      "online",
-				ConnectedAt: time.Now().UTC().Format(time.RFC3339),
-				Tags:        hs.Tags,
-			}
-
-			if _, err := meshRelay.RegisterNode(meta, mux); err != nil {
-				conn.Close()
-				return
-			}
-			log.Printf("Node connected successfully: %s (session: %s)\n", hs.Hostname, sessID)
-		})
-
-		router.HandleFunc(string(protocol.TypeDNSQuery), func(stream net.Conn, env []byte) {
-			defer stream.Close()
-			var query protocol.DNSQuery
-			if err := json.Unmarshal(env, &query); err != nil {
-				return
-			}
-
-			resp := meshRelay.ResolveDNS(query, proxyIP)
-			b, _ := json.Marshal(resp)
-
-			outStream, err := mux.Session.Open()
-			if err == nil {
-				outStream.Write(b)
-				outStream.Close()
-			}
-		})
-
-		router.HandleFunc(string(protocol.TypeExecRequest), func(stream net.Conn, env []byte) {
-			var req protocol.ExecRequest
-			if err := json.Unmarshal(env, &req); err != nil {
-				stream.Close()
-				return
-			}
-			log.Printf("CLI requested exec on %s: %s\n", req.TargetHostname, req.Command)
-			if err := meshRelay.RouteStream(req.TargetHostname, env, stream); err != nil {
-				log.Println("RouteStream error:", err)
-			}
-		})
-
-		router.HandleFunc(string(protocol.TypeCopyRequest), func(stream net.Conn, env []byte) {
-			var req protocol.CopyRequest
-			if err := json.Unmarshal(env, &req); err != nil {
-				stream.Close()
-				return
-			}
-			if err := meshRelay.RouteStream(req.TargetHostname, env, stream); err != nil {
-				log.Println("RouteStream copy error:", err)
-			}
-		})
-
-		router.HandleFunc(string(protocol.TypeProxyRequest), func(stream net.Conn, env []byte) {
-			var req protocol.ProxyRequest
-			if err := json.Unmarshal(env, &req); err != nil {
-				stream.Close()
-				return
-			}
-			if err := meshRelay.RouteProxyStream(req.TargetHostname, env, stream); err != nil {
-				log.Println("RouteProxyStream error:", err)
-			}
-		})
-
-		router.Accept()
+		}()
 	})
 
 	authenticate := func(w http.ResponseWriter, r *http.Request) bool {

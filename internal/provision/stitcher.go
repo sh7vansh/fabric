@@ -17,6 +17,7 @@ import (
 	"net/http"
 
 	"fabric/internal/protocol"
+	"fabric/internal/service"
 )
 
 // StitchHostOptions defines parameters for provisioning a remote machine into the mesh.
@@ -285,196 +286,132 @@ func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
 		}
 	}
 
-	tagsJoined := strings.Join(opts.Tags, ",")
+	mgr := service.NewInitManager()
+	return mgr.RenderBootstrapScript(service.BootstrapScriptOptions{
+		SocketURL:   socketURL,
+		Token:       opts.Token,
+		Domain:      opts.Domain,
+		Tags:        opts.Tags,
+		NodePayload: payload,
+		CliPayload:  cliPayload,
+	})
+}
 
-	return fmt.Sprintf(`#!/usr/bin/env bash
-set -e
+// KeyPromptFunc prompts the user to select an SSH key when authentication fails.
+type KeyPromptFunc func(target string, availableKeys []string) (string, error)
 
-echo "[+] Initializing Fabric air-gapped zero-internet bootstrap..."
+// ProgressFunc reports status during batch or multi-stage operations.
+type ProgressFunc func(current, total int, target, msg string)
 
-# 1. Privilege Level Detection
-IS_ROOT=0
-SUDO=""
-if [ "$EUID" -eq 0 ]; then
-    IS_ROOT=1
-elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-    IS_ROOT=1
-    SUDO="sudo"
-fi
+// ProvisionResult stores the outcome of provisioning a target host into the mesh.
+type ProvisionResult struct {
+	Target   string
+	Hostname string
+	Success  bool
+	Error    error
+	Node     *protocol.NodeMetadata
+}
 
-# 2. Systemd Capability Detection
-HAS_SYSTEMD=0
-if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-    HAS_SYSTEMD=1
-fi
+// Provisioner provides an autonomous engine for provisioning remote nodes into the mesh.
+type Provisioner struct {
+	exec       RemoteExecutor
+	verifier   NodeVerifierFunc
+	keyPrompt  KeyPromptFunc
+	onProgress ProgressFunc
+}
 
-# 3. Determine Installation Paths
-if [ "$IS_ROOT" -eq 1 ]; then
-    INSTALL_BIN_DIR="/usr/local/bin"
-    CONFIG_DIR="/etc/fabric"
-    RUN_DIR="/var/run/fabric"
-    $SUDO mkdir -p "$INSTALL_BIN_DIR" "$CONFIG_DIR" "$RUN_DIR"
-else
-    INSTALL_BIN_DIR="$HOME/.local/bin"
-    CONFIG_DIR="$HOME/.config/fabric"
-    RUN_DIR="$HOME/.fabric"
-    mkdir -p "$INSTALL_BIN_DIR" "$CONFIG_DIR" "$RUN_DIR"
-fi
+// NewProvisioner creates a new Provisioner.
+func NewProvisioner(exec RemoteExecutor, verifier NodeVerifierFunc) *Provisioner {
+	return &Provisioner{
+		exec:     exec,
+		verifier: verifier,
+	}
+}
 
-TARGET_BIN="$INSTALL_BIN_DIR/fabric-node"
-ENV_FILE="$CONFIG_DIR/node.env"
+// WithKeyPrompt sets an interactive key prompt callback on SSH auth failure.
+func (p *Provisioner) WithKeyPrompt(fn KeyPromptFunc) *Provisioner {
+	p.keyPrompt = fn
+	return p
+}
 
-# 4. Extract Injected Self-Contained Binary Payload
-PAYLOAD="%s"
-if [ -n "$PAYLOAD" ]; then
-    echo "[+] Unpacking injected fabric-node binary to $TARGET_BIN..."
-    if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
-        (echo "$PAYLOAD" | base64 -d | gzip -d | $SUDO tee "$TARGET_BIN" > /dev/null 2>&1) || (echo "$PAYLOAD" | base64 -d | gunzip | $SUDO tee "$TARGET_BIN" > /dev/null 2>&1)
-        $SUDO chmod 755 "$TARGET_BIN"
-    else
-        (echo "$PAYLOAD" | base64 -d | gzip -d > "$TARGET_BIN" 2>/dev/null) || (echo "$PAYLOAD" | base64 -d | gunzip > "$TARGET_BIN" 2>/dev/null)
-        chmod 755 "$TARGET_BIN"
-    fi
-fi
+// WithProgress sets a progress feedback callback for batch operations.
+func (p *Provisioner) WithProgress(fn ProgressFunc) *Provisioner {
+	p.onProgress = fn
+	return p
+}
 
-# Extract CLI binary if available
-CLI_PAYLOAD="%s"
-if [ -n "$CLI_PAYLOAD" ]; then
-    echo "[+] Unpacking injected fabric CLI to $INSTALL_BIN_DIR/fabric..."
-    TARGET_CLI="$INSTALL_BIN_DIR/fabric"
-    if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
-        (echo "$CLI_PAYLOAD" | base64 -d | gzip -d | $SUDO tee "$TARGET_CLI" > /dev/null 2>&1) || (echo "$CLI_PAYLOAD" | base64 -d | gunzip | $SUDO tee "$TARGET_CLI" > /dev/null 2>&1)
-        $SUDO chmod 755 "$TARGET_CLI"
-    else
-        (echo "$CLI_PAYLOAD" | base64 -d | gzip -d > "$TARGET_CLI" 2>/dev/null) || (echo "$CLI_PAYLOAD" | base64 -d | gunzip > "$TARGET_CLI" 2>/dev/null)
-        chmod 755 "$TARGET_CLI"
-    fi
-fi
+// DiscoverLocalSSHKeys scans ~/.ssh for private keys.
+func DiscoverLocalSSHKeys() []string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	files, err := os.ReadDir(sshDir)
+	if err != nil {
+		return nil
+	}
 
-# Validate binary integrity and executable permissions
-if [ ! -s "$TARGET_BIN" ] || [ ! -x "$TARGET_BIN" ]; then
-    if command -v fabric-node >/dev/null 2>&1; then
-        TARGET_BIN="$(command -v fabric-node)"
-    elif [ -x "/usr/local/bin/fabric-node" ]; then
-        TARGET_BIN="/usr/local/bin/fabric-node"
-    else
-        echo "[!] Binary validation failed: $TARGET_BIN not found or not executable" >&2
-        exit 1
-    fi
-fi
-echo "[+] Validated binary integrity: $TARGET_BIN"
+	var keys []string
+	for _, f := range files {
+		if !f.IsDir() && !strings.HasSuffix(f.Name(), ".pub") &&
+			!strings.HasPrefix(f.Name(), "known_hosts") &&
+			!strings.HasPrefix(f.Name(), "config") &&
+			!strings.HasPrefix(f.Name(), "authorized_keys") {
+			keys = append(keys, filepath.Join(sshDir, f.Name()))
+		}
+	}
+	return keys
+}
 
-# 5. Write Environment Configuration
-ENV_CONTENT="FABRIC_SOCKET_URL=%s
-FABRIC_TOKEN=%s
-FABRIC_DOMAIN=%s
-FABRIC_TAGS=%s"
+// Provision stitches a single remote target host into the mesh with automatic key retry.
+func (p *Provisioner) Provision(opts StitchHostOptions) (*protocol.NodeMetadata, error) {
+	node, err := ExecuteStitchHost(opts, p.exec, p.verifier)
+	if err != nil && strings.Contains(err.Error(), "exit status 255") && p.keyPrompt != nil {
+		keys := DiscoverLocalSSHKeys()
+		if len(keys) > 0 {
+			chosenKey, promptErr := p.keyPrompt(opts.Target, keys)
+			if promptErr == nil && chosenKey != "" {
+				opts.IdentityKey = chosenKey
+				return ExecuteStitchHost(opts, p.exec, p.verifier)
+			}
+		}
+	}
+	return node, err
+}
 
-if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
-    echo "$ENV_CONTENT" | $SUDO tee "$ENV_FILE" > /dev/null
-    $SUDO chmod 600 "$ENV_FILE"
-else
-    echo "$ENV_CONTENT" > "$ENV_FILE"
-    chmod 600 "$ENV_FILE"
-fi
-
-# 6. Multi-Tier Init Selection & Service Activation
-if [ "$IS_ROOT" -eq 1 ] && [ "$HAS_SYSTEMD" -eq 1 ]; then
-    # Tier 1: Root / Sudo with systemd (System service)
-    echo "[+] Configuring systemd system service (/etc/systemd/system/fabric-node.service)..."
-    cat << 'UNIT_EOF' | $SUDO tee /etc/systemd/system/fabric-node.service > /dev/null
-[Unit]
-Description=Fabric Mesh Network Node
-After=network.target network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-EnvironmentFile=-/etc/fabric/node.env
-ExecStart=/usr/local/bin/fabric-node
-Restart=always
-RestartSec=3s
-LimitNOFILE=65536
-ExecStopPost=/usr/bin/resolvectl revert lo
-
-[Install]
-WantedBy=multi-user.target
-UNIT_EOF
-
-    $SUDO chmod 644 /etc/systemd/system/fabric-node.service
-    $SUDO systemctl daemon-reload
-    $SUDO systemctl restart fabric-node || true
-    $SUDO systemctl enable fabric-node || true
-    echo "[+] Systemd system service enabled and active."
-
-elif [ "$IS_ROOT" -eq 0 ] && [ "$HAS_SYSTEMD" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
-    # Tier 2: Non-root with systemd (User service)
-    echo "[+] Configuring systemd user service (~/.config/systemd/user/fabric-node.service)..."
-    mkdir -p "$HOME/.config/systemd/user"
-    cat << UNIT_EOF > "$HOME/.config/systemd/user/fabric-node.service"
-[Unit]
-Description=Fabric Mesh Network Node (User)
-After=network.target
-
-[Service]
-Type=simple
-EnvironmentFile=-$HOME/.config/fabric/node.env
-ExecStart=$TARGET_BIN
-Restart=always
-RestartSec=3s
-LimitNOFILE=65536
-
-[Install]
-WantedBy=default.target
-UNIT_EOF
-
-    chmod 644 "$HOME/.config/systemd/user/fabric-node.service"
-    loginctl enable-linger "$(whoami)" 2>/dev/null || true
-    systemctl --user daemon-reload || true
-    systemctl --user restart fabric-node || true
-    systemctl --user enable fabric-node || true
-    echo "[+] Systemd user service enabled and active."
-
-else
-    # Tier 3: Non-systemd / Edge / Container (Supervised background daemon)
-    echo "[+] Configuring standalone supervisor daemon in $RUN_DIR..."
-    PIDFILE="$RUN_DIR/fabric-node.pid"
-    SUPERVISOR="$RUN_DIR/fabric-node-supervisor.sh"
-
-    if [ -f "$PIDFILE" ]; then
-        OLD_PID=$(cat "$PIDFILE" 2>/dev/null || true)
-        if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
-            kill "$OLD_PID" 2>/dev/null || true
-            sleep 1
-        fi
-        rm -f "$PIDFILE"
-    fi
-
-    cat << 'SUPERVISOR_EOF' > "$SUPERVISOR"
-#!/usr/bin/env bash
-PIDFILE="$1"
-ENVFILE="$2"
-BIN="$3"
-if [ -f "$ENVFILE" ]; then
-    set -a
-    . "$ENVFILE"
-    set +a
-fi
-while true; do
-    "$BIN" &
-    CHILD_PID=$!
-    echo "$CHILD_PID" > "$PIDFILE"
-    wait "$CHILD_PID"
-    sleep 2
-done
-SUPERVISOR_EOF
-
-    chmod 755 "$SUPERVISOR"
-    nohup "$SUPERVISOR" "$PIDFILE" "$ENV_FILE" "$TARGET_BIN" > /dev/null 2>&1 &
-    echo $! > "$RUN_DIR/fabric-node-supervisor.pid"
-    echo "[+] Supervised background daemon started (PID file: $PIDFILE)."
-fi
-`, payload, cliPayload, socketURL, opts.Token, opts.Domain, tagsJoined)
+// ProvisionBatch stitches multiple remote target hosts into the mesh.
+func (p *Provisioner) ProvisionBatch(targets []StitchHostOptions) ([]ProvisionResult, error) {
+	var results []ProvisionResult
+	for i, t := range targets {
+		if p.onProgress != nil {
+			p.onProgress(i+1, len(targets), t.Target, "stitching")
+		}
+		node, err := p.Provision(t)
+		res := ProvisionResult{
+			Target: t.Target,
+			Node:   node,
+		}
+		if err != nil {
+			res.Success = false
+			res.Error = err
+			if p.onProgress != nil {
+				p.onProgress(i+1, len(targets), t.Target, fmt.Sprintf("failed: %v", err))
+			}
+		} else {
+			res.Success = true
+			if node != nil {
+				res.Hostname = node.Hostname
+			} else {
+				res.Hostname = t.Target
+			}
+			if p.onProgress != nil {
+				p.onProgress(i+1, len(targets), t.Target, fmt.Sprintf("joined as %s", res.Hostname))
+			}
+		}
+		results = append(results, res)
+	}
+	return results, nil
 }
 
 // NodeVerifierFunc is a callback that queries the Socket for connected nodes.

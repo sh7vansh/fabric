@@ -93,7 +93,7 @@ func TestInvertedConnectionMode(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	err = client.Execute(opts, nil, &stdout, &stderr)
+	_, err = client.Execute(opts, nil, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("direct execute failed: %v", err)
 	}

@@ -16,6 +16,10 @@ func (m *mockExecutor) Run(script string) error {
 	return nil
 }
 
+func (m *mockExecutor) QueryArch() (string, string, error) {
+	return "linux", "amd64", nil
+}
+
 func TestPackageBinaryPayload(t *testing.T) {
 	fakeData := []byte("#!/bin/sh\necho 'fake fabric-node binary'")
 	payload, err := PackageBinaryPayload(fakeData)
@@ -141,5 +145,37 @@ func TestExecuteStitchHostWithMock(t *testing.T) {
 	}
 	if !strings.Contains(mockExec.lastScript, "FABRIC_TAGS=ingress") {
 		t.Errorf("Script missing tags in mock execution")
+	}
+}
+
+func TestProvisionerBatch(t *testing.T) {
+	mockExec := &mockExecutor{}
+	verifier := func(socketURL, token string) ([]protocol.NodeMetadata, error) {
+		return []protocol.NodeMetadata{
+			{Hostname: "host-a", Status: "online"},
+			{Hostname: "host-b", Status: "online"},
+		}, nil
+	}
+
+	provisioner := NewProvisioner(mockExec, verifier)
+
+	targets := []StitchHostOptions{
+		{Target: "host-a", SocketURL: "ws://10.0.0.1:8080/ws", Token: "tok", BinaryData: []byte("bin")},
+		{Target: "host-b", SocketURL: "ws://10.0.0.1:8080/ws", Token: "tok", BinaryData: []byte("bin")},
+	}
+
+	results, err := provisioner.ProvisionBatch(targets)
+	if err != nil {
+		t.Fatalf("ProvisionBatch failed: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	for _, r := range results {
+		if !r.Success {
+			t.Errorf("expected target %s to succeed, got error: %v", r.Target, r.Error)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"fabric/internal/pki"
@@ -18,7 +20,7 @@ import (
 	"golang.org/x/term"
 )
 
-// ExecOptions holds parameters for remote command execution.
+// ExecOptions holds parameters for remote command execution across single nodes or entire fleets.
 type ExecOptions struct {
 	Target      string
 	Command     string
@@ -28,6 +30,73 @@ type ExecOptions struct {
 	Env         []string
 	WorkDir     string
 	User        string
+	// Fleet parameters
+	All         bool
+	Tag         string
+	Concurrency int
+}
+
+// NodeExecResult stores execution telemetry for a single targeted node.
+type NodeExecResult struct {
+	Node     string
+	Success  bool
+	ExitCode string
+	Duration time.Duration
+	Error    error
+}
+
+// FleetResult aggregates execution results across all targeted nodes.
+type FleetResult struct {
+	Results        []NodeExecResult
+	Total          int
+	SucceededCount int
+	FailedCount    int
+	HasFailure     bool
+}
+
+// LinePrefixedWriter buffers streamed output chunks and prints complete lines prefixed with the node identifier.
+type LinePrefixedWriter struct {
+	prefix string
+	out    io.Writer
+	mu     *sync.Mutex
+	buf    bytes.Buffer
+}
+
+// NewLinePrefixedWriter creates a thread-safe line prefix writer for node output streaming.
+func NewLinePrefixedWriter(prefix string, out io.Writer, mu *sync.Mutex) *LinePrefixedWriter {
+	return &LinePrefixedWriter{
+		prefix: prefix,
+		out:    out,
+		mu:     mu,
+	}
+}
+
+func (w *LinePrefixedWriter) Write(p []byte) (n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	n = len(p)
+	w.buf.Write(p)
+
+	for {
+		line, err := w.buf.ReadBytes('\n')
+		if err != nil {
+			w.buf.Write(line)
+			break
+		}
+		fmt.Fprintf(w.out, "[%s] %s", w.prefix, string(line))
+	}
+	return n, nil
+}
+
+func (w *LinePrefixedWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.buf.Len() > 0 {
+		fmt.Fprintf(w.out, "[%s] %s\n", w.prefix, w.buf.String())
+		w.buf.Reset()
+	}
 }
 
 // Client provides deep operational methods to communicate with a Fabric Socket and mesh nodes.
@@ -167,8 +236,158 @@ func (c *Client) GetNode(hostname string) (*protocol.NodeMetadata, error) {
 	return &meta, nil
 }
 
-// Execute opens a multiplexed stream to the target node and executes a command with standard I/O streaming.
-func (c *Client) Execute(opts ExecOptions, in io.Reader, out, errOut io.Writer) error {
+// Execute opens multiplexed stream(s) and executes a command across single nodes or parallel node fleets.
+func (c *Client) Execute(opts ExecOptions, in io.Reader, out, errOut io.Writer) (*FleetResult, error) {
+	if opts.All || opts.Tag != "" {
+		return c.executeFleet(opts, out, errOut)
+	}
+
+	startTime := time.Now()
+	err := c.executeSingle(opts, in, out, errOut)
+	duration := time.Since(startTime).Round(time.Millisecond)
+
+	res := NodeExecResult{
+		Node:     opts.Target,
+		Duration: duration,
+	}
+
+	if err != nil {
+		res.Success = false
+		res.Error = err
+		if strings.HasPrefix(err.Error(), "exit code ") {
+			res.ExitCode = strings.TrimPrefix(err.Error(), "exit code ")
+		} else {
+			res.ExitCode = "ERR"
+		}
+		return &FleetResult{
+			Results:        []NodeExecResult{res},
+			Total:          1,
+			SucceededCount: 0,
+			FailedCount:    1,
+			HasFailure:     true,
+		}, err
+	}
+
+	res.Success = true
+	res.ExitCode = "0"
+	return &FleetResult{
+		Results:        []NodeExecResult{res},
+		Total:          1,
+		SucceededCount: 1,
+		FailedCount:    0,
+		HasFailure:     false,
+	}, nil
+}
+
+func (c *Client) executeFleet(opts ExecOptions, out, errOut io.Writer) (*FleetResult, error) {
+	allNodes, err := c.ListNodes()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query active mesh nodes: %w", err)
+	}
+
+	var targets []protocol.NodeMetadata
+	if opts.Tag != "" {
+		for _, n := range allNodes {
+			for _, t := range n.Tags {
+				if t == opts.Tag {
+					targets = append(targets, n)
+					break
+				}
+			}
+		}
+		if len(targets) == 0 {
+			return nil, fmt.Errorf("no active nodes found with tag %q", opts.Tag)
+		}
+	} else {
+		targets = allNodes
+		if len(targets) == 0 {
+			return nil, fmt.Errorf("no active nodes connected to mesh")
+		}
+	}
+
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = 10
+	}
+	if concurrency > len(targets) {
+		concurrency = len(targets)
+	}
+
+	sem := make(chan struct{}, concurrency)
+	results := make([]NodeExecResult, len(targets))
+	var wg sync.WaitGroup
+	var outMu sync.Mutex
+
+	for i, node := range targets {
+		wg.Add(1)
+		go func(idx int, targetMeta protocol.NodeMetadata) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			startTime := time.Now()
+			stdoutWriter := NewLinePrefixedWriter(targetMeta.Hostname, out, &outMu)
+			stderrWriter := NewLinePrefixedWriter(targetMeta.Hostname, errOut, &outMu)
+
+			singleOpts := opts
+			singleOpts.Target = targetMeta.Hostname
+			singleOpts.AllocatePTY = false
+			singleOpts.Interactive = false
+			singleOpts.All = false
+			singleOpts.Tag = ""
+
+			err := c.executeSingle(singleOpts, nil, stdoutWriter, stderrWriter)
+			stdoutWriter.Flush()
+			stderrWriter.Flush()
+
+			duration := time.Since(startTime).Round(time.Millisecond)
+
+			res := NodeExecResult{
+				Node:     targetMeta.Hostname,
+				Duration: duration,
+			}
+
+			if err != nil {
+				res.Success = false
+				res.Error = err
+				if strings.HasPrefix(err.Error(), "exit code ") {
+					res.ExitCode = strings.TrimPrefix(err.Error(), "exit code ")
+				} else {
+					res.ExitCode = "ERR"
+				}
+			} else {
+				res.Success = true
+				res.ExitCode = "0"
+			}
+
+			results[idx] = res
+		}(i, node)
+	}
+
+	wg.Wait()
+
+	fleetRes := &FleetResult{
+		Results: results,
+		Total:   len(results),
+	}
+
+	for _, r := range results {
+		if r.Success {
+			fleetRes.SucceededCount++
+		} else {
+			fleetRes.FailedCount++
+			fleetRes.HasFailure = true
+		}
+	}
+
+	if fleetRes.HasFailure {
+		return fleetRes, fmt.Errorf("fleet execution failed on 1 or more nodes")
+	}
+
+	return fleetRes, nil
+}
+
+func (c *Client) executeSingle(opts ExecOptions, in io.Reader, out, errOut io.Writer) error {
 	conn, err := c.DialWebSocket()
 	if err != nil {
 		return err
