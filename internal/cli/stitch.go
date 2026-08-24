@@ -326,7 +326,13 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 		batchOpts = append(batchOpts, opts)
 	}
 
-	provisioner := provision.NewProvisioner(nil, nodeVerifier)
+	provisioner := provision.NewProvisioner(nil, nodeVerifier).
+		WithKeyPrompt(interactiveKeyPrompt).
+		WithProgress(func(current, total int, target, msg string) {
+			if !discoverQuietFlag {
+				fmt.Printf("[%d/%d] %s: %s\n", current, total, target, msg)
+			}
+		})
 	results, _ := provisioner.ProvisionBatch(batchOpts)
 
 	fmt.Println("\n==================================================")

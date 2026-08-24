@@ -3,6 +3,7 @@ package relay
 import (
 	"encoding/base64"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -202,15 +203,22 @@ func TestRelayRouteStream(t *testing.T) {
 	// Stream handler on client side (target-node agent)
 	streamReceived := make(chan string, 1)
 	go func() {
-		stream, err := cMux.Session.Accept()
-		if err != nil {
+		for {
+			stream, err := cMux.Session.Accept()
+			if err != nil {
+				return
+			}
+			buf := make([]byte, 64)
+			n, _ := stream.Read(buf)
+			content := string(buf[:n])
+			if strings.Contains(content, "node_sync") {
+				stream.Close()
+				continue
+			}
+			streamReceived <- content
+			stream.Close()
 			return
 		}
-		defer stream.Close()
-
-		buf := make([]byte, 64)
-		n, _ := stream.Read(buf)
-		streamReceived <- string(buf[:n])
 	}()
 
 	srcConn, cliConn := net.Pipe()

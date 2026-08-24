@@ -88,12 +88,3 @@ func UninstallService(role string) error {
 	return mgr.UninstallService(role)
 }
 
-func getStandalonePaths(role string) (runDir, pidFile, supervisorScript, binPath string) {
-	mgr := service.NewInitManager()
-	return mgr.GetStandalonePaths(role)
-}
-
-func runPrivilegedCommand(name string, args ...string) error {
-	mgr := service.NewInitManager()
-	return mgr.RunPrivileged(name, args...)
-}

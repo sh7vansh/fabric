@@ -587,26 +587,10 @@ else
     fi
 
     cat << 'SUPERVISOR_EOF' > "$SUPERVISOR"
-#!/usr/bin/env bash
-PIDFILE="$1"
-ENVFILE="$2"
-BIN="$3"
-if [ -f "$ENVFILE" ]; then
-    set -a
-    . "$ENVFILE"
-    set +a
-fi
-while true; do
-    "$BIN" &
-    CHILD_PID=$!
-    echo "$CHILD_PID" > "$PIDFILE"
-    wait "$CHILD_PID"
-    sleep 2
-done
-SUPERVISOR_EOF
+` + m.GenerateSupervisorScript("$PIDFILE", "$ENV_FILE", "$TARGET_BIN") + `SUPERVISOR_EOF
 
     chmod 755 "$SUPERVISOR"
-    nohup "$SUPERVISOR" "$PIDFILE" "$ENV_FILE" "$TARGET_BIN" > /dev/null 2>&1 &
+    nohup "$SUPERVISOR" > /dev/null 2>&1 &
     echo $! > "$RUN_DIR/fabric-node-supervisor.pid"
     echo "[+] Supervised background daemon started (PID file: $PIDFILE)."
 fi

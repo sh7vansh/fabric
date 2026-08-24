@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"fabric/internal/protocol"
+	"fabric/internal/service"
 )
 
 func TestParsePathSpec(t *testing.T) {
@@ -95,7 +96,8 @@ func TestParseTags(t *testing.T) {
 }
 
 func TestGetStandalonePaths(t *testing.T) {
-	runDir, pidFile, sup, bin := getStandalonePaths("node")
+	mgr := service.NewInitManager()
+	runDir, pidFile, sup, bin := mgr.GetStandalonePaths("node")
 	if runDir == "" || pidFile == "" || sup == "" || bin == "" {
 		t.Errorf("getStandalonePaths returned empty paths: %s, %s, %s, %s", runDir, pidFile, sup, bin)
 	}

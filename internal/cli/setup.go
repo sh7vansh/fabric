@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"fabric/internal/pki"
+	"fabric/internal/service"
 
 	"github.com/spf13/cobra"
 )
@@ -260,8 +261,9 @@ func runNodeSetup(reader *bufio.Reader) error {
 }
 
 func saveDaemonConfigAndService(reader *bufio.Reader, role, envContent string) {
+	mgr := service.NewInitManager()
 	envDir := "/etc/fabric"
-	if err := runPrivilegedCommand("mkdir", "-p", envDir); err != nil {
+	if err := mgr.RunPrivileged("mkdir", "-p", envDir); err != nil {
 		home, _ := os.UserHomeDir()
 		envDir = filepath.Join(home, ".fabric")
 		_ = os.MkdirAll(envDir, 0755)
@@ -275,8 +277,8 @@ func saveDaemonConfigAndService(reader *bufio.Reader, role, envContent string) {
 		if err == nil {
 			_, _ = tmpFile.WriteString(envContent)
 			tmpFile.Close()
-			_ = runPrivilegedCommand("cp", tmpFile.Name(), envPath)
-			_ = runPrivilegedCommand("chmod", "600", envPath)
+			_ = mgr.RunPrivileged("cp", tmpFile.Name(), envPath)
+			_ = mgr.RunPrivileged("chmod", "600", envPath)
 			_ = os.Remove(tmpFile.Name())
 		}
 	}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"io"
 	"net/http"
@@ -380,37 +381,75 @@ func (p *Provisioner) Provision(opts StitchHostOptions) (*protocol.NodeMetadata,
 	return node, err
 }
 
-// ProvisionBatch stitches multiple remote target hosts into the mesh.
+// ProvisionBatch stitches multiple remote target hosts into the mesh concurrently.
 func (p *Provisioner) ProvisionBatch(targets []StitchHostOptions) ([]ProvisionResult, error) {
-	var results []ProvisionResult
-	for i, t := range targets {
-		if p.onProgress != nil {
-			p.onProgress(i+1, len(targets), t.Target, "stitching")
-		}
-		node, err := p.Provision(t)
-		res := ProvisionResult{
-			Target: t.Target,
-			Node:   node,
-		}
-		if err != nil {
-			res.Success = false
-			res.Error = err
-			if p.onProgress != nil {
-				p.onProgress(i+1, len(targets), t.Target, fmt.Sprintf("failed: %v", err))
-			}
-		} else {
-			res.Success = true
-			if node != nil {
-				res.Hostname = node.Hostname
-			} else {
-				res.Hostname = t.Target
-			}
-			if p.onProgress != nil {
-				p.onProgress(i+1, len(targets), t.Target, fmt.Sprintf("joined as %s", res.Hostname))
-			}
-		}
-		results = append(results, res)
+	if len(targets) == 0 {
+		return nil, nil
 	}
+	results := make([]ProvisionResult, len(targets))
+	concurrency := 8
+	if len(targets) < concurrency {
+		concurrency = len(targets)
+	}
+
+	type job struct {
+		index int
+		opts  StitchHostOptions
+	}
+
+	jobs := make(chan job, len(targets))
+	for i, t := range targets {
+		jobs <- job{index: i, opts: t}
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	completed := 0
+
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				mu.Lock()
+				if p.onProgress != nil {
+					p.onProgress(completed+1, len(targets), j.opts.Target, "stitching")
+				}
+				mu.Unlock()
+
+				node, err := p.Provision(j.opts)
+				res := ProvisionResult{
+					Target: j.opts.Target,
+					Node:   node,
+				}
+				if err != nil {
+					res.Success = false
+					res.Error = err
+				} else {
+					res.Success = true
+					if node != nil {
+						res.Hostname = node.Hostname
+					} else {
+						res.Hostname = j.opts.Target
+					}
+				}
+
+				mu.Lock()
+				completed++
+				results[j.index] = res
+				if p.onProgress != nil {
+					if res.Success {
+						p.onProgress(completed, len(targets), j.opts.Target, fmt.Sprintf("joined as %s", res.Hostname))
+					} else {
+						p.onProgress(completed, len(targets), j.opts.Target, fmt.Sprintf("failed: %v", err))
+					}
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
 	return results, nil
 }
 
@@ -514,7 +553,11 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 			}
 
 			for _, n := range nodes {
-				if n.Hostname == targetHostOnly || strings.HasPrefix(n.RemoteIP, targetHostOnly) || targetHostOnly == "localhost" || targetHostOnly == "127.0.0.1" {
+				remoteHost := n.RemoteIP
+				if h, _, err := net.SplitHostPort(n.RemoteIP); err == nil {
+					remoteHost = h
+				}
+				if n.Hostname == targetHostOnly || remoteHost == targetHostOnly || targetHostOnly == "localhost" || targetHostOnly == "127.0.0.1" {
 					if !opts.SilentOutput {
 						fmt.Println(" Connected!")
 					}

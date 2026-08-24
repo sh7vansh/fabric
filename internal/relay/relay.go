@@ -289,16 +289,19 @@ func (r *Relay) GetNode(hostname string) (*protocol.NodeMetadata, bool) {
 	return &metaCopy, true
 }
 
-// ListNodes returns metadata for all currently connected nodes.
-func (r *Relay) ListNodes() []protocol.NodeMetadata {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
+func (r *Relay) listNodesLocked() []protocol.NodeMetadata {
 	list := make([]protocol.NodeMetadata, 0, len(r.nodes))
 	for _, state := range r.nodes {
 		list = append(list, state.Metadata)
 	}
 	return list
+}
+
+// ListNodes returns metadata for all currently connected nodes.
+func (r *Relay) ListNodes() []protocol.NodeMetadata {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.listNodesLocked()
 }
 
 // RouteStream forwards an incoming stream and initial envelope to a target node.
@@ -445,10 +448,7 @@ func (r *Relay) ResolveDNS(req protocol.DNSQuery, proxyIP string) protocol.DNSRe
 // BroadcastSync broadcasts connected node metadata to all active nodes.
 func (r *Relay) BroadcastSync() {
 	r.mu.RLock()
-	list := make([]protocol.NodeMetadata, 0, len(r.nodes))
-	for _, state := range r.nodes {
-		list = append(list, state.Metadata)
-	}
+	list := r.listNodesLocked()
 	nodeSessions := make([]*NodeSession, 0, len(r.nodes))
 	for _, s := range r.nodes {
 		nodeSessions = append(nodeSessions, s)
