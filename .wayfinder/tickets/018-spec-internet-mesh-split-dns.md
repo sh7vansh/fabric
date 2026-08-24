@@ -1,6 +1,6 @@
 ---
 label: ready-for-agent
-status: open
+status: closed
 ---
 # Specification: Internet-Wide Private Split DNS Resolution for Fabric Mesh
 

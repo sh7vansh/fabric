@@ -1,6 +1,6 @@
 ---
 label: ready-for-agent
-status: open
+status: closed
 ---
 # Specification: Automated Network Discovery & Batch Stitching (`fabric stitch discover`)
 
