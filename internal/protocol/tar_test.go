@@ -3,8 +3,10 @@ package protocol
 import (
 	"archive/tar"
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -92,5 +94,113 @@ func TestExtractTarRejectsTarSlip(t *testing.T) {
 	err := ExtractTar(&buf, destDir)
 	if err == nil {
 		t.Fatal("ExtractTar expected error for Tar Slip archive, got nil")
+	}
+}
+
+func TestExtractTarEntryCountLimit(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	for i := 0; i < 20; i++ {
+		hdr := &tar.Header{
+			Name: fmt.Sprintf("file_%d.txt", i),
+			Mode: 0644,
+			Size: 4,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		tw.Write([]byte("test"))
+	}
+	tw.Close()
+
+	destDir := t.TempDir()
+	// Test with a maxEntries limit of 10
+	err := ExtractTarWithLimits(&buf, destDir, 1024*1024, 10)
+	if err == nil {
+		t.Fatalf("expected ExtractTarWithLimits to fail on entry count > 10, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum entry count") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractTarDecompressedSizeLimit(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	payload := make([]byte, 2048)
+	hdr := &tar.Header{
+		Name: "large_file.bin",
+		Mode: 0644,
+		Size: int64(len(payload)),
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	tw.Write(payload)
+	tw.Close()
+
+	destDir := t.TempDir()
+	// Limit extraction to 1024 bytes max
+	err := ExtractTarWithLimits(&buf, destDir, 1024, 100)
+	if err == nil {
+		t.Fatalf("expected ExtractTarWithLimits to fail on exceeding max size, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeded maximum decompressed size") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractTarStrippingSUIDBits(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	body := []byte("executable script")
+	hdr := &tar.Header{
+		Name: "suid_script.sh",
+		Mode: 04755, // Setuid bit set
+		Size: int64(len(body)),
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatal(err)
+	}
+	tw.Write(body)
+	tw.Close()
+
+	destDir := t.TempDir()
+	if err := ExtractTar(&buf, destDir); err != nil {
+		t.Fatalf("ExtractTar failed: %v", err)
+	}
+
+	fi, err := os.Stat(filepath.Join(destDir, "suid_script.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify SUID and SGID bits are stripped
+	if fi.Mode()&os.ModeSetuid != 0 || fi.Mode()&os.ModeSetgid != 0 {
+		t.Errorf("expected SUID/SGID bits to be stripped, got mode: %v", fi.Mode())
+	}
+	// Perm should be 0755
+	if fi.Mode().Perm() != 0755 {
+		t.Errorf("expected permission 0755, got: %o", fi.Mode().Perm())
+	}
+}
+
+func TestExtractTarSymlinkEscape(t *testing.T) {
+	destDir := t.TempDir()
+
+	// Create a symlink inside destDir pointing outside
+	outsideDir := t.TempDir()
+	symlinkPath := filepath.Join(destDir, "symlink_dir")
+	if err := os.Symlink(outsideDir, symlinkPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now try to extract a file to symlink_dir/evil.txt
+	_, err := SanitizeExtractPath(destDir, "symlink_dir/evil.txt")
+	if err == nil {
+		t.Errorf("expected SanitizeExtractPath to reject traversing symlink pointing outside destDir")
 	}
 }

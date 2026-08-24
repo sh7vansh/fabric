@@ -9,6 +9,12 @@ import (
 	"strings"
 )
 
+// Constants for resource-bounded tar extraction.
+const (
+	MaxTarDecompressedSize int64 = 5 * 1024 * 1024 * 1024 // 5 GB
+	MaxTarEntryCount             = 10000                  // 10,000 files
+)
+
 // SanitizeExtractPath checks whether the entry name stays strictly inside destDir.
 func SanitizeExtractPath(destDir, entryName string) (string, error) {
 	if filepath.IsAbs(entryName) || strings.HasPrefix(entryName, "/") || strings.HasPrefix(entryName, "\\") {
@@ -23,17 +29,52 @@ func SanitizeExtractPath(destDir, entryName string) (string, error) {
 	if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
 		return "", fmt.Errorf("path traversal detected: %q escapes %q", entryName, destDir)
 	}
+
+	// Symlink escape check: Ensure intermediate path components do not resolve to a symlink escaping destDir
+	current := cleanDest
+	parts := strings.Split(rel, string(filepath.Separator))
+	for i := 0; i < len(parts)-1; i++ {
+		current = filepath.Join(current, parts[i])
+		if fi, err := os.Lstat(current); err == nil {
+			if fi.Mode()&os.ModeSymlink != 0 {
+				eval, err := filepath.EvalSymlinks(current)
+				if err != nil {
+					return "", fmt.Errorf("path traversal detected in symlink: %w", err)
+				}
+				evalRel, err := filepath.Rel(cleanDest, eval)
+				if err != nil || strings.HasPrefix(evalRel, ".."+string(filepath.Separator)) || evalRel == ".." {
+					return "", fmt.Errorf("path traversal detected: symlink %q escapes %q", current, destDir)
+				}
+			}
+		}
+	}
+
 	return cleanTarget, nil
 }
 
-// ExtractTar reads a tar stream from r and unpacks it safely inside destDir.
+// ExtractTar reads a tar stream from r and unpacks it safely inside destDir with default limits.
 func ExtractTar(r io.Reader, destDir string) error {
+	return ExtractTarWithLimits(r, destDir, MaxTarDecompressedSize, MaxTarEntryCount)
+}
+
+// ExtractTarWithLimits reads a tar stream and unpacks it enforcing explicit decompressed size and entry bounds.
+func ExtractTarWithLimits(r io.Reader, destDir string, maxBytes int64, maxEntries int) error {
+	if maxBytes <= 0 {
+		maxBytes = MaxTarDecompressedSize
+	}
+	if maxEntries <= 0 {
+		maxEntries = MaxTarEntryCount
+	}
+
 	cleanDest := filepath.Clean(destDir)
 	if err := os.MkdirAll(cleanDest, 0755); err != nil {
 		return err
 	}
 
 	tr := tar.NewReader(r)
+	var totalDecompressedBytes int64
+	var entryCount int
+
 	for {
 		header, err := tr.Next()
 		if err == io.EOF {
@@ -41,6 +82,11 @@ func ExtractTar(r io.Reader, destDir string) error {
 		}
 		if err != nil {
 			return err
+		}
+
+		entryCount++
+		if entryCount > maxEntries {
+			return fmt.Errorf("tar archive exceeds maximum entry count of %d", maxEntries)
 		}
 
 		targetPath, err := SanitizeExtractPath(cleanDest, header.Name)
@@ -57,15 +103,34 @@ func ExtractTar(r io.Reader, destDir string) error {
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 				return err
 			}
-			f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, header.FileInfo().Mode().Perm())
+
+			// Strip SUID/SGID bits and enforce safe permission masking
+			rawPerm := header.FileInfo().Mode().Perm() & 0755
+			fileMode := os.FileMode(0644)
+			if rawPerm&0111 != 0 {
+				fileMode = 0755
+			}
+
+			remainingBytes := maxBytes - totalDecompressedBytes
+			if remainingBytes <= 0 || header.Size > remainingBytes {
+				return fmt.Errorf("tar extraction exceeded maximum decompressed size limit of %d bytes", maxBytes)
+			}
+
+			f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fileMode)
 			if err != nil {
 				return err
 			}
-			if _, err := io.Copy(f, tr); err != nil {
-				f.Close()
+
+			copied, err := io.Copy(f, io.LimitReader(tr, remainingBytes+1))
+			f.Close()
+			if err != nil {
 				return err
 			}
-			f.Close()
+
+			totalDecompressedBytes += copied
+			if totalDecompressedBytes > maxBytes {
+				return fmt.Errorf("tar extraction exceeded maximum decompressed size limit of %d bytes", maxBytes)
+			}
 		}
 	}
 	return nil

@@ -179,3 +179,55 @@ func TestAgentContextCancellation(t *testing.T) {
 		t.Errorf("agent did not terminate cleanly on context cancellation")
 	}
 }
+
+func TestAgentHandleExecUserValidation(t *testing.T) {
+	ag := New(Config{
+		Domain:   "fabric.mesh",
+		Hostname: "test-node",
+	})
+
+	maliciousUsers := []string{
+		"root; echo pwned",
+		"user\" -c \"whoami",
+		"$USER",
+		"user\nname",
+		"user`id`",
+		"-badflag",
+	}
+
+	for _, badUser := range maliciousUsers {
+		sConn, cConn := net.Pipe()
+
+		req := protocol.ExecRequest{
+			Command: "echo test",
+			User:    badUser,
+		}
+		env, _ := json.Marshal(req)
+
+		go ag.HandleExec(sConn, env)
+
+		var stderrCaptured []byte
+		var exitCode string
+
+		for {
+			frame, err := protocol.ReadFrame(cConn)
+			if err != nil {
+				break
+			}
+			if frame.Type == protocol.StreamStderr {
+				stderrCaptured = append(stderrCaptured, frame.Payload...)
+			}
+			if frame.Type == protocol.StreamExit {
+				exitCode = string(frame.Payload)
+			}
+		}
+		cConn.Close()
+
+		if exitCode != "1" {
+			t.Errorf("expected exit code 1 for invalid user %q, got %q", badUser, exitCode)
+		}
+		if len(stderrCaptured) == 0 {
+			t.Errorf("expected error output on stderr for invalid user %q", badUser)
+		}
+	}
+}

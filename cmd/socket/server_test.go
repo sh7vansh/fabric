@@ -1,8 +1,8 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"fabric/internal/cli"
 	"fabric/internal/protocol"
 	"fabric/internal/relay"
 
@@ -25,68 +26,24 @@ func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer, *re
 
 	mux := http.NewServeMux()
 
+	upgrader := meshRelay.Upgrader()
+
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		var provided string
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			provided = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+		authenticated := meshRelay.ValidateToken(provided)
+
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
 
-		smux, err := protocol.NewStreamMultiplexer(conn, true)
-		if err != nil {
-			conn.Close()
-			return
-		}
-
-		router := protocol.NewRouter(smux.Session)
-		router.HandleFunc(string(protocol.TypeHandshake), func(stream net.Conn, env []byte) {
-			defer stream.Close()
-			var hs protocol.Handshake
-			if err := json.Unmarshal(env, &hs); err != nil {
-				conn.Close()
-				return
-			}
-
-			if !meshRelay.ValidateToken(hs.Token) {
-				conn.Close()
-				return
-			}
-
-			if hs.Hostname == "" {
-				conn.Close()
-				return
-			}
-
-			sessID := hs.SessionID
-			if sessID == "" {
-				sessID = fmt.Sprintf("sess-%s-%d", hs.Hostname, time.Now().UnixNano())
-			}
-
-			meta := protocol.NodeMetadata{
-				ID:        hs.Hostname,
-				SessionID: sessID,
-				Hostname:  hs.Hostname,
-				Status:    "online",
-				Tags:      hs.Tags,
-			}
-
-			if _, err := meshRelay.RegisterNode(meta, smux); err != nil {
-				conn.Close()
-				return
-			}
-		})
-
-		router.HandleFunc(string(protocol.TypeExecRequest), func(stream net.Conn, env []byte) {
-			var req protocol.ExecRequest
-			if err := json.Unmarshal(env, &req); err != nil {
-				stream.Close()
-				return
-			}
-			if err := meshRelay.RouteStream(req.TargetHostname, env, stream); err != nil {
-				stream.Close()
-			}
-		})
-
-		router.Accept()
+		go func() {
+			_ = meshRelay.ServeWSAuth(conn, r.RemoteAddr, authenticated)
+		}()
 	})
 
 	authenticate := func(w http.ResponseWriter, r *http.Request) bool {
@@ -334,5 +291,158 @@ func TestServerMultiNodeParallelExecution(t *testing.T) {
 	}
 	if len(prodNodes) != 2 {
 		t.Errorf("expected 2 prod nodes, got %d", len(prodNodes))
+	}
+}
+
+func TestServerUnauthenticatedExecStreamRejected(t *testing.T) {
+	testToken := "secret-cluster-token"
+	ts, dialer, r := setupTestServer(testToken)
+	defer ts.Close()
+	defer r.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+
+	// Connect without Authorization header
+	conn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	mux, err := protocol.NewStreamMultiplexer(conn, false)
+	if err != nil {
+		t.Fatalf("mux failed: %v", err)
+	}
+
+	// Directly attempt sending TypeExecRequest on unauthenticated session
+	stream, err := mux.Session.Open()
+	if err != nil {
+		t.Fatalf("failed to open stream: %v", err)
+	}
+
+	req := protocol.ExecRequest{
+		Type:           protocol.TypeExecRequest,
+		TargetHostname: "worker-1",
+		Command:        "echo pwned",
+	}
+	b, _ := json.Marshal(req)
+	_, _ = stream.Write(b)
+
+	// Stream should be closed and session should be terminated
+	time.Sleep(50 * time.Millisecond)
+	if !mux.Session.IsClosed() {
+		t.Errorf("expected unauthenticated stream attempt to terminate the session")
+	}
+}
+
+func TestServerCSWSHOriginRejection(t *testing.T) {
+	testToken := "secret-cluster-token"
+	ts, dialer, r := setupTestServer(testToken)
+	defer ts.Close()
+	defer r.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+
+	// 1. Unauthorized origin should be rejected with 403 Forbidden
+	headerBad := http.Header{}
+	headerBad.Set("Origin", "http://evil-attacker-site.com")
+	headerBad.Set("Authorization", "Bearer "+testToken)
+
+	_, respBad, err := dialer.Dial(wsURL, headerBad)
+	if err == nil {
+		t.Errorf("expected dial to fail for unauthorized Origin header")
+	}
+	if respBad != nil && respBad.StatusCode != http.StatusForbidden {
+		t.Errorf("expected status 403 Forbidden, got %d", respBad.StatusCode)
+	}
+
+	// 2. Allowed localhost / same-host Origin should succeed
+	headerGood := http.Header{}
+	headerGood.Set("Origin", ts.URL)
+	headerGood.Set("Authorization", "Bearer "+testToken)
+
+	connGood, respGood, err := dialer.Dial(wsURL, headerGood)
+	if err != nil {
+		t.Fatalf("expected dial to succeed for same-origin, got error: %v (resp: %+v)", err, respGood)
+	}
+	connGood.Close()
+}
+
+func TestServerEndToEndAuthenticatedLifecycle(t *testing.T) {
+	testToken := "e2e-token-xyz"
+	ts, dialer, r := setupTestServer(testToken)
+	defer ts.Close()
+	defer r.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+
+	// Connect mock target node agent
+	nodeConn, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial node failed: %v", err)
+	}
+	defer nodeConn.Close()
+
+	nodeMux, err := protocol.NewStreamMultiplexer(nodeConn, false)
+	if err != nil {
+		t.Fatalf("node mux failed: %v", err)
+	}
+
+	// Send handshake
+	hsStream, _ := nodeMux.Session.Open()
+	hs := protocol.Handshake{
+		Type:     protocol.TypeHandshake,
+		Hostname: "target-node",
+		Token:    testToken,
+	}
+	bHs, _ := json.Marshal(hs)
+	hsStream.Write(bHs)
+	hsStream.Close()
+
+	// Mock node agent stream responder
+	go func() {
+		for {
+			stream, err := nodeMux.Session.Accept()
+			if err != nil {
+				return
+			}
+			go func(s net.Conn) {
+				defer s.Close()
+				buf := make([]byte, 1024)
+				n, _ := s.Read(buf)
+				var req protocol.ExecRequest
+				if err := json.Unmarshal(buf[:n], &req); err == nil {
+					protocol.WriteFrame(s, protocol.StreamStdout, []byte("echoed: "+req.Command+"\n"))
+					protocol.WriteFrame(s, protocol.StreamExit, []byte("0"))
+				}
+			}(stream)
+		}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Now use CLI client with valid token to execute command
+	cliCfg := &cli.Config{
+		Host:  ts.URL,
+		Token: testToken,
+	}
+	client := cli.NewClient(cliCfg)
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	res, err := client.Execute(cli.ExecOptions{
+		Target:  "target-node",
+		Command: "uname -a",
+	}, nil, &stdoutBuf, &stderrBuf)
+
+	if err != nil {
+		t.Fatalf("client.Execute failed: %v", err)
+	}
+
+	if !res.Results[0].Success {
+		t.Errorf("expected execution success, got: %+v", res.Results[0])
+	}
+	if !strings.Contains(stdoutBuf.String(), "echoed: uname -a") {
+		t.Errorf("expected stdout 'echoed: uname -a', got: %q", stdoutBuf.String())
 	}
 }

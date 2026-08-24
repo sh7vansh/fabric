@@ -65,7 +65,7 @@ func (e *SSHExecutor) QueryArch() (string, string, error) {
 	if e.IdentityKey != "" {
 		sshArgs = append(sshArgs, "-i", e.IdentityKey)
 	}
-	sshArgs = append(sshArgs, "-o", "StrictHostKeyChecking=accept-new", e.Target, "uname -s && uname -m")
+	sshArgs = append(sshArgs, "-o", "StrictHostKeyChecking=accept-new", "--", e.Target, "uname -s && uname -m")
 
 	out, err := exec.Command("ssh", sshArgs...).Output()
 	if err != nil {
@@ -86,7 +86,7 @@ func (e *SSHExecutor) Run(script string) error {
 	if e.IdentityKey != "" {
 		sshArgs = append(sshArgs, "-i", e.IdentityKey)
 	}
-	sshArgs = append(sshArgs, "-o", "StrictHostKeyChecking=accept-new", e.Target, "bash -s")
+	sshArgs = append(sshArgs, "-o", "StrictHostKeyChecking=accept-new", "--", e.Target, "bash -s")
 
 	sshCmd := exec.Command("ssh", sshArgs...)
 	sshCmd.Stdin = strings.NewReader(script)

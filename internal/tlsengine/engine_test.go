@@ -105,6 +105,19 @@ func TestHTTPSRedirectHandler(t *testing.T) {
 	if location != "https://worker-1.fabric.mesh/api/status" {
 		t.Errorf("expected location 'https://worker-1.fabric.mesh/api/status', got %q", location)
 	}
+
+	// 2. Test spoofed Host header fallback
+	reqSpoofed := httptest.NewRequest("GET", "http://evil-phishing-site.com/login", nil)
+	wSpoofed := httptest.NewRecorder()
+	handler.ServeHTTP(wSpoofed, reqSpoofed)
+	respSpoofed := wSpoofed.Result()
+	if respSpoofed.StatusCode != http.StatusMovedPermanently {
+		t.Errorf("expected status 301, got %d", respSpoofed.StatusCode)
+	}
+	locSpoofed := respSpoofed.Header.Get("Location")
+	if locSpoofed != "https://fabric.mesh/login" {
+		t.Errorf("expected sanitized redirect to 'https://fabric.mesh/login', got %q", locSpoofed)
+	}
 }
 
 func TestEngineACMEPolicyAndCustomMeshDomain(t *testing.T) {

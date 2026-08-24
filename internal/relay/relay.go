@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -63,8 +65,58 @@ func New(cfg Config) *Relay {
 	return r
 }
 
+// CheckOrigin validates the incoming WebSocket request Origin header.
+func (r *Relay) CheckOrigin(req *http.Request) bool {
+	origin := req.Header.Get("Origin")
+	if origin == "" {
+		// Non-browser direct CLI or agent client
+		return true
+	}
+
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+
+	originHost := strings.ToLower(u.Hostname())
+	if originHost == "localhost" || originHost == "127.0.0.1" || originHost == "::1" {
+		return true
+	}
+
+	reqHost := req.Host
+	if h, _, err := net.SplitHostPort(reqHost); err == nil {
+		reqHost = h
+	}
+	if strings.EqualFold(originHost, reqHost) {
+		return true
+	}
+
+	domain := strings.ToLower(r.domain)
+	if domain != "" {
+		if originHost == domain || strings.HasSuffix(originHost, "."+domain) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// Upgrader returns a websocket.Upgrader configured with the relay origin check policy.
+func (r *Relay) Upgrader() websocket.Upgrader {
+	return websocket.Upgrader{
+		CheckOrigin: func(req *http.Request) bool {
+			return r.CheckOrigin(req)
+		},
+	}
+}
+
 // ServeWS upgrades and serves a WebSocket connection, managing the entire multiplexed session lifecycle.
 func (r *Relay) ServeWS(conn *websocket.Conn, remoteAddr string) error {
+	return r.ServeWSAuth(conn, remoteAddr, false)
+}
+
+// ServeWSAuth upgrades and serves a WebSocket connection with explicit pre-authentication state.
+func (r *Relay) ServeWSAuth(conn *websocket.Conn, remoteAddr string, authenticated bool) error {
 	defer conn.Close()
 
 	mux, err := protocol.NewStreamMultiplexer(conn, true)
@@ -77,14 +129,22 @@ func (r *Relay) ServeWS(conn *websocket.Conn, remoteAddr string) error {
 		proxyIP = tcpAddr.IP.String()
 	}
 
-	return r.ServeMux(mux, remoteAddr, proxyIP)
+	return r.ServeMuxAuth(mux, remoteAddr, proxyIP, authenticated)
 }
 
 // ServeMux manages an incoming stream multiplexer, routing handshakes, DNS queries, and execution streams.
 func (r *Relay) ServeMux(mux *protocol.StreamMultiplexer, remoteAddr, proxyIP string) error {
+	return r.ServeMuxAuth(mux, remoteAddr, proxyIP, false)
+}
+
+// ServeMuxAuth manages an incoming stream multiplexer with session-level authentication gating.
+func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyIP string, preAuthenticated bool) error {
 	if proxyIP == "" {
 		proxyIP = "127.0.0.1"
 	}
+
+	var sessionAuthMu sync.RWMutex
+	isAuthenticated := preAuthenticated
 
 	router := protocol.NewRouter(mux.Session)
 
@@ -131,10 +191,26 @@ func (r *Relay) ServeMux(mux *protocol.StreamMultiplexer, remoteAddr, proxyIP st
 			mux.Session.Close()
 			return
 		}
+
+		sessionAuthMu.Lock()
+		isAuthenticated = true
+		sessionAuthMu.Unlock()
+
 		log.Printf("[Relay] Node connected successfully: %s (session: %s)\n", hs.Hostname, sessID)
 	})
 
 	router.HandleFunc(string(protocol.TypeDNSQuery), func(stream net.Conn, env []byte) {
+		sessionAuthMu.RLock()
+		authed := isAuthenticated
+		sessionAuthMu.RUnlock()
+
+		if !authed {
+			log.Println("[Relay] Dropping DNS query on unauthenticated session")
+			stream.Close()
+			mux.Session.Close()
+			return
+		}
+
 		defer stream.Close()
 		var query protocol.DNSQuery
 		if err := json.Unmarshal(env, &query); err != nil {
@@ -152,6 +228,17 @@ func (r *Relay) ServeMux(mux *protocol.StreamMultiplexer, remoteAddr, proxyIP st
 	})
 
 	router.HandleFunc(string(protocol.TypeExecRequest), func(stream net.Conn, env []byte) {
+		sessionAuthMu.RLock()
+		authed := isAuthenticated
+		sessionAuthMu.RUnlock()
+
+		if !authed {
+			log.Println("[Relay] Dropping ExecRequest on unauthenticated session")
+			stream.Close()
+			mux.Session.Close()
+			return
+		}
+
 		var req protocol.ExecRequest
 		if err := json.Unmarshal(env, &req); err != nil {
 			stream.Close()
@@ -164,6 +251,17 @@ func (r *Relay) ServeMux(mux *protocol.StreamMultiplexer, remoteAddr, proxyIP st
 	})
 
 	router.HandleFunc(string(protocol.TypeCopyRequest), func(stream net.Conn, env []byte) {
+		sessionAuthMu.RLock()
+		authed := isAuthenticated
+		sessionAuthMu.RUnlock()
+
+		if !authed {
+			log.Println("[Relay] Dropping CopyRequest on unauthenticated session")
+			stream.Close()
+			mux.Session.Close()
+			return
+		}
+
 		var req protocol.CopyRequest
 		if err := json.Unmarshal(env, &req); err != nil {
 			stream.Close()
@@ -175,6 +273,17 @@ func (r *Relay) ServeMux(mux *protocol.StreamMultiplexer, remoteAddr, proxyIP st
 	})
 
 	router.HandleFunc(string(protocol.TypeProxyRequest), func(stream net.Conn, env []byte) {
+		sessionAuthMu.RLock()
+		authed := isAuthenticated
+		sessionAuthMu.RUnlock()
+
+		if !authed {
+			log.Println("[Relay] Dropping ProxyRequest on unauthenticated session")
+			stream.Close()
+			mux.Session.Close()
+			return
+		}
+
 		var req protocol.ProxyRequest
 		if err := json.Unmarshal(env, &req); err != nil {
 			stream.Close()

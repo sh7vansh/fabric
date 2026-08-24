@@ -57,7 +57,7 @@ func New(cfg Config) (*Engine, error) {
 		}
 	}
 
-	ca, err := pki.LoadOrInitCA(caDir, cfg.MeshDomain)
+	ca, err := pki.LoadOrInitCA(caDir, cfg.MeshDomain, pki.WithActiveNodes(cfg.ActiveNodes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to init internal CA: %w", err)
 	}
@@ -214,10 +214,30 @@ func (e *Engine) HTTPHandler(fallback http.Handler) http.Handler {
 // HTTPSRedirectHandler creates an HTTP handler that redirects all non-ACME requests to HTTPS.
 func (e *Engine) HTTPSRedirectHandler(httpsPort int) http.Handler {
 	redirect := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		targetHost := r.Host
+		targetHost := strings.TrimSpace(r.Host)
 		if h, _, err := net.SplitHostPort(targetHost); err == nil {
 			targetHost = h
 		}
+
+		targetHost = strings.ReplaceAll(targetHost, "\r", "")
+		targetHost = strings.ReplaceAll(targetHost, "\n", "")
+
+		// Host validation to prevent open redirect vulnerabilities
+		if !e.isInternalOrLocal(targetHost) && !e.matchesPublicDomain(targetHost) {
+			e.mu.RLock()
+			_, allowed := e.allowedHosts[strings.ToLower(targetHost)]
+			e.mu.RUnlock()
+			if !allowed {
+				if e.publicDomain != "" {
+					targetHost = e.publicDomain
+				} else if e.meshDomain != "" {
+					targetHost = e.meshDomain
+				} else {
+					targetHost = "localhost"
+				}
+			}
+		}
+
 		if httpsPort != 443 && httpsPort > 0 {
 			targetHost = fmt.Sprintf("%s:%d", targetHost, httpsPort)
 		}

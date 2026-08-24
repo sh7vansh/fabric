@@ -14,6 +14,9 @@ const (
 	StreamExit   StreamType = 3
 )
 
+// MaxFramePayloadSize is the upper ceiling (16 MB) for a single stream frame payload.
+const MaxFramePayloadSize = 16 * 1024 * 1024
+
 const headerSize = 8
 
 type Frame struct {
@@ -22,6 +25,10 @@ type Frame struct {
 }
 
 func WriteFrame(w io.Writer, streamType StreamType, payload []byte) error {
+	if len(payload) > MaxFramePayloadSize {
+		return io.ErrShortWrite
+	}
+
 	header := make([]byte, headerSize)
 	header[0] = byte(streamType)
 	// bytes 1, 2, 3 are 0
@@ -46,6 +53,10 @@ func ReadFrame(r io.Reader) (*Frame, error) {
 
 	streamType := StreamType(header[0])
 	size := binary.BigEndian.Uint32(header[4:])
+
+	if size > MaxFramePayloadSize {
+		return nil, io.ErrUnexpectedEOF
+	}
 
 	payload := make([]byte, size)
 	if size > 0 {

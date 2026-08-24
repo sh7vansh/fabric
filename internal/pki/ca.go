@@ -2,6 +2,7 @@ package pki
 
 import (
 	"bytes"
+	"container/list"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -22,6 +23,9 @@ import (
 	"time"
 )
 
+// MaxCachedLeafCerts is the default capacity for the in-memory leaf certificate cache.
+const MaxCachedLeafCerts = 512
+
 // CA manages an in-process Certificate Authority and mints leaf certificates.
 type CA struct {
 	mu          sync.RWMutex
@@ -32,10 +36,14 @@ type CA struct {
 	certPEM     []byte
 	keyPEM      []byte
 	certPool    *x509.CertPool
-	leafCache   map[string]*cachedCert
+	leafCache   map[string]*list.Element
+	lruList     *list.List
+	maxCache    int
+	activeNodes func() []string
 }
 
 type cachedCert struct {
+	key       string
 	cert      *tls.Certificate
 	expiresAt time.Time
 }
@@ -46,12 +54,15 @@ type Option func(*caOptions)
 type caOptions struct {
 	rootValidity time.Duration
 	leafValidity time.Duration
+	maxCache     int
+	activeNodes  func() []string
 }
 
 func defaultOptions() *caOptions {
 	return &caOptions{
 		rootValidity: 10 * 365 * 24 * time.Hour, // 10 years
 		leafValidity: 90 * 24 * time.Hour,       // 90 days
+		maxCache:     MaxCachedLeafCerts,
 	}
 }
 
@@ -66,6 +77,20 @@ func WithRootValidity(d time.Duration) Option {
 func WithLeafValidity(d time.Duration) Option {
 	return func(o *caOptions) {
 		o.leafValidity = d
+	}
+}
+
+// WithMaxCache overrides the maximum number of cached leaf certificates.
+func WithMaxCache(maxEntries int) Option {
+	return func(o *caOptions) {
+		o.maxCache = maxEntries
+	}
+}
+
+// WithActiveNodes provides a dynamic node validator callback for SNI checks.
+func WithActiveNodes(fn func() []string) Option {
+	return func(o *caOptions) {
+		o.activeNodes = fn
 	}
 }
 
@@ -84,9 +109,12 @@ func LoadOrInitCA(dir, domain string, opts ...Option) (*CA, error) {
 	keyPath := filepath.Join(dir, "ca.key")
 
 	ca := &CA{
-		dir:       dir,
-		domain:    domain,
-		leafCache: make(map[string]*cachedCert),
+		dir:         dir,
+		domain:      domain,
+		leafCache:   make(map[string]*list.Element),
+		lruList:     list.New(),
+		maxCache:    options.maxCache,
+		activeNodes: options.activeNodes,
 	}
 
 	if fileExists(certPath) && fileExists(keyPath) {
@@ -242,24 +270,18 @@ func (c *CA) MintCertificate(hosts []string, validity time.Duration) (*tls.Certi
 
 	cacheKey := normalizeHostsKey(hosts)
 
-	c.mu.RLock()
-	if cached, ok := c.leafCache[cacheKey]; ok {
-		if time.Now().Add(5 * time.Minute).Before(cached.expiresAt) {
-			c.mu.RUnlock()
-			return cached.cert, nil
-		}
-	}
-	c.mu.RUnlock()
-
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Double-check after acquiring write lock
-	if cached, ok := c.leafCache[cacheKey]; ok {
+	if elem, ok := c.leafCache[cacheKey]; ok {
+		cached := elem.Value.(*cachedCert)
 		if time.Now().Add(5 * time.Minute).Before(cached.expiresAt) {
+			c.lruList.MoveToFront(elem)
+			c.mu.Unlock()
 			return cached.cert, nil
 		}
+		c.lruList.Remove(elem)
+		delete(c.leafCache, cacheKey)
 	}
+	c.mu.Unlock()
 
 	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -317,10 +339,40 @@ func (c *CA) MintCertificate(hosts []string, validity time.Duration) (*tls.Certi
 		return nil, fmt.Errorf("tls.X509KeyPair: %w", err)
 	}
 
-	c.leafCache[cacheKey] = &cachedCert{
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Double check cache under lock
+	if elem, ok := c.leafCache[cacheKey]; ok {
+		cached := elem.Value.(*cachedCert)
+		if time.Now().Add(5 * time.Minute).Before(cached.expiresAt) {
+			c.lruList.MoveToFront(elem)
+			return cached.cert, nil
+		}
+		c.lruList.Remove(elem)
+		delete(c.leafCache, cacheKey)
+	}
+
+	// LRU eviction if at or above capacity
+	maxCap := c.maxCache
+	if maxCap <= 0 {
+		maxCap = MaxCachedLeafCerts
+	}
+	for c.lruList.Len() >= maxCap && c.lruList.Len() > 0 {
+		oldest := c.lruList.Back()
+		if oldest != nil {
+			c.lruList.Remove(oldest)
+			delete(c.leafCache, oldest.Value.(*cachedCert).key)
+		}
+	}
+
+	entry := &cachedCert{
+		key:       cacheKey,
 		cert:      &tlsCert,
 		expiresAt: notAfter,
 	}
+	elem := c.lruList.PushFront(entry)
+	c.leafCache[cacheKey] = elem
 
 	return &tlsCert, nil
 }
@@ -357,11 +409,44 @@ func (c *CA) MintCertificatePEM(hosts []string, validity time.Duration) ([]byte,
 	return certBuf.Bytes(), keyBuf.Bytes(), nil
 }
 
+func (c *CA) isAllowedSNI(serverName string) bool {
+	if serverName == "" || serverName == "localhost" || net.ParseIP(serverName) != nil {
+		return true
+	}
+	serverName = strings.ToLower(serverName)
+	if strings.HasSuffix(serverName, ".mesh") {
+		return true
+	}
+	if c.domain != "" {
+		if serverName == c.domain || strings.HasSuffix(serverName, "."+c.domain) {
+			return true
+		}
+		if !strings.Contains(serverName, ".") {
+			return true
+		}
+	}
+	if c.activeNodes != nil {
+		for _, n := range c.activeNodes() {
+			if strings.EqualFold(n, serverName) || strings.EqualFold(n+"."+c.domain, serverName) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // GetCertificate returns a tls.Config.GetCertificate SNI handler.
 func (c *CA) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	serverName := hello.ServerName
-	hosts := []string{}
+	serverName := strings.ToLower(strings.TrimSpace(hello.ServerName))
+	if h, _, err := net.SplitHostPort(serverName); err == nil {
+		serverName = h
+	}
 
+	if !c.isAllowedSNI(serverName) {
+		return nil, fmt.Errorf("sni %q not authorized for internal CA minting", hello.ServerName)
+	}
+
+	hosts := []string{}
 	if serverName == "" || serverName == "localhost" {
 		hosts = append(hosts, "localhost", "127.0.0.1", "::1")
 	} else {

@@ -14,13 +14,7 @@ import (
 
 	"fabric/internal/relay"
 	"fabric/internal/tlsengine"
-
-	"github.com/gorilla/websocket"
 )
-
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
-}
 
 func main() {
 	defaultDomain := os.Getenv("FABRIC_DOMAIN")
@@ -103,7 +97,16 @@ func main() {
 		}
 	}()
 
+	upgrader := meshRelay.Upgrader()
+
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		var provided string
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			provided = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+		authenticated := meshRelay.ValidateToken(provided)
+
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Println("Upgrade error:", err)
@@ -111,7 +114,7 @@ func main() {
 		}
 
 		go func() {
-			if err := meshRelay.ServeWS(conn, r.RemoteAddr); err != nil {
+			if err := meshRelay.ServeWSAuth(conn, r.RemoteAddr, authenticated); err != nil {
 				log.Printf("[Relay] Session ended for %s: %v\n", r.RemoteAddr, err)
 			}
 		}()

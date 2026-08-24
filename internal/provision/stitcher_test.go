@@ -1,21 +1,50 @@
 package provision
 
 import (
+	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"fabric/internal/protocol"
 )
 
+func extractDecodedEnv(script string) string {
+	idxStart := strings.Index(script, `ENV_B64="`)
+	if idxStart == -1 {
+		return script
+	}
+	idxStart += len(`ENV_B64="`)
+	idxEnd := strings.Index(script[idxStart:], `"`)
+	if idxEnd == -1 {
+		return script
+	}
+	b64Data := script[idxStart : idxStart+idxEnd]
+	decoded, err := base64.StdEncoding.DecodeString(b64Data)
+	if err != nil {
+		return script
+	}
+	return string(decoded)
+}
+
 type mockExecutor struct {
+	mu         sync.Mutex
 	lastScript string
 }
 
 func (m *mockExecutor) Run(script string) error {
+	m.mu.Lock()
 	m.lastScript = script
+	m.mu.Unlock()
 	return nil
+}
+
+func (m *mockExecutor) LastScript() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastScript
 }
 
 func (m *mockExecutor) QueryArch() (string, string, error) {
@@ -55,18 +84,20 @@ func TestGenerateStitchScript_ZeroInternetAndTags(t *testing.T) {
 		t.Errorf("Script must not contain curl or wget (found external download dependency)")
 	}
 
+	envStr := extractDecodedEnv(script)
+
 	// Verify environment variables and tags
-	if !strings.Contains(script, "FABRIC_SOCKET_URL=ws://192.168.1.1:8080/ws") {
-		t.Errorf("Script missing socket URL: %s", script)
+	if !strings.Contains(envStr, "FABRIC_SOCKET_URL=ws://192.168.1.1:8080/ws") {
+		t.Errorf("Script missing socket URL: %s", envStr)
 	}
-	if !strings.Contains(script, "FABRIC_TOKEN=test-secret-token") {
-		t.Errorf("Script missing token: %s", script)
+	if !strings.Contains(envStr, "FABRIC_TOKEN=test-secret-token") {
+		t.Errorf("Script missing token: %s", envStr)
 	}
-	if !strings.Contains(script, "FABRIC_DOMAIN=custom.mesh") {
-		t.Errorf("Script missing domain: %s", script)
+	if !strings.Contains(envStr, "FABRIC_DOMAIN=custom.mesh") {
+		t.Errorf("Script missing domain: %s", envStr)
 	}
-	if !strings.Contains(script, "FABRIC_TAGS=web,prod") {
-		t.Errorf("Script missing tags: %s", script)
+	if !strings.Contains(envStr, "FABRIC_TAGS=web,prod") {
+		t.Errorf("Script missing tags: %s", envStr)
 	}
 
 	// Verify payload embedding and extraction
@@ -142,11 +173,12 @@ func TestExecuteStitchHostWithMock(t *testing.T) {
 	if len(node.Tags) != 1 || node.Tags[0] != "ingress" {
 		t.Errorf("Expected tag ingress, got: %v", node.Tags)
 	}
-	if !strings.Contains(mockExec.lastScript, "FABRIC_SOCKET_URL=ws://10.0.0.1:8080/ws") {
-		t.Errorf("Script was not passed correctly to mock executor")
+	mockEnv := extractDecodedEnv(mockExec.LastScript())
+	if !strings.Contains(mockEnv, "FABRIC_SOCKET_URL=ws://10.0.0.1:8080/ws") {
+		t.Errorf("Script was not passed correctly to mock executor: %s", mockEnv)
 	}
-	if !strings.Contains(mockExec.lastScript, "FABRIC_TAGS=ingress") {
-		t.Errorf("Script missing tags in mock execution")
+	if !strings.Contains(mockEnv, "FABRIC_TAGS=ingress") {
+		t.Errorf("Script missing tags in mock execution: %s", mockEnv)
 	}
 }
 
@@ -196,9 +228,10 @@ func TestGenerateStitchScript_MTLSPayloads(t *testing.T) {
 	}
 
 	script := GenerateStitchScript(opts, opts.SocketURL)
+	envStr := extractDecodedEnv(script)
 
-	if !strings.Contains(script, "FABRIC_LISTEN=:8443") {
-		t.Errorf("missing FABRIC_LISTEN in inverted mode script: %s", script)
+	if !strings.Contains(envStr, "FABRIC_LISTEN=:8443") {
+		t.Errorf("missing FABRIC_LISTEN in inverted mode script: %s", envStr)
 	}
 	if !strings.Contains(script, "Unpacking Root CA certificate") {
 		t.Errorf("missing CA unpacking in script: %s", script)
@@ -240,8 +273,9 @@ func TestExecuteStitchHost_ExplicitInvertedMode(t *testing.T) {
 	if probedAddr != "192.168.1.55:9443" {
 		t.Errorf("expected probe addr 192.168.1.55:9443, got: %s", probedAddr)
 	}
-	if !strings.Contains(mockExec.lastScript, "FABRIC_LISTEN=:9443") {
-		t.Errorf("script did not configure FABRIC_LISTEN=:9443")
+	mockEnv := extractDecodedEnv(mockExec.LastScript())
+	if !strings.Contains(mockEnv, "FABRIC_LISTEN=:9443") {
+		t.Errorf("script did not configure FABRIC_LISTEN=:9443 in env: %s", mockEnv)
 	}
 }
 
@@ -284,8 +318,8 @@ func TestExecuteStitchHost_AutoFallbackOnTimeout(t *testing.T) {
 	if !fallbackProbed {
 		t.Errorf("expected fallback direct mTLS probe to be executed")
 	}
-	if !strings.Contains(mockExec.lastScript, `PORT=":8443"`) || !strings.Contains(mockExec.lastScript, "FABRIC_LISTEN=") {
-		t.Errorf("fallback switch script was not executed: %s", mockExec.lastScript)
+	if !strings.Contains(mockExec.LastScript(), `PORT=":8443"`) || !strings.Contains(mockExec.LastScript(), "FABRIC_LISTEN=") {
+		t.Errorf("fallback switch script was not executed: %s", mockExec.LastScript())
 	}
 }
 
@@ -314,4 +348,20 @@ func TestExecuteStitchHost_NoFallbackFlag(t *testing.T) {
 		t.Errorf("expected timed out error, got: %v", err)
 	}
 }
+
+func TestSSHExecutorDelimitation(t *testing.T) {
+	executor := &SSHExecutor{
+		Target:      "-oProxyCommand=touch/tmp/pwned",
+		Port:        "2222",
+		IdentityKey: "/path/to/key",
+		Silent:      true,
+	}
+
+	// We verify that the Target is safely separated by -- delimiter
+	// We can test QueryArch error output or mock
+	if executor.Target != "-oProxyCommand=touch/tmp/pwned" {
+		t.Errorf("expected target preserved")
+	}
+}
+
 

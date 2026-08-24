@@ -173,3 +173,80 @@ func TestLiveHTTPSHandshake(t *testing.T) {
 		t.Errorf("unexpected response body: %q", string(body))
 	}
 }
+
+func TestCALRUCacheEviction(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "fabric-ca-lru-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Set small cache capacity of 3
+	ca, err := pki.LoadOrInitCA(tmpDir, "fabric.mesh", pki.WithMaxCache(3))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mint 5 different host certificates
+	for i := 0; i < 5; i++ {
+		host := fmt.Sprintf("node-%d.fabric.mesh", i)
+		if _, err := ca.MintCertificate([]string{host}, 1*time.Hour); err != nil {
+			t.Fatalf("failed to mint certificate for %s: %v", host, err)
+		}
+	}
+
+	// Verify that GetCertificate for authorized domain succeeds
+	cert, err := ca.GetCertificate(&tls.ClientHelloInfo{ServerName: "node-4.fabric.mesh"})
+	if err != nil || cert == nil {
+		t.Errorf("expected GetCertificate for node-4.fabric.mesh to succeed, got %v", err)
+	}
+}
+
+func TestCAGetCertificateSNIAuthorization(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "fabric-ca-sni-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	ca, err := pki.LoadOrInitCA(tmpDir, "fabric.mesh", pki.WithActiveNodes(func() []string {
+		return []string{"registered-node"}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Allowed SNIs:
+	allowedSNIs := []string{
+		"localhost",
+		"127.0.0.1",
+		"::1",
+		"fabric.mesh",
+		"node-1.fabric.mesh",
+		"foo.bar.fabric.mesh",
+		"node-1", // single host without dots
+		"registered-node",
+		"registered-node.fabric.mesh",
+	}
+
+	for _, sni := range allowedSNIs {
+		cert, err := ca.GetCertificate(&tls.ClientHelloInfo{ServerName: sni})
+		if err != nil || cert == nil {
+			t.Errorf("expected SNI %q to be allowed, got error: %v", sni, err)
+		}
+	}
+
+	// 2. Disallowed SNIs:
+	disallowedSNIs := []string{
+		"evil-phishing-site.com",
+		"attacker.org",
+		"random.domain.io",
+	}
+
+	for _, sni := range disallowedSNIs {
+		cert, err := ca.GetCertificate(&tls.ClientHelloInfo{ServerName: sni})
+		if err == nil {
+			t.Errorf("expected SNI %q to be rejected, but got cert: %+v", sni, cert)
+		}
+	}
+}

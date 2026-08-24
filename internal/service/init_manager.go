@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -427,6 +428,10 @@ func (m *InitManager) RunPrivileged(name string, args ...string) error {
 func (m *InitManager) RenderBootstrapScript(opts BootstrapScriptOptions) string {
 	tagsJoined := strings.Join(opts.Tags, ",")
 
+	rawEnv := fmt.Sprintf("FABRIC_SOCKET_URL=%s\nFABRIC_LISTEN=%s\nFABRIC_TOKEN=%s\nFABRIC_DOMAIN=%s\nFABRIC_TAGS=%s\n",
+		opts.SocketURL, opts.ListenAddr, opts.Token, opts.Domain, tagsJoined)
+	envB64 := base64.StdEncoding.EncodeToString([]byte(rawEnv))
+
 	return fmt.Sprintf(`#!/usr/bin/env bash
 set -e
 
@@ -542,17 +547,12 @@ if [ -n "$KEY_PAYLOAD" ]; then
 fi
 
 # 6. Write Environment Configuration
-ENV_CONTENT="FABRIC_SOCKET_URL=%s
-FABRIC_LISTEN=%s
-FABRIC_TOKEN=%s
-FABRIC_DOMAIN=%s
-FABRIC_TAGS=%s"
-
+ENV_B64="%s"
 if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
-    echo "$ENV_CONTENT" | $SUDO tee "$ENV_FILE" > /dev/null
+    echo "$ENV_B64" | base64 -d | $SUDO tee "$ENV_FILE" > /dev/null
     $SUDO chmod 600 "$ENV_FILE"
 else
-    echo "$ENV_CONTENT" > "$ENV_FILE"
+    echo "$ENV_B64" | base64 -d > "$ENV_FILE"
     chmod 600 "$ENV_FILE"
 fi
 
@@ -636,7 +636,7 @@ else
     echo $! > "$RUN_DIR/fabric-node-supervisor.pid"
     echo "[+] Supervised background daemon started (PID file: $PIDFILE)."
 fi
-`, opts.NodePayload, opts.CliPayload, opts.CAPayload, opts.CertPayload, opts.KeyPayload, opts.SocketURL, opts.ListenAddr, opts.Token, opts.Domain, tagsJoined)
+`, opts.NodePayload, opts.CliPayload, opts.CAPayload, opts.CertPayload, opts.KeyPayload, envB64)
 }
 
 // RenderInvertedSwitchScript renders a lightweight SSH command to switch an existing node to Inverted Mode.

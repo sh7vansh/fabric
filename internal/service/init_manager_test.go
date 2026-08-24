@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -67,20 +68,35 @@ func TestRenderBootstrapScript(t *testing.T) {
 
 	script := mgr.RenderBootstrapScript(opts)
 
-	if !strings.Contains(script, "FABRIC_SOCKET_URL=ws://10.0.0.1:8080/ws") {
-		t.Errorf("missing socket url in bootstrap script: %s", script)
+	if !strings.Contains(script, `ENV_B64="`) {
+		t.Errorf("missing ENV_B64 in bootstrap script: %s", script)
 	}
-	if !strings.Contains(script, "FABRIC_LISTEN=:8443") {
-		t.Errorf("missing listen addr in bootstrap script: %s", script)
+
+	// Verify that decoded ENV_B64 contains all expected environment variables
+	idxStart := strings.Index(script, `ENV_B64="`) + len(`ENV_B64="`)
+	idxEnd := strings.Index(script[idxStart:], `"`)
+	b64Data := script[idxStart : idxStart+idxEnd]
+
+	decoded, err := base64.StdEncoding.DecodeString(b64Data)
+	if err != nil {
+		t.Fatalf("failed to base64-decode ENV_B64: %v", err)
 	}
-	if !strings.Contains(script, "FABRIC_TOKEN=tok-123") {
-		t.Errorf("missing token in bootstrap script: %s", script)
+	envStr := string(decoded)
+
+	if !strings.Contains(envStr, "FABRIC_SOCKET_URL=ws://10.0.0.1:8080/ws") {
+		t.Errorf("missing socket url in decoded env: %s", envStr)
 	}
-	if !strings.Contains(script, "FABRIC_DOMAIN=custom.mesh") {
-		t.Errorf("missing domain in bootstrap script: %s", script)
+	if !strings.Contains(envStr, "FABRIC_LISTEN=:8443") {
+		t.Errorf("missing listen addr in decoded env: %s", envStr)
 	}
-	if !strings.Contains(script, "FABRIC_TAGS=ingress,edge") {
-		t.Errorf("missing tags in bootstrap script: %s", script)
+	if !strings.Contains(envStr, "FABRIC_TOKEN=tok-123") {
+		t.Errorf("missing token in decoded env: %s", envStr)
+	}
+	if !strings.Contains(envStr, "FABRIC_DOMAIN=custom.mesh") {
+		t.Errorf("missing domain in decoded env: %s", envStr)
+	}
+	if !strings.Contains(envStr, "FABRIC_TAGS=ingress,edge") {
+		t.Errorf("missing tags in decoded env: %s", envStr)
 	}
 	if !strings.Contains(script, `PAYLOAD="base64-node-payload"`) {
 		t.Errorf("missing node payload in bootstrap script: %s", script)
@@ -99,6 +115,38 @@ func TestRenderBootstrapScript(t *testing.T) {
 	}
 	if !strings.Contains(script, "chmod 600") {
 		t.Errorf("missing 0600 permission for private key in bootstrap script: %s", script)
+	}
+}
+
+func TestRenderBootstrapScript_ShellMetacharactersInjectionSafety(t *testing.T) {
+	mgr := NewInitManager()
+	opts := BootstrapScriptOptions{
+		SocketURL:  "ws://10.0.0.1:8080/ws",
+		Token:      `secret" && rm -rf / && echo "pwned; $(whoami); \` + "`id`",
+		Domain:     `mesh.local" # comment`,
+		Tags:       []string{`tag1"`, `$USER`, "\nMALICIOUS=true"},
+		NodePayload: "mock-payload",
+	}
+
+	script := mgr.RenderBootstrapScript(opts)
+
+	// Verify the script syntax is safe and doesn't interpolate raw metacharacters into the shell commands
+	if strings.Contains(script, `FABRIC_TOKEN=secret" &&`) {
+		t.Errorf("script contains unescaped token string injection")
+	}
+
+	idxStart := strings.Index(script, `ENV_B64="`) + len(`ENV_B64="`)
+	idxEnd := strings.Index(script[idxStart:], `"`)
+	b64Data := script[idxStart : idxStart+idxEnd]
+
+	decoded, err := base64.StdEncoding.DecodeString(b64Data)
+	if err != nil {
+		t.Fatalf("failed to decode ENV_B64: %v", err)
+	}
+	envStr := string(decoded)
+
+	if !strings.Contains(envStr, opts.Token) {
+		t.Errorf("expected decoded env to preserve exact token without corruption")
 	}
 }
 

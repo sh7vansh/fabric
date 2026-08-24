@@ -146,6 +146,14 @@ func (c *Client) DialWebSocketForNode(targetNode string) (*websocket.Conn, error
 	if err != nil {
 		return nil, fmt.Errorf("invalid host url: %w", err)
 	}
+	if u.Scheme == "http" {
+		u.Scheme = "ws"
+	} else if u.Scheme == "https" {
+		u.Scheme = "wss"
+	}
+	if u.Path == "" || u.Path == "/" {
+		u.Path = "/ws"
+	}
 
 	header := http.Header{}
 	header.Add("Authorization", "Bearer "+c.Config.Token)

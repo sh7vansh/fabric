@@ -11,8 +11,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
+	"sync"
 	"time"
 
 	"fabric/internal/meshdns"
@@ -22,6 +24,8 @@ import (
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 )
+
+var validUsernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_.][a-zA-Z0-9_.-]*$`)
 
 // Config configures the NodeAgent daemon.
 type Config struct {
@@ -41,8 +45,10 @@ type Config struct {
 // Agent is the deep autonomous node daemon module managing connection resilience,
 // command execution, PTY sessions, file transfers, proxying, and DNS coordination.
 type Agent struct {
-	cfg    Config
-	dnsMgr *meshdns.SystemDNSManager
+	cfg              Config
+	dnsMgr           *meshdns.SystemDNSManager
+	mu               sync.RWMutex
+	actualListenAddr string
 }
 
 // New creates and initializes a new NodeAgent.
@@ -82,6 +88,11 @@ func (a *Agent) DNSManager() *meshdns.SystemDNSManager {
 
 // ListenAddr returns the actual bound listening address.
 func (a *Agent) ListenAddr() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.actualListenAddr != "" {
+		return a.actualListenAddr
+	}
 	return a.cfg.ListenAddress
 }
 
@@ -127,8 +138,10 @@ func (a *Agent) ListenAndServe(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to bind listen address: %w", err)
 	}
-	a.cfg.ListenAddress = ln.Addr().String()
-	log.Printf("[Agent] Started direct listener on %s", a.cfg.ListenAddress)
+	a.mu.Lock()
+	a.actualListenAddr = ln.Addr().String()
+	a.mu.Unlock()
+	log.Printf("[Agent] Started direct listener on %s", a.actualListenAddr)
 
 	server := &http.Server{
 		Handler:   mux,
@@ -300,11 +313,17 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		return
 	}
 
-	command := req.Command
+	var cmd *exec.Cmd
 	if req.User != "" {
-		command = fmt.Sprintf("su - %s -c %q", req.User, req.Command)
+		if !validUsernameRegex.MatchString(req.User) {
+			protocol.WriteFrame(stream, protocol.StreamStderr, []byte(fmt.Sprintf("invalid username %q\n", req.User)))
+			protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
+			return
+		}
+		cmd = exec.Command("su", "-", req.User, "-c", req.Command)
+	} else {
+		cmd = exec.Command("sh", "-c", req.Command)
 	}
-	cmd := exec.Command("sh", "-c", command)
 	if req.WorkDir != "" {
 		cmd.Dir = req.WorkDir
 	}
