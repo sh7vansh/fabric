@@ -14,7 +14,7 @@ var versionCmd = &cobra.Command{
 	Example: `  # Display client version and query socket version
   fabric version`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		clientVersion := "2.0.1"
+		clientVersion := "2.1.0"
 		fmt.Printf("Client Version: %s\n", clientVersion)
 
 		client := NewClient(GetConfig())
