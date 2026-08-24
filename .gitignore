@@ -1,0 +1,5 @@
+fabric-cli
+bin/
+*.exe
+*.test
+*.out

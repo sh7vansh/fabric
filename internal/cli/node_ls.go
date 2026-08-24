@@ -12,19 +12,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var quietFlag bool
-var formatFlag string
+var (
+	quietFlag  bool
+	formatFlag string
+)
+
+func registerNodeListingFlags(cmd *cobra.Command) {
+	cmd.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "Only display numeric IDs")
+	cmd.Flags().StringVar(&formatFlag, "format", "", "Pretty-print nodes using a Go template or json")
+	cmd.RunE = runNodeLs
+}
 
 func init() {
-	nodeLsCmd.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "Only display numeric IDs")
-	nodeLsCmd.Flags().StringVar(&formatFlag, "format", "", "Pretty-print nodes using a Go template or json")
-
-	// psCmd shares flags
-	psCmd.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "Only display numeric IDs")
-	psCmd.Flags().StringVar(&formatFlag, "format", "", "Pretty-print nodes using a Go template or json")
-
-	nodeLsCmd.RunE = runNodeLs
-	psCmd.RunE = runNodeLs
+	registerNodeListingFlags(nodeLsCmd)
+	registerNodeListingFlags(psCmd)
 }
 
 func runNodeLs(cmd *cobra.Command, args []string) error {

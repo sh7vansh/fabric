@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/base64"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -32,9 +33,13 @@ func handleProxyStream(c *websocket.Conn, stream protocol.ProxyStream) {
 	}
 
 	if !ok {
-		// Connect to local service, assuming port 80 for this prototype
+		// Connect to local service, using TargetPort if provided or defaulting to 80
 		var err error
-		conn, err = net.Dial("tcp", "127.0.0.1:80")
+		port := 80
+		if stream.TargetPort > 0 {
+			port = stream.TargetPort
+		}
+		conn, err = net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err != nil {
 			log.Println("Node proxy dial error:", err)
 			c.WriteJSON(protocol.ProxyStream{

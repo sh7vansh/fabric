@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"net/url"
@@ -129,16 +130,30 @@ func streamIOToSocket(r io.Reader, c *websocket.Conn, sessionID string, streamTy
 }
 
 func handleExec(c *websocket.Conn, req protocol.ExecRequest) {
-	cmd := exec.Command("sh", "-c", req.Command)
+	command := req.Command
+	if req.User != "" {
+		command = fmt.Sprintf("su - %s -c %q", req.User, req.Command)
+	}
+	cmd := exec.Command("sh", "-c", command)
 	if req.WorkDir != "" {
 		cmd.Dir = req.WorkDir
 	}
 	if len(req.Env) > 0 {
 		cmd.Env = append(os.Environ(), req.Env...)
 	}
-	// user switching omitted for brevity unless using syscall.Credential
 
-	// Create a dummy session key since we removed SessionID from the struct
+	if req.Detached {
+		if err := cmd.Start(); err != nil {
+			sendExit(c, req.SessionID, "1")
+			return
+		}
+		go func() {
+			cmd.Wait()
+		}()
+		sendExit(c, req.SessionID, "0")
+		return
+	}
+
 	sessionKey := req.SessionID
 
 	if req.AllocatePTY {

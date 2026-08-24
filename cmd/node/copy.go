@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/base64"
 	"fabric/internal/protocol"
-	"github.com/gorilla/websocket"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
+
+	"github.com/gorilla/websocket"
 )
 
 var (
@@ -16,10 +19,17 @@ var (
 
 func handleCopyRequest(c *websocket.Conn, req protocol.CopyRequest) {
 	if req.Direction == "download" {
-		// Node -> CLI
-		cmd := exec.Command("tar", "-cf", "-", "-C", ".", req.RemotePath)
-		stdout, _ := cmd.StdoutPipe()
-		cmd.Start()
+		// Node -> CLI: package RemotePath into tar
+		dir := filepath.Dir(req.RemotePath)
+		base := filepath.Base(req.RemotePath)
+		cmd := exec.Command("tar", "-cf", "-", "-C", dir, base)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return
+		}
+		if err := cmd.Start(); err != nil {
+			return
+		}
 
 		go func() {
 			buf := make([]byte, 4096)
@@ -44,15 +54,21 @@ func handleCopyRequest(c *websocket.Conn, req protocol.CopyRequest) {
 			})
 		}()
 	} else if req.Direction == "upload" {
-		// CLI -> Node
-		cmd := exec.Command("tar", "-xf", "-", "-C", req.RemotePath) // assumes RemotePath is the dest dir
-		stdin, _ := cmd.StdinPipe()
+		// CLI -> Node: unpack tar to RemotePath
+		os.MkdirAll(req.RemotePath, 0755)
+		cmd := exec.Command("tar", "-xf", "-", "-C", req.RemotePath)
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return
+		}
 
 		copyWritersLock.Lock()
 		copyWriters[req.TransferID] = stdin
 		copyWritersLock.Unlock()
 
-		cmd.Start()
+		if err := cmd.Start(); err != nil {
+			return
+		}
 
 		go func() {
 			cmd.Wait()

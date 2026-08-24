@@ -166,15 +166,44 @@ func main() {
 			}
 
 			handleCLIMessages(conn, nodeState.Conn)
+		case protocol.TypeProxyStream:
+			var stream protocol.ProxyStream
+			json.Unmarshal(message, &stream)
+
+			// Route from CLI to Node
+			nodesLock.RLock()
+			var targetNode *NodeState
+			for _, n := range nodes {
+				targetNode = n
+				break
+			}
+			nodesLock.RUnlock()
+
+			if targetNode != nil {
+				targetNode.Conn.WriteJSON(stream)
+			}
 		default:
 			conn.Close()
 		}
 	})
 
-	http.HandleFunc("/nodes", func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if auth != "Bearer "+token {
+	authenticate := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Header.Get("Authorization") != "Bearer "+token {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return false
+		}
+		return true
+	}
+
+	http.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"version": "1.0.0",
+		})
+	})
+
+	http.HandleFunc("/nodes", func(w http.ResponseWriter, r *http.Request) {
+		if !authenticate(w, r) {
 			return
 		}
 
@@ -191,9 +220,7 @@ func main() {
 	})
 
 	http.HandleFunc("/nodes/", func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if auth != "Bearer "+token {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		if !authenticate(w, r) {
 			return
 		}
 

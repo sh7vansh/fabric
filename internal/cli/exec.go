@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"fabric/internal/protocol"
@@ -22,10 +23,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("usage: fabric exec [flags] TARGET COMMAND [ARG...]")
 	}
 	target := args[0]
-	command := args[1]
-	for _, arg := range args[2:] {
-		command += " " + arg // naive escaping for prototype
-	}
+	command := strings.Join(args[1:], " ")
 
 	client := NewClient(GetConfig())
 	conn, err := client.DialWebSocket()
