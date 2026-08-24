@@ -230,12 +230,42 @@ func (c *Client) DoHTTP(method, path string, body interface{}) (*http.Response, 
 func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 	var nodes []protocol.NodeMetadata
 	var socketErr error
+	var socketNode *protocol.NodeMetadata
+
+	socketHost := "localhost:8080"
+	socketDomain := "fabric.mesh"
+	if c.Config != nil && c.Config.Host != "" {
+		if u, parseErr := pki.NormalizeURL(c.Config.Host); parseErr == nil {
+			socketHost = u.Host
+		}
+	}
 
 	resp, err := c.DoHTTP("GET", "/nodes", nil)
 	if err == nil {
 		defer resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
 			_ = json.NewDecoder(resp.Body).Decode(&nodes)
+
+			if verResp, verErr := c.DoHTTP("GET", "/version", nil); verErr == nil {
+				defer verResp.Body.Close()
+				var verInfo struct {
+					Version string `json:"version"`
+					Domain  string `json:"domain"`
+				}
+				if json.NewDecoder(verResp.Body).Decode(&verInfo) == nil && verInfo.Domain != "" {
+					socketDomain = verInfo.Domain
+				}
+			}
+
+			socketNode = &protocol.NodeMetadata{
+				ID:          "socket",
+				Hostname:    "socket",
+				RemoteIP:    socketHost,
+				Status:      "online [control-plane]",
+				Tags:        []string{"relay", "control-plane"},
+				Domain:      socketDomain,
+				ConnectedAt: time.Now().UTC().Format(time.RFC3339),
+			}
 		} else {
 			socketErr = fmt.Errorf("failed to list nodes: HTTP %s", resp.Status)
 		}
@@ -288,11 +318,42 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 		}
 	}
 
+	if socketNode == nil {
+		if c.Config != nil && c.Config.Host != "" && c.Config.Host != "ws://localhost:8080/ws" && c.Config.Host != "localhost:8080" {
+			socketNode = &protocol.NodeMetadata{
+				ID:       "socket",
+				Hostname: "socket",
+				RemoteIP: socketHost,
+				Status:   "unreachable [control-plane]",
+				Tags:     []string{"relay"},
+				Domain:   socketDomain,
+			}
+		} else if len(c.Config.DirectNodes) > 0 || detectLocalNode() != nil {
+			socketNode = &protocol.NodeMetadata{
+				ID:       "socket",
+				Hostname: "socket",
+				RemoteIP: "none (direct mTLS)",
+				Status:   "standalone [MODE: direct]",
+				Tags:     []string{"relay", "direct"},
+				Domain:   "fabric.mesh",
+			}
+		}
+	}
+
 	if socketErr != nil && len(nodes) == 0 {
 		if localNode := detectLocalNode(); localNode != nil {
-			return []protocol.NodeMetadata{*localNode}, nil
+			res := []protocol.NodeMetadata{}
+			if socketNode != nil {
+				res = append(res, *socketNode)
+			}
+			res = append(res, *localNode)
+			return res, nil
 		}
 		return nil, fmt.Errorf("%w\n  👉 Tip: If you are logged into a managed node, inspect local daemon status with 'fabric service status node'. To query the mesh, run 'fabric ps' from your workstation or pass --host.", socketErr)
+	}
+
+	if socketNode != nil {
+		nodes = append([]protocol.NodeMetadata{*socketNode}, nodes...)
 	}
 
 	return nodes, nil
@@ -483,23 +544,26 @@ func (c *Client) executeFleet(opts ExecOptions, out, errOut io.Writer) (*FleetRe
 	}
 
 	var targets []protocol.NodeMetadata
-	if opts.Tag != "" {
-		for _, n := range allNodes {
+	for _, n := range allNodes {
+		if n.ID == "socket" || strings.Contains(n.Status, "control-plane") || strings.HasPrefix(n.Status, "standalone") {
+			continue
+		}
+		if opts.Tag != "" {
 			for _, t := range n.Tags {
 				if t == opts.Tag {
 					targets = append(targets, n)
 					break
 				}
 			}
+		} else {
+			targets = append(targets, n)
 		}
-		if len(targets) == 0 {
+	}
+	if len(targets) == 0 {
+		if opts.Tag != "" {
 			return nil, fmt.Errorf("no active nodes found with tag %q", opts.Tag)
 		}
-	} else {
-		targets = allNodes
-		if len(targets) == 0 {
-			return nil, fmt.Errorf("no active nodes connected to mesh")
-		}
+		return nil, fmt.Errorf("no active nodes connected to mesh")
 	}
 
 	concurrency := opts.Concurrency

@@ -194,20 +194,23 @@ func TestTransparentDirectRoutingAndNodeListing(t *testing.T) {
 		t.Errorf("expected 'transparent-routing-success', got %q", outStr)
 	}
 
-	// 3. Test ListNodes merging direct nodes
+	// 3. Test ListNodes merging direct nodes and prepending socket
 	nodes, err := client.ListNodes()
 	if err != nil {
 		t.Fatalf("ListNodes failed: %v", err)
 	}
 
-	if len(nodes) != 1 {
-		t.Fatalf("expected 1 node in ListNodes, got %d", len(nodes))
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 nodes (socket + direct node) in ListNodes, got %d", len(nodes))
 	}
-	if nodes[0].Hostname != "inv-node-1" {
-		t.Errorf("expected hostname 'inv-node-1', got %s", nodes[0].Hostname)
+	if nodes[0].ID != "socket" {
+		t.Errorf("expected first node to be 'socket', got %s", nodes[0].ID)
 	}
-	if nodes[0].Status != "online [MODE: inverted]" {
-		t.Errorf("expected status 'online [MODE: inverted]', got %s", nodes[0].Status)
+	if nodes[1].Hostname != "inv-node-1" {
+		t.Errorf("expected hostname 'inv-node-1', got %s", nodes[1].Hostname)
+	}
+	if nodes[1].Status != "online [MODE: inverted]" {
+		t.Errorf("expected status 'online [MODE: inverted]', got %s", nodes[1].Status)
 	}
 }
 
