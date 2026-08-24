@@ -456,10 +456,6 @@ func (c *CA) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error
 		}
 	}
 
-	if c.domain != "" {
-		hosts = append(hosts, "*."+c.domain)
-	}
-
 	return c.MintCertificate(hosts, 90*24*time.Hour)
 }
 

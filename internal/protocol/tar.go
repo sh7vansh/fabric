@@ -30,10 +30,10 @@ func SanitizeExtractPath(destDir, entryName string) (string, error) {
 		return "", fmt.Errorf("path traversal detected: %q escapes %q", entryName, destDir)
 	}
 
-	// Symlink escape check: Ensure intermediate path components do not resolve to a symlink escaping destDir
+	// Symlink escape check: Ensure all path components (intermediate and leaf) do not resolve to a symlink escaping destDir
 	current := cleanDest
 	parts := strings.Split(rel, string(filepath.Separator))
-	for i := 0; i < len(parts)-1; i++ {
+	for i := 0; i < len(parts); i++ {
 		current = filepath.Join(current, parts[i])
 		if fi, err := os.Lstat(current); err == nil {
 			if fi.Mode()&os.ModeSymlink != 0 {
@@ -71,7 +71,7 @@ func ExtractTarWithLimits(r io.Reader, destDir string, maxBytes int64, maxEntrie
 		return err
 	}
 
-	tr := tar.NewReader(r)
+	tr := tar.NewReader(io.LimitReader(r, maxBytes))
 	var totalDecompressedBytes int64
 	var entryCount int
 

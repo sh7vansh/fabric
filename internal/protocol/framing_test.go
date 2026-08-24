@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"testing"
 )
 
@@ -38,6 +39,9 @@ func TestFramingOversizeHeaderRejection(t *testing.T) {
 	frame, err := ReadFrame(&buf)
 	if err == nil {
 		t.Fatalf("expected ReadFrame to return error for oversize frame, got nil (frame: %+v)", frame)
+	}
+	if !errors.Is(err, ErrFrameTooLarge) {
+		t.Errorf("expected errors.Is(err, ErrFrameTooLarge), got %v", err)
 	}
 	if frame != nil {
 		t.Errorf("expected nil frame on oversize error, got: %+v", frame)

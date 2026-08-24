@@ -99,12 +99,16 @@ func main() {
 
 	upgrader := meshRelay.Upgrader()
 
-	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+	extractBearerToken := func(r *http.Request) string {
 		authHeader := r.Header.Get("Authorization")
-		var provided string
 		if strings.HasPrefix(authHeader, "Bearer ") {
-			provided = strings.TrimPrefix(authHeader, "Bearer ")
+			return strings.TrimPrefix(authHeader, "Bearer ")
 		}
+		return ""
+	}
+
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		provided := extractBearerToken(r)
 		authenticated := meshRelay.ValidateToken(provided)
 
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -121,11 +125,7 @@ func main() {
 	})
 
 	authenticate := func(w http.ResponseWriter, r *http.Request) bool {
-		authHeader := r.Header.Get("Authorization")
-		var provided string
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			provided = strings.TrimPrefix(authHeader, "Bearer ")
-		}
+		provided := extractBearerToken(r)
 		if !meshRelay.ValidateToken(provided) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return false

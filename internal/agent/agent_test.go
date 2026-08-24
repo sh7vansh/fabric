@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -231,3 +232,52 @@ func TestAgentHandleExecUserValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentCheckOrigin(t *testing.T) {
+	ag := New(Config{
+		Domain:   "fabric.mesh",
+		Hostname: "test-node",
+	})
+
+	validOrigins := []struct {
+		origin string
+		host   string
+	}{
+		{"", "127.0.0.1:8080"},
+		{"http://localhost:8080", "127.0.0.1:8080"},
+		{"http://127.0.0.1:8080", "127.0.0.1:8080"},
+		{"http://test-node.fabric.mesh:8080", "test-node.fabric.mesh:8080"},
+		{"https://fabric.mesh", "fabric.mesh"},
+		{"http://samehost.local:8080", "samehost.local:8080"},
+	}
+
+	for _, tc := range validOrigins {
+		req, _ := http.NewRequest("GET", "/ws", nil)
+		if tc.origin != "" {
+			req.Header.Set("Origin", tc.origin)
+		}
+		req.Host = tc.host
+		if !ag.CheckOrigin(req) {
+			t.Errorf("expected CheckOrigin to accept origin=%q with host=%q", tc.origin, tc.host)
+		}
+	}
+
+	invalidOrigins := []struct {
+		origin string
+		host   string
+	}{
+		{"http://evil.com", "node1.fabric.mesh:8080"},
+		{"https://malicious-site.org", "127.0.0.1:8080"},
+		{"http://attacker.mesh.com", "node1.fabric.mesh:8080"},
+	}
+
+	for _, tc := range invalidOrigins {
+		req, _ := http.NewRequest("GET", "/ws", nil)
+		req.Header.Set("Origin", tc.origin)
+		req.Host = tc.host
+		if ag.CheckOrigin(req) {
+			t.Errorf("expected CheckOrigin to reject origin=%q with host=%q", tc.origin, tc.host)
+		}
+	}
+}
+

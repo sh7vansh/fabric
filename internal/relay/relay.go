@@ -199,18 +199,23 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 		log.Printf("[Relay] Node connected successfully: %s (session: %s)\n", hs.Hostname, sessID)
 	})
 
-	router.HandleFunc(string(protocol.TypeDNSQuery), func(stream net.Conn, env []byte) {
-		sessionAuthMu.RLock()
-		authed := isAuthenticated
-		sessionAuthMu.RUnlock()
+	requireAuth := func(name string, handler func(stream net.Conn, env []byte)) func(stream net.Conn, env []byte) {
+		return func(stream net.Conn, env []byte) {
+			sessionAuthMu.RLock()
+			authed := isAuthenticated
+			sessionAuthMu.RUnlock()
 
-		if !authed {
-			log.Println("[Relay] Dropping DNS query on unauthenticated session")
-			stream.Close()
-			mux.Session.Close()
-			return
+			if !authed {
+				log.Printf("[Relay] Dropping %s on unauthenticated session\n", name)
+				stream.Close()
+				mux.Session.Close()
+				return
+			}
+			handler(stream, env)
 		}
+	}
 
+	router.HandleFunc(string(protocol.TypeDNSQuery), requireAuth("DNS query", func(stream net.Conn, env []byte) {
 		defer stream.Close()
 		var query protocol.DNSQuery
 		if err := json.Unmarshal(env, &query); err != nil {
@@ -225,20 +230,9 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 			outStream.Write(b)
 			outStream.Close()
 		}
-	})
+	}))
 
-	router.HandleFunc(string(protocol.TypeExecRequest), func(stream net.Conn, env []byte) {
-		sessionAuthMu.RLock()
-		authed := isAuthenticated
-		sessionAuthMu.RUnlock()
-
-		if !authed {
-			log.Println("[Relay] Dropping ExecRequest on unauthenticated session")
-			stream.Close()
-			mux.Session.Close()
-			return
-		}
-
+	router.HandleFunc(string(protocol.TypeExecRequest), requireAuth("ExecRequest", func(stream net.Conn, env []byte) {
 		var req protocol.ExecRequest
 		if err := json.Unmarshal(env, &req); err != nil {
 			stream.Close()
@@ -248,20 +242,9 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 		if err := r.RouteStream(req.TargetHostname, env, stream); err != nil {
 			log.Println("[Relay] RouteStream error:", err)
 		}
-	})
+	}))
 
-	router.HandleFunc(string(protocol.TypeCopyRequest), func(stream net.Conn, env []byte) {
-		sessionAuthMu.RLock()
-		authed := isAuthenticated
-		sessionAuthMu.RUnlock()
-
-		if !authed {
-			log.Println("[Relay] Dropping CopyRequest on unauthenticated session")
-			stream.Close()
-			mux.Session.Close()
-			return
-		}
-
+	router.HandleFunc(string(protocol.TypeCopyRequest), requireAuth("CopyRequest", func(stream net.Conn, env []byte) {
 		var req protocol.CopyRequest
 		if err := json.Unmarshal(env, &req); err != nil {
 			stream.Close()
@@ -270,20 +253,9 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 		if err := r.RouteStream(req.TargetHostname, env, stream); err != nil {
 			log.Println("[Relay] RouteStream copy error:", err)
 		}
-	})
+	}))
 
-	router.HandleFunc(string(protocol.TypeProxyRequest), func(stream net.Conn, env []byte) {
-		sessionAuthMu.RLock()
-		authed := isAuthenticated
-		sessionAuthMu.RUnlock()
-
-		if !authed {
-			log.Println("[Relay] Dropping ProxyRequest on unauthenticated session")
-			stream.Close()
-			mux.Session.Close()
-			return
-		}
-
+	router.HandleFunc(string(protocol.TypeProxyRequest), requireAuth("ProxyRequest", func(stream net.Conn, env []byte) {
 		var req protocol.ProxyRequest
 		if err := json.Unmarshal(env, &req); err != nil {
 			stream.Close()
@@ -292,7 +264,7 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 		if err := r.RouteProxyStream(req.TargetHostname, env, stream); err != nil {
 			log.Println("[Relay] RouteProxyStream error:", err)
 		}
-	})
+	}))
 
 	return router.Accept()
 }

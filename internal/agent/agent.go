@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -96,6 +97,42 @@ func (a *Agent) ListenAddr() string {
 	return a.cfg.ListenAddress
 }
 
+// CheckOrigin validates the incoming WebSocket request Origin header.
+func (a *Agent) CheckOrigin(req *http.Request) bool {
+	origin := req.Header.Get("Origin")
+	if origin == "" {
+		// Non-browser direct CLI or agent client
+		return true
+	}
+
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+
+	originHost := strings.ToLower(u.Hostname())
+	if originHost == "localhost" || originHost == "127.0.0.1" || originHost == "::1" {
+		return true
+	}
+
+	reqHost := req.Host
+	if h, _, err := net.SplitHostPort(reqHost); err == nil {
+		reqHost = h
+	}
+	if strings.EqualFold(originHost, reqHost) {
+		return true
+	}
+
+	domain := strings.ToLower(a.cfg.Domain)
+	if domain != "" {
+		if originHost == domain || strings.HasSuffix(originHost, "."+domain) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ListenAndServe starts a public listener for direct Inverted Connection Mode.
 func (a *Agent) ListenAndServe(ctx context.Context) error {
 	tlsCfg, err := pki.BuildMTLSConfig(a.cfg.CACertPath)
@@ -108,7 +145,7 @@ func (a *Agent) ListenAndServe(ctx context.Context) error {
 	tlsCfg.ClientCAs = tlsCfg.RootCAs
 
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin: a.CheckOrigin,
 	}
 
 	mux := http.NewServeMux()

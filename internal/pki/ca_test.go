@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -249,4 +250,20 @@ func TestCAGetCertificateSNIAuthorization(t *testing.T) {
 			t.Errorf("expected SNI %q to be rejected, but got cert: %+v", sni, cert)
 		}
 	}
+
+	// 3. Verify no unsolicited wildcard SAN injection
+	cert, err := ca.GetCertificate(&tls.ClientHelloInfo{ServerName: "node-1.fabric.mesh"})
+	if err != nil {
+		t.Fatalf("GetCertificate failed: %v", err)
+	}
+	parsedCert, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("ParseCertificate failed: %v", err)
+	}
+	for _, dnsName := range parsedCert.DNSNames {
+		if strings.HasPrefix(dnsName, "*.") {
+			t.Errorf("unexpected wildcard SAN %q in minted certificate for node-1.fabric.mesh", dnsName)
+		}
+	}
 }
+

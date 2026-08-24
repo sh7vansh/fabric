@@ -204,3 +204,23 @@ func TestExtractTarSymlinkEscape(t *testing.T) {
 		t.Errorf("expected SanitizeExtractPath to reject traversing symlink pointing outside destDir")
 	}
 }
+
+func TestExtractTarLeafSymlinkEscape(t *testing.T) {
+	destDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsideTarget := filepath.Join(outsideDir, "pwned.txt")
+	_ = os.WriteFile(outsideTarget, []byte("original"), 0644)
+
+	// Create a leaf symlink inside destDir that points to outsideTarget
+	leafSymlink := filepath.Join(destDir, "leaf_link.txt")
+	if err := os.Symlink(outsideTarget, leafSymlink); err != nil {
+		t.Fatal(err)
+	}
+
+	// Try sanitizing and extracting an entry named "leaf_link.txt"
+	_, err := SanitizeExtractPath(destDir, "leaf_link.txt")
+	if err == nil {
+		t.Errorf("expected SanitizeExtractPath to reject leaf symlink pointing outside destDir")
+	}
+}
+

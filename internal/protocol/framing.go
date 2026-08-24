@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/binary"
+	"errors"
 	"io"
 )
 
@@ -16,6 +17,9 @@ const (
 
 // MaxFramePayloadSize is the upper ceiling (16 MB) for a single stream frame payload.
 const MaxFramePayloadSize = 16 * 1024 * 1024
+
+// ErrFrameTooLarge is returned when an incoming frame header claims a payload size exceeding MaxFramePayloadSize.
+var ErrFrameTooLarge = errors.New("frame payload exceeds maximum allowed size")
 
 const headerSize = 8
 
@@ -55,7 +59,7 @@ func ReadFrame(r io.Reader) (*Frame, error) {
 	size := binary.BigEndian.Uint32(header[4:])
 
 	if size > MaxFramePayloadSize {
-		return nil, io.ErrUnexpectedEOF
+		return nil, ErrFrameTooLarge
 	}
 
 	payload := make([]byte, size)

@@ -446,3 +446,33 @@ func TestServerEndToEndAuthenticatedLifecycle(t *testing.T) {
 		t.Errorf("expected stdout 'echoed: uname -a', got: %q", stdoutBuf.String())
 	}
 }
+
+func TestServerWebSocketOriginValidation(t *testing.T) {
+	testToken := "test-origin-token"
+	ts, dialer, r := setupTestServer(testToken)
+	defer ts.Close()
+	defer r.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+
+	// 1. Dial with disallowed Origin header
+	badHeader := http.Header{}
+	badHeader.Set("Origin", "http://malicious-website.com")
+	_, resp, err := dialer.Dial(wsURL, badHeader)
+	if err == nil {
+		t.Fatalf("expected dial with disallowed Origin to fail, but succeeded")
+	}
+	if resp != nil && resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected status 403 Forbidden for bad origin, got %d", resp.StatusCode)
+	}
+
+	// 2. Dial with allowed localhost Origin header
+	goodHeader := http.Header{}
+	goodHeader.Set("Origin", "http://localhost")
+	conn, _, err := dialer.Dial(wsURL, goodHeader)
+	if err != nil {
+		t.Fatalf("expected dial with localhost Origin to succeed, got error: %v", err)
+	}
+	conn.Close()
+}
+
