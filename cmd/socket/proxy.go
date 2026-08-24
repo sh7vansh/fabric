@@ -1,21 +1,11 @@
 package main
 
 import (
-	"encoding/base64"
-	"fmt"
-	"io"
+	"encoding/json"
 	"log"
 	"net"
-	"sync"
 
 	"fabric/internal/protocol"
-)
-
-var (
-	proxyConns     = make(map[string]net.Conn)
-	proxyConnsLock sync.RWMutex
-	connIDCounter  int
-	connIDLock     sync.Mutex
 )
 
 // StartTCPProxy listens on raw TCP and forwards traffic to the mesh nodes.
@@ -39,56 +29,31 @@ func StartTCPProxy() {
 }
 
 func handleTCPConn(conn net.Conn) {
-	// For raw TCP without SNI/Host peeking, we just route to the first available node.
+	defer conn.Close()
+
 	nodesLock.RLock()
-	var targetNodeName string
-	for name := range nodes {
-		targetNodeName = name
+	var targetNode *NodeState
+	for _, n := range nodes {
+		targetNode = n
 		break
 	}
-	nodeConn := nodes[targetNodeName]
 	nodesLock.RUnlock()
 
-	if nodeConn == nil {
-		conn.Close()
+	if targetNode == nil {
 		return
 	}
 
-	connIDLock.Lock()
-	connIDCounter++
-	connID := fmt.Sprintf("conn-%d", connIDCounter)
-	connIDLock.Unlock()
-
-	proxyConnsLock.Lock()
-	proxyConns[connID] = conn
-	proxyConnsLock.Unlock()
-
-	buf := make([]byte, 4096)
-	for {
-		n, err := conn.Read(buf)
-		if n > 0 {
-			nodeConn.Conn.WriteJSON(protocol.ProxyStream{
-				Type:     protocol.TypeProxyStream,
-				ConnID:   connID,
-				Data:     base64.StdEncoding.EncodeToString(buf[:n]),
-				IsClosed: false,
-			})
-		}
-		if err != nil {
-			if err != io.EOF {
-				log.Println("TCP proxy read error:", err)
-			}
-			nodeConn.Conn.WriteJSON(protocol.ProxyStream{
-				Type:     protocol.TypeProxyStream,
-				ConnID:   connID,
-				Data:     "",
-				IsClosed: true,
-			})
-			proxyConnsLock.Lock()
-			delete(proxyConns, connID)
-			proxyConnsLock.Unlock()
-			conn.Close()
-			break
-		}
+	stream, err := targetNode.Mux.Session.Open()
+	if err != nil {
+		return
 	}
+	defer stream.Close()
+
+	req := protocol.ProxyRequest{
+		Type: protocol.TypeProxyRequest,
+	}
+	b, _ := json.Marshal(req)
+	stream.Write(b)
+
+	protocol.Proxy(stream, conn)
 }

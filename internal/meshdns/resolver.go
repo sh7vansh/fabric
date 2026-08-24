@@ -2,6 +2,7 @@ package meshdns
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -13,13 +14,12 @@ import (
 	"fabric/internal/protocol"
 
 	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 	"github.com/miekg/dns"
 )
 
 type Resolver struct {
 	domain   string
-	wsConn   *websocket.Conn
+	mux      *protocol.StreamMultiplexer
 	cache    map[string]protocol.DNSResponse
 	cacheMux sync.RWMutex
 	pending  map[string]chan protocol.DNSResponse
@@ -35,8 +35,8 @@ func NewResolver(domain string) *Resolver {
 	}
 }
 
-func (r *Resolver) SetConnection(conn *websocket.Conn) {
-	r.wsConn = conn
+func (r *Resolver) SetMultiplexer(mux *protocol.StreamMultiplexer) {
+	r.mux = mux
 }
 
 func (r *Resolver) HandleDNSResponse(resp protocol.DNSResponse) {
@@ -114,7 +114,7 @@ func (r *Resolver) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	r.pending[sessionID] = ch
 	r.pendMux.Unlock()
 
-	if r.wsConn != nil {
+	if r.mux != nil {
 		query := protocol.DNSQuery{
 			Type:      protocol.TypeDNSQuery,
 			SessionID: sessionID,
@@ -122,7 +122,15 @@ func (r *Resolver) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 			QType:     q.Qtype,
 			Data:      base64.StdEncoding.EncodeToString(reqWire),
 		}
-		r.wsConn.WriteJSON(query)
+		
+		go func() {
+			stream, err := r.mux.Session.Open()
+			if err == nil {
+				b, _ := json.Marshal(query)
+				stream.Write(b)
+				stream.Close()
+			}
+		}()
 	} else {
 		dns.HandleFailed(w, req)
 		return
@@ -203,5 +211,3 @@ func RevertOS() {
 		exec.Command("resolvectl", "revert", "lo").Run()
 	}
 }
-
-

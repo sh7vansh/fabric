@@ -1,89 +1,35 @@
 package main
 
 import (
-	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
-	"sync"
 
 	"fabric/internal/protocol"
-
-	"github.com/gorilla/websocket"
 )
 
-var (
-	proxyConns     = make(map[string]net.Conn)
-	proxyConnsLock sync.RWMutex
-)
+func handleProxyRequest(stream net.Conn, envelope []byte) {
+	defer stream.Close()
 
-func handleProxyStream(c *websocket.Conn, stream protocol.ProxyStream) {
-	proxyConnsLock.RLock()
-	conn, ok := proxyConns[stream.ConnID]
-	proxyConnsLock.RUnlock()
-
-	if stream.IsClosed {
-		if ok {
-			conn.Close()
-			proxyConnsLock.Lock()
-			delete(proxyConns, stream.ConnID)
-			proxyConnsLock.Unlock()
-		}
+	var req protocol.ProxyRequest
+	if err := json.Unmarshal(envelope, &req); err != nil {
 		return
 	}
 
-	if !ok {
-		// Connect to local service, using TargetPort if provided or defaulting to 80
-		var err error
-		port := 80
-		if stream.TargetPort > 0 {
-			port = stream.TargetPort
-		}
-		conn, err = net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-		if err != nil {
-			log.Println("Node proxy dial error:", err)
-			c.WriteJSON(protocol.ProxyStream{
-				Type:     "proxy_stream",
-				ConnID:   stream.ConnID,
-				Data:     "",
-				IsClosed: true,
-			})
-			return
-		}
-
-		proxyConnsLock.Lock()
-		proxyConns[stream.ConnID] = conn
-		proxyConnsLock.Unlock()
-
-		go func() {
-			buf := make([]byte, 4096)
-			for {
-				n, err := conn.Read(buf)
-				if n > 0 {
-					c.WriteJSON(protocol.ProxyStream{
-						Type:     "proxy_stream",
-						ConnID:   stream.ConnID,
-						Data:     base64.StdEncoding.EncodeToString(buf[:n]),
-						IsClosed: false,
-					})
-				}
-				if err != nil {
-					c.WriteJSON(protocol.ProxyStream{
-						Type:     "proxy_stream",
-						ConnID:   stream.ConnID,
-						Data:     "",
-						IsClosed: true,
-					})
-					proxyConnsLock.Lock()
-					delete(proxyConns, stream.ConnID)
-					proxyConnsLock.Unlock()
-					conn.Close()
-					break
-				}
-			}
-		}()
+	port := 80
+	if req.TargetPort > 0 {
+		port = req.TargetPort
 	}
 
-	data, _ := base64.StdEncoding.DecodeString(stream.Data)
-	conn.Write(data)
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		log.Println("Node proxy dial error:", err)
+		return
+	}
+	defer conn.Close()
+
+	go io.Copy(stream, conn)
+	io.Copy(conn, stream)
 }

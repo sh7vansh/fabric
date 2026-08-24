@@ -1,12 +1,11 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -19,12 +18,6 @@ import (
 	"fabric/internal/protocol"
 
 	"github.com/creack/pty"
-	"github.com/gorilla/websocket"
-)
-
-var (
-	stdinWriters     = make(map[string]io.Writer)
-	stdinWritersLock sync.RWMutex
 )
 
 func main() {
@@ -55,7 +48,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// Clean any previous state on startup
 	meshdns.RevertOS()
 	meshdns.CleanHostsBlock()
 
@@ -64,12 +56,10 @@ func main() {
 		log.Fatalf("Failed to start DNS resolver: %v", err)
 	}
 
-	// Configure system routing
 	if err := meshdns.ConfigureOS(*domainFlag); err != nil {
 		log.Printf("Failed to configure OS DNS routing: %v", err)
 	}
 
-	// Handle graceful teardown
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -81,11 +71,23 @@ func main() {
 		os.Exit(0)
 	}()
 
-
-
 	for {
 		c := ConnectWithRetry(*u, token)
-		resolver.SetConnection(c)
+
+		mux, err := protocol.NewStreamMultiplexer(c, false)
+		resolver.SetMultiplexer(mux)
+		if err != nil {
+			log.Println("Multiplexer error:", err)
+			c.Close()
+			continue
+		}
+
+		stream, err := mux.Session.Open()
+		if err != nil {
+			log.Println("Open stream error:", err)
+			c.Close()
+			continue
+		}
 
 		hostname, _ := os.Hostname()
 		hs := protocol.Handshake{
@@ -98,93 +100,49 @@ func main() {
 			Version:  "1.0.0",
 		}
 
-		err = c.WriteJSON(hs)
-		if err != nil {
-			log.Println("write handshake:", err)
-			c.Close()
-			continue
-		}
+		b, _ := json.Marshal(hs)
+		stream.Write(b)
+		stream.Close() // Handshake stream is transient
 
 		log.Println("Handshake sent successfully.")
 
-		for {
-			_, message, err := c.ReadMessage()
-			if err != nil {
-				log.Println("Read error:", err)
-				break
-			}
+		router := protocol.NewRouter(mux.Session)
 
-			var envelope map[string]interface{}
-			if err := json.Unmarshal(message, &envelope); err != nil {
-				continue
-			}
+		router.HandleFunc(string(protocol.TypeNodeSync), func(s net.Conn, env []byte) {
+			defer s.Close()
+			var syncMsg protocol.NodeSync
+			json.Unmarshal(env, &syncMsg)
+			meshdns.UpdateHostsBlock(syncMsg.Nodes, *domainFlag, *serverURL)
+		})
 
-			envelopeType, _ := envelope["type"].(string)
-			switch protocol.EnvelopeType(envelopeType) {
-			case protocol.TypeNodeSync:
-				var syncMsg protocol.NodeSync
-				json.Unmarshal(message, &syncMsg)
-				
-				// Update /etc/hosts
-				meshdns.UpdateHostsBlock(syncMsg.Nodes, *domainFlag, *serverURL)
-			case protocol.TypeDNSResponse:
-				var resp protocol.DNSResponse
-				json.Unmarshal(message, &resp)
-				resolver.HandleDNSResponse(resp)
-			case protocol.TypeExecRequest:
-				var req protocol.ExecRequest
-				json.Unmarshal(message, &req)
-				go handleExec(c, req)
-			case protocol.TypeExecStream:
-				var stream protocol.ExecStream
-				json.Unmarshal(message, &stream)
-				if stream.Stream == protocol.StreamStdin {
-					data, _ := base64.StdEncoding.DecodeString(stream.Data)
-					stdinWritersLock.RLock()
-					if w, ok := stdinWriters[stream.SessionID]; ok {
-						w.Write(data)
-					}
-					stdinWritersLock.RUnlock()
-				}
-			case protocol.TypeCopyRequest:
-				var req protocol.CopyRequest
-				json.Unmarshal(message, &req)
-				handleCopyRequest(c, req)
-			case protocol.TypeCopyStream:
-				var stream protocol.CopyStream
-				json.Unmarshal(message, &stream)
-				handleCopyStream(stream)
-			case protocol.TypeProxyStream:
-				var stream protocol.ProxyStream
-				json.Unmarshal(message, &stream)
-				handleProxyStream(c, stream)
-			}
+		router.HandleFunc(string(protocol.TypeDNSResponse), func(s net.Conn, env []byte) {
+			defer s.Close()
+			var resp protocol.DNSResponse
+			json.Unmarshal(env, &resp)
+			resolver.HandleDNSResponse(resp)
+		})
+
+		router.HandleFunc(string(protocol.TypeExecRequest), handleExec)
+		router.HandleFunc(string(protocol.TypeCopyRequest), handleCopyRequest)
+		router.HandleFunc(string(protocol.TypeProxyRequest), handleProxyRequest)
+
+		if err := router.Accept(); err != nil {
+			log.Println("Router accept error:", err)
 		}
+
 		c.Close()
 		log.Println("Connection closed, reconnecting...")
 	}
 }
 
-func streamIOToSocket(r io.Reader, c *websocket.Conn, sessionID string, streamType protocol.StreamType) {
-	buf := make([]byte, 1024)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			data := base64.StdEncoding.EncodeToString(buf[:n])
-			c.WriteJSON(protocol.ExecStream{
-				Type:      protocol.TypeExecStream,
-				SessionID: sessionID,
-				Stream:    streamType,
-				Data:      data,
-			})
-		}
-		if err != nil {
-			break
-		}
-	}
-}
+func handleExec(stream net.Conn, env []byte) {
+	defer stream.Close()
 
-func handleExec(c *websocket.Conn, req protocol.ExecRequest) {
+	var req protocol.ExecRequest
+	if err := json.Unmarshal(env, &req); err != nil {
+		return
+	}
+
 	command := req.Command
 	if req.User != "" {
 		command = fmt.Sprintf("su - %s -c %q", req.User, req.Command)
@@ -199,51 +157,52 @@ func handleExec(c *websocket.Conn, req protocol.ExecRequest) {
 
 	if req.Detached {
 		if err := cmd.Start(); err != nil {
-			sendExit(c, req.SessionID, "1")
+			protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
 			return
 		}
 		go func() {
 			cmd.Wait()
 		}()
-		sendExit(c, req.SessionID, "0")
+		protocol.WriteFrame(stream, protocol.StreamExit, []byte("0"))
 		return
 	}
-
-	sessionKey := req.SessionID
 
 	if req.AllocatePTY {
 		ptmx, err := pty.Start(cmd)
 		if err != nil {
-			sendExit(c, req.SessionID, "1")
+			protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
 			return
 		}
 		defer ptmx.Close()
 
-		stdinWritersLock.Lock()
-		stdinWriters[sessionKey] = ptmx
-		stdinWritersLock.Unlock()
-
-		defer func() {
-			stdinWritersLock.Lock()
-			delete(stdinWriters, sessionKey)
-			stdinWritersLock.Unlock()
+		go func() {
+			buf := make([]byte, 1024)
+			for {
+				n, err := ptmx.Read(buf)
+				if n > 0 {
+					protocol.WriteFrame(stream, protocol.StreamStdout, buf[:n])
+				}
+				if err != nil {
+					break
+				}
+			}
 		}()
 
-		streamIOToSocket(ptmx, c, req.SessionID, protocol.StreamStdout)
+		go func() {
+			for {
+				frame, err := protocol.ReadFrame(stream)
+				if err != nil {
+					break
+				}
+				if frame.Type == protocol.StreamStdin {
+					ptmx.Write(frame.Payload)
+				}
+			}
+		}()
 	} else {
 		stdout, _ := cmd.StdoutPipe()
 		stderr, _ := cmd.StderrPipe()
 		stdin, _ := cmd.StdinPipe()
-
-		stdinWritersLock.Lock()
-		stdinWriters[sessionKey] = stdin
-		stdinWritersLock.Unlock()
-
-		defer func() {
-			stdinWritersLock.Lock()
-			delete(stdinWriters, sessionKey)
-			stdinWritersLock.Unlock()
-		}()
 
 		cmd.Start()
 
@@ -252,26 +211,48 @@ func handleExec(c *websocket.Conn, req protocol.ExecRequest) {
 
 		go func() {
 			defer wg.Done()
-			streamIOToSocket(stdout, c, req.SessionID, protocol.StreamStdout)
+			buf := make([]byte, 1024)
+			for {
+				n, err := stdout.Read(buf)
+				if n > 0 {
+					protocol.WriteFrame(stream, protocol.StreamStdout, buf[:n])
+				}
+				if err != nil {
+					break
+				}
+			}
 		}()
 
 		go func() {
 			defer wg.Done()
-			streamIOToSocket(stderr, c, req.SessionID, protocol.StreamStderr)
+			buf := make([]byte, 1024)
+			for {
+				n, err := stderr.Read(buf)
+				if n > 0 {
+					protocol.WriteFrame(stream, protocol.StreamStderr, buf[:n])
+				}
+				if err != nil {
+					break
+				}
+			}
+		}()
+
+		go func() {
+			for {
+				frame, err := protocol.ReadFrame(stream)
+				if err != nil {
+					break
+				}
+				if frame.Type == protocol.StreamStdin {
+					stdin.Write(frame.Payload)
+				}
+			}
+			stdin.Close()
 		}()
 
 		wg.Wait()
 	}
 
 	cmd.Wait()
-	sendExit(c, req.SessionID, "0")
-}
-
-func sendExit(c *websocket.Conn, sessionID string, code string) {
-	c.WriteJSON(protocol.ExecStream{
-		Type:      protocol.TypeExecStream,
-		SessionID: sessionID,
-		Stream:    protocol.StreamExit,
-		Data:      base64.StdEncoding.EncodeToString([]byte(code)),
-	})
+	protocol.WriteFrame(stream, protocol.StreamExit, []byte("0"))
 }

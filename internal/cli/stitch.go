@@ -173,7 +173,16 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 		rawCIDR = args[0]
 	}
 
-	targets, err := ParseTargets(rawCIDR)
+	defaultCIDR := ""
+	if rawCIDR == "" {
+		var err error
+		defaultCIDR, err = GetDefaultLocalCIDR()
+		if err != nil {
+			return fmt.Errorf("no target specified and failed to auto-detect local subnet: %w", err)
+		}
+	}
+
+	targets, err := ParseTargets(rawCIDR, defaultCIDR)
 	if err != nil {
 		return fmt.Errorf("target resolution failed: %w", err)
 	}
@@ -331,27 +340,42 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func ExecuteStitchHost(opts StitchHostOptions) (*protocol.NodeMetadata, error) {
-	socketURL := opts.SocketURL
-	u, err := url.Parse(socketURL)
-	if err == nil {
-		host, port, err := net.SplitHostPort(u.Host)
-		if err == nil && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
-			outboundIP := getOutboundIP()
-			u.Host = net.JoinHostPort(outboundIP, port)
-			socketURL = u.String()
-			if !opts.SilentOutput {
-				fmt.Printf("[+] Detected local loopback socket. Resolving remote socket URL to: %s\n", socketURL)
-			}
-		}
+// RemoteExecutor defines an interface for running a script on a remote host.
+type RemoteExecutor interface {
+	Run(script string) error
+}
+
+// SSHExecutor implements RemoteExecutor using ssh via os/exec.
+type SSHExecutor struct {
+	Target      string
+	Port        string
+	IdentityKey string
+	Silent      bool
+}
+
+func (e *SSHExecutor) Run(script string) error {
+	var sshArgs []string
+	if e.Port != "" && e.Port != "22" {
+		sshArgs = append(sshArgs, "-p", e.Port)
+	}
+	if e.IdentityKey != "" {
+		sshArgs = append(sshArgs, "-i", e.IdentityKey)
+	}
+	sshArgs = append(sshArgs, "-o", "StrictHostKeyChecking=accept-new", e.Target, "bash -s")
+
+	sshCmd := exec.Command("ssh", sshArgs...)
+	sshCmd.Stdin = strings.NewReader(script)
+	if !e.Silent {
+		sshCmd.Stdout = os.Stdout
+		sshCmd.Stderr = os.Stderr
 	}
 
-	if !opts.SilentOutput {
-		fmt.Printf("[+] Stitching target '%s' (port %s) into Fabric mesh...\n", opts.Target, opts.SSHPort)
-		fmt.Printf("[+] Target Socket URL: %s\n", socketURL)
-	}
+	return sshCmd.Run()
+}
 
-	bootstrapScript := fmt.Sprintf(`#!/usr/bin/env bash
+// GenerateStitchScript generates the bash script to bootstrap a node.
+func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
+	return fmt.Sprintf(`#!/usr/bin/env bash
 set -e
 
 echo "[+] Initializing Fabric node setup on remote host..."
@@ -392,24 +416,38 @@ if command -v systemctl >/dev/null 2>&1; then
     echo "[+] fabric-node systemd service enabled and started."
 fi
 `, socketURL, opts.Token, opts.Domain)
+}
 
-	var sshArgs []string
-	if opts.SSHPort != "" && opts.SSHPort != "22" {
-		sshArgs = append(sshArgs, "-p", opts.SSHPort)
+func ExecuteStitchHost(opts StitchHostOptions) (*protocol.NodeMetadata, error) {
+	socketURL := opts.SocketURL
+	u, err := url.Parse(socketURL)
+	if err == nil {
+		host, port, err := net.SplitHostPort(u.Host)
+		if err == nil && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
+			outboundIP := getOutboundIP()
+			u.Host = net.JoinHostPort(outboundIP, port)
+			socketURL = u.String()
+			if !opts.SilentOutput {
+				fmt.Printf("[+] Detected local loopback socket. Resolving remote socket URL to: %s\n", socketURL)
+			}
+		}
 	}
-	if opts.IdentityKey != "" {
-		sshArgs = append(sshArgs, "-i", opts.IdentityKey)
-	}
-	sshArgs = append(sshArgs, "-o", "StrictHostKeyChecking=accept-new", opts.Target, "bash -s")
 
-	sshCmd := exec.Command("ssh", sshArgs...)
-	sshCmd.Stdin = strings.NewReader(bootstrapScript)
 	if !opts.SilentOutput {
-		sshCmd.Stdout = os.Stdout
-		sshCmd.Stderr = os.Stderr
+		fmt.Printf("[+] Stitching target '%s' (port %s) into Fabric mesh...\n", opts.Target, opts.SSHPort)
+		fmt.Printf("[+] Target Socket URL: %s\n", socketURL)
 	}
 
-	if err := sshCmd.Run(); err != nil {
+	bootstrapScript := GenerateStitchScript(opts, socketURL)
+
+	executor := &SSHExecutor{
+		Target:      opts.Target,
+		Port:        opts.SSHPort,
+		IdentityKey: opts.IdentityKey,
+		Silent:      opts.SilentOutput,
+	}
+
+	if err := executor.Run(bootstrapScript); err != nil {
 		return nil, fmt.Errorf("remote SSH bootstrap failed: %w", err)
 	}
 

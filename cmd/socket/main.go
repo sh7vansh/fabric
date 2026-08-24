@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"log"
@@ -21,16 +20,13 @@ var upgrader = websocket.Upgrader{
 }
 
 type NodeState struct {
-	Conn     *websocket.Conn
+	Mux      *protocol.StreamMultiplexer
 	Metadata protocol.NodeMetadata
 }
 
 var (
 	nodes     = make(map[string]*NodeState)
 	nodesLock sync.RWMutex
-
-	cliConns     = make(map[string]*websocket.Conn) // sessionID -> CLI conn
-	cliConnsLock sync.RWMutex
 )
 
 func main() {
@@ -57,25 +53,25 @@ func main() {
 			return
 		}
 
-		_, message, err := conn.ReadMessage()
+		mux, err := protocol.NewStreamMultiplexer(conn, true)
 		if err != nil {
-			log.Println("Read error:", err)
 			conn.Close()
 			return
 		}
 
-		var envelope map[string]interface{}
-		if err := json.Unmarshal(message, &envelope); err != nil {
-			conn.Close()
-			return
+		router := protocol.NewRouter(mux.Session)
+
+		proxyIP := ""
+		if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
+			proxyIP = tcpAddr.IP.String()
+		} else {
+			proxyIP = "127.0.0.1"
 		}
 
-		envelopeType, _ := envelope["type"].(string)
-
-		switch protocol.EnvelopeType(envelopeType) {
-		case protocol.TypeHandshake:
+		router.HandleFunc(string(protocol.TypeHandshake), func(stream net.Conn, env []byte) {
+			defer stream.Close()
 			var hs protocol.Handshake
-			json.Unmarshal(message, &hs)
+			json.Unmarshal(env, &hs)
 
 			if hs.Token != token {
 				log.Println("Unauthorized connection from:", hs.Hostname)
@@ -87,9 +83,9 @@ func main() {
 
 			nodesLock.Lock()
 			nodes[hs.Hostname] = &NodeState{
-				Conn: conn,
+				Mux: mux,
 				Metadata: protocol.NodeMetadata{
-					ID:          hs.Hostname, // simplifiy ID for now
+					ID:          hs.Hostname,
 					Hostname:    hs.Hostname,
 					Domain:      hs.Domain,
 					OS:          hs.OS,
@@ -104,51 +100,40 @@ func main() {
 			nodesLock.Unlock()
 			go broadcastNodeSync()
 
-			proxyIP := ""
-			if tcpAddr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
-				proxyIP = tcpAddr.IP.String()
-			} else {
-				proxyIP = "127.0.0.1" // Fallback
-			}
-
-			defer func() {
+			go func() {
+				// We don't need handleNodeMessages anymore since router.Accept() will handle new streams.
+				// However, if the mux fails, we should remove the node.
+				<-mux.Session.CloseChan()
 				nodesLock.Lock()
 				delete(nodes, hs.Hostname)
 				nodesLock.Unlock()
 				go broadcastNodeSync()
 				conn.Close()
 			}()
+		})
 
-			handleNodeMessages(conn, hs.Hostname, *domainFlag, proxyIP)
+		router.HandleFunc(string(protocol.TypeDNSQuery), func(stream net.Conn, env []byte) {
+			defer stream.Close()
+			var query protocol.DNSQuery
+			json.Unmarshal(env, &query)
 
-		case protocol.TypeCopyRequest:
-			var req protocol.CopyRequest
-			json.Unmarshal(message, &req)
-
-			nodesLock.RLock()
-			nodeState, ok := nodes[req.TargetHostname]
-			nodesLock.RUnlock()
-
-			if !ok {
-				conn.Close()
-				return
+			resp := ProcessDNSQuery(query, *domainFlag, proxyIP)
+			b, _ := json.Marshal(resp)
+			
+			// We can respond directly on the same stream since DNS is request/response, 
+			// but we can also open a new stream. To keep it simple, we just write to the same stream.
+			// Actually the client expects it on `DNSResponse` handler.
+			outStream, err := mux.Session.Open()
+			if err == nil {
+				outStream.Write(b)
+				outStream.Close()
 			}
+		})
 
-			cliConnsLock.Lock()
-			cliConns[req.TransferID] = conn
-			cliConnsLock.Unlock()
-
-			defer func() {
-				cliConnsLock.Lock()
-				delete(cliConns, req.TransferID)
-				cliConnsLock.Unlock()
-			}()
-
-			nodeState.Conn.WriteJSON(req)
-			handleCLIMessages(conn, nodeState.Conn)
-		case protocol.TypeExecRequest:
+		// For CLI -> Node routing requests (Exec, Copy, Proxy)
+		router.HandleFunc(string(protocol.TypeExecRequest), func(stream net.Conn, env []byte) {
 			var req protocol.ExecRequest
-			json.Unmarshal(message, &req)
+			json.Unmarshal(env, &req)
 
 			log.Printf("CLI requested exec on %s: %s\n", req.TargetHostname, req.Command)
 
@@ -158,47 +143,73 @@ func main() {
 
 			if !ok {
 				log.Println("Target node not found:", req.TargetHostname)
-				conn.Close()
+				stream.Close()
 				return
 			}
 
-			cliConnsLock.Lock()
-			cliConns[req.SessionID] = conn
-			cliConnsLock.Unlock()
-
-			defer func() {
-				cliConnsLock.Lock()
-				delete(cliConns, req.SessionID)
-				cliConnsLock.Unlock()
-				conn.Close()
-			}()
-
-			err = nodeState.Conn.WriteJSON(req)
+			targetStream, err := nodeState.Mux.Session.Open()
 			if err != nil {
-				log.Println("Error forwarding exec_request to node:", err)
+				stream.Close()
 				return
 			}
 
-			handleCLIMessages(conn, nodeState.Conn)
-		case protocol.TypeProxyStream:
-			var stream protocol.ProxyStream
-			json.Unmarshal(message, &stream)
+			targetStream.Write(env)
+			go protocol.Proxy(stream, targetStream)
+		})
 
-			// Route from CLI to Node
+		router.HandleFunc(string(protocol.TypeCopyRequest), func(stream net.Conn, env []byte) {
+			var req protocol.CopyRequest
+			json.Unmarshal(env, &req)
+
+			nodesLock.RLock()
+			nodeState, ok := nodes[req.TargetHostname]
+			nodesLock.RUnlock()
+
+			if !ok {
+				stream.Close()
+				return
+			}
+
+			targetStream, err := nodeState.Mux.Session.Open()
+			if err != nil {
+				stream.Close()
+				return
+			}
+
+			targetStream.Write(env)
+			go protocol.Proxy(stream, targetStream)
+		})
+
+		router.HandleFunc(string(protocol.TypeProxyRequest), func(stream net.Conn, env []byte) {
+			var req protocol.ProxyRequest
+			json.Unmarshal(env, &req)
+
 			nodesLock.RLock()
 			var targetNode *NodeState
-			for _, n := range nodes {
-				targetNode = n
-				break
+			if req.TargetHostname != "" {
+				targetNode = nodes[req.TargetHostname]
+			} else {
+				for _, n := range nodes {
+					targetNode = n
+					break
+				}
 			}
 			nodesLock.RUnlock()
 
 			if targetNode != nil {
-				targetNode.Conn.WriteJSON(stream)
+				targetStream, err := targetNode.Mux.Session.Open()
+				if err == nil {
+					targetStream.Write(env)
+					go protocol.Proxy(stream, targetStream)
+				} else {
+					stream.Close()
+				}
+			} else {
+				stream.Close()
 			}
-		default:
-			conn.Close()
-		}
+		})
+
+		router.Accept()
 	})
 
 	authenticate := func(w http.ResponseWriter, r *http.Request) bool {
@@ -263,90 +274,10 @@ func pingNodes() {
 		nodesLock.RLock()
 		for _, state := range nodes {
 			state.Metadata.LastSeen = time.Now().UTC().Format(time.RFC3339)
-			state.Conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(time.Second))
+			// Yamux does its own keepalive, we can rely on that or send a custom ping.
+			// For now just update LastSeen.
 		}
 		nodesLock.RUnlock()
-	}
-}
-
-func handleNodeMessages(conn *websocket.Conn, hostname string, domain string, proxyIP string) {
-	for {
-		_, message, err := conn.ReadMessage()
-		if err != nil {
-			break
-		}
-
-		var envelope map[string]interface{}
-		json.Unmarshal(message, &envelope)
-
-		envelopeType, _ := envelope["type"].(string)
-		switch protocol.EnvelopeType(envelopeType) {
-		case protocol.TypeDNSQuery:
-			var query protocol.DNSQuery
-			json.Unmarshal(message, &query)
-
-			resp := ProcessDNSQuery(query, domain, proxyIP)
-			conn.WriteJSON(resp)
-
-		case protocol.TypeExecStream:
-			var stream protocol.ExecStream
-			json.Unmarshal(message, &stream)
-
-			cliConnsLock.RLock()
-			cliConn, ok := cliConns[stream.SessionID]
-			cliConnsLock.RUnlock()
-
-			if ok {
-				cliConn.WriteJSON(stream)
-			}
-		case protocol.TypeCopyStream:
-			var stream protocol.CopyStream
-			json.Unmarshal(message, &stream)
-
-			cliConnsLock.RLock()
-			cliConn, ok := cliConns[stream.TransferID]
-			cliConnsLock.RUnlock()
-
-			if ok {
-				cliConn.WriteJSON(stream)
-			}
-		case protocol.TypeProxyStream:
-			var stream protocol.ProxyStream
-			json.Unmarshal(message, &stream)
-
-			proxyConnsLock.RLock()
-			proxyConn, ok := proxyConns[stream.ConnID]
-			proxyConnsLock.RUnlock()
-
-			if ok {
-				if stream.IsClosed {
-					proxyConn.Close()
-					proxyConnsLock.Lock()
-					delete(proxyConns, stream.ConnID)
-					proxyConnsLock.Unlock()
-				} else {
-					data, _ := base64.StdEncoding.DecodeString(stream.Data)
-					proxyConn.Write(data)
-				}
-			}
-		}
-	}
-}
-
-func handleCLIMessages(cliConn *websocket.Conn, nodeConn *websocket.Conn) {
-	for {
-		_, message, err := cliConn.ReadMessage()
-		if err != nil {
-			break
-		}
-
-		var envelope map[string]interface{}
-		json.Unmarshal(message, &envelope)
-
-		envelopeType, _ := envelope["type"].(string)
-		if protocol.EnvelopeType(envelopeType) == protocol.TypeExecStream || protocol.EnvelopeType(envelopeType) == protocol.TypeCopyStream {
-			nodeConn.WriteMessage(websocket.TextMessage, message)
-		}
 	}
 }
 
@@ -364,7 +295,13 @@ func broadcastNodeSync() {
 		Nodes: list,
 	}
 
+	b, _ := json.Marshal(syncMsg)
+
 	for _, state := range nodes {
-		state.Conn.WriteJSON(syncMsg)
+		stream, err := state.Mux.Session.Open()
+		if err == nil {
+			stream.Write(b)
+			stream.Close()
+		}
 	}
 }

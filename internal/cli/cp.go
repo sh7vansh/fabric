@@ -1,10 +1,10 @@
 package cli
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fabric/internal/protocol"
 	"fmt"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -46,6 +46,17 @@ func runCp(cmd *cobra.Command, args []string) error {
 	}
 	defer conn.Close()
 
+	mux, err := protocol.NewStreamMultiplexer(conn, false)
+	if err != nil {
+		return err
+	}
+
+	stream, err := mux.Session.Open()
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+
 	transferID := fmt.Sprintf("xfer-%d", time.Now().UnixNano())
 
 	if !srcIsRemote && destIsRemote {
@@ -58,9 +69,8 @@ func runCp(cmd *cobra.Command, args []string) error {
 			RemotePath:     destPath,
 		}
 
-		if err := conn.WriteJSON(req); err != nil {
-			return fmt.Errorf("failed to send copy request: %w", err)
-		}
+		b, _ := json.Marshal(req)
+		stream.Write(b)
 
 		dir := filepath.Dir(srcPath)
 		base := filepath.Base(srcPath)
@@ -73,28 +83,8 @@ func runCp(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to start tar: %w", err)
 		}
 
-		buf := make([]byte, 4096)
-		for {
-			n, err := stdout.Read(buf)
-			if n > 0 {
-				conn.WriteJSON(protocol.CopyStream{
-					Type:       protocol.TypeCopyStream,
-					TransferID: transferID,
-					Data:       base64.StdEncoding.EncodeToString(buf[:n]),
-					IsEOF:      false,
-				})
-			}
-			if err != nil {
-				break
-			}
-		}
+		io.Copy(stream, stdout)
 		tarCmd.Wait()
-
-		conn.WriteJSON(protocol.CopyStream{
-			Type:       protocol.TypeCopyStream,
-			TransferID: transferID,
-			IsEOF:      true,
-		})
 		return nil
 	}
 
@@ -107,9 +97,8 @@ func runCp(cmd *cobra.Command, args []string) error {
 		RemotePath:     srcPath,
 	}
 
-	if err := conn.WriteJSON(req); err != nil {
-		return fmt.Errorf("failed to send copy request: %w", err)
-	}
+	b, _ := json.Marshal(req)
+	stream.Write(b)
 
 	destDir := destPath
 	tarCmd := exec.Command("tar", "-xf", "-", "-C", destDir)
@@ -121,38 +110,8 @@ func runCp(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to start local tar unpacker: %w", err)
 	}
 
-	for {
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			break
-		}
-
-		var env map[string]interface{}
-		if err := json.Unmarshal(msg, &env); err != nil {
-			continue
-		}
-
-		if env["type"] == string(protocol.TypeCopyStream) {
-			var stream protocol.CopyStream
-			if err := json.Unmarshal(msg, &stream); err != nil {
-				continue
-			}
-
-			if stream.TransferID != transferID {
-				continue
-			}
-
-			if stream.IsEOF {
-				stdin.Close()
-				tarCmd.Wait()
-				return nil
-			}
-
-			data, err := base64.StdEncoding.DecodeString(stream.Data)
-			if err == nil {
-				stdin.Write(data)
-			}
-		}
-	}
+	io.Copy(stdin, stream)
+	stdin.Close()
+	tarCmd.Wait()
 	return nil
 }

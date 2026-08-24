@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -32,6 +31,17 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 	defer conn.Close()
 
+	mux, err := protocol.NewStreamMultiplexer(conn, false)
+	if err != nil {
+		return err
+	}
+
+	stream, err := mux.Session.Open()
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+
 	sessionID := fmt.Sprintf("sess-%d", time.Now().UnixNano())
 
 	req := protocol.ExecRequest{
@@ -47,9 +57,8 @@ func runExec(cmd *cobra.Command, args []string) error {
 		User:           execUser,
 	}
 
-	if err := conn.WriteJSON(req); err != nil {
-		return err
-	}
+	b, _ := json.Marshal(req)
+	stream.Write(b)
 
 	if execDetached {
 		fmt.Println(sessionID)
@@ -70,13 +79,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 			for {
 				n, err := os.Stdin.Read(buf)
 				if n > 0 {
-					data := base64.StdEncoding.EncodeToString(buf[:n])
-					conn.WriteJSON(protocol.ExecStream{
-						Type:      protocol.TypeExecStream,
-						SessionID: sessionID,
-						Stream:    protocol.StreamStdin,
-						Data:      data,
-					})
+					protocol.WriteFrame(stream, protocol.StreamStdin, buf[:n])
 				}
 				if err != nil {
 					break
@@ -86,34 +89,21 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 
 	for {
-		_, message, err := conn.ReadMessage()
+		frame, err := protocol.ReadFrame(stream)
 		if err != nil {
 			break
 		}
 
-		var env map[string]interface{}
-		json.Unmarshal(message, &env)
-
-		if env["type"] == string(protocol.TypeExecStream) {
-			var stream protocol.ExecStream
-			json.Unmarshal(message, &stream)
-
-			if stream.SessionID != sessionID {
-				continue
+		switch frame.Type {
+		case protocol.StreamStdout:
+			os.Stdout.Write(frame.Payload)
+		case protocol.StreamStderr:
+			os.Stderr.Write(frame.Payload)
+		case protocol.StreamExit:
+			if string(frame.Payload) != "0" {
+				return fmt.Errorf("exit code %s", string(frame.Payload))
 			}
-
-			data, _ := base64.StdEncoding.DecodeString(stream.Data)
-			switch stream.Stream {
-			case protocol.StreamStdout:
-				os.Stdout.Write(data)
-			case protocol.StreamStderr:
-				os.Stderr.Write(data)
-			case protocol.StreamExit:
-				if string(data) != "0" {
-					return fmt.Errorf("exit code %s", string(data))
-				}
-				return nil
-			}
+			return nil
 		}
 	}
 	return nil

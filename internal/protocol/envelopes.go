@@ -1,18 +1,10 @@
 package protocol
 
 type EnvelopeType string
-type StreamType string
 
 const (
 	TypeHandshake   EnvelopeType = "handshake"
 	TypeExecRequest EnvelopeType = "exec_request"
-	TypeExecStream  EnvelopeType = "exec_stream"
-	TypeProxyStream EnvelopeType = "proxy_stream"
-
-	StreamStdout StreamType = "stdout"
-	StreamStderr StreamType = "stderr"
-	StreamStdin  StreamType = "stdin"
-	StreamExit   StreamType = "exit"
 )
 
 type Handshake struct {
@@ -38,12 +30,6 @@ type ExecRequest struct {
 	User           string       `json:"user,omitempty"`
 }
 
-type ExecStream struct {
-	Type      EnvelopeType `json:"type"`       // "exec_stream"
-	SessionID string       `json:"session_id"` // Matches ExecRequest
-	Stream    StreamType   `json:"stream"`     // "stdout", "stderr", "stdin", "exit"
-	Data      string       `json:"data"`       // Base64 encoded chunk
-}
 
 type NodeMetadata struct {
 	ID          string `json:"id"`
@@ -61,7 +47,6 @@ type NodeMetadata struct {
 
 const (
 	TypeCopyRequest EnvelopeType = "copy_request"
-	TypeCopyStream  EnvelopeType = "copy_stream"
 	TypeDNSQuery    EnvelopeType = "dns_query"
 	TypeDNSResponse EnvelopeType = "dns_response"
 	TypeNodeSync    EnvelopeType = "node_sync"
@@ -96,9 +81,3 @@ type CopyRequest struct {
 	RemotePath     string       `json:"remote_path"`
 }
 
-type CopyStream struct {
-	Type       EnvelopeType `json:"type"` // "copy_stream"
-	TransferID string       `json:"transfer_id"`
-	Data       string       `json:"data"` // Base64 encoded tar chunk
-	IsEOF      bool         `json:"is_eof"`
-}

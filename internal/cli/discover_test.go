@@ -88,7 +88,7 @@ func TestParseTargets(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			targets, err := ParseTargets(tt.input)
+			targets, err := ParseTargets(tt.input, "127.0.0.1/32")
 			if (err != nil) != tt.expectError {
 				t.Fatalf("ParseTargets(%q) error = %v, expectError = %v", tt.input, err, tt.expectError)
 			}

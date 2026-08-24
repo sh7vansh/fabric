@@ -52,12 +52,11 @@ func GetDefaultLocalCIDR() (string, error) {
 }
 
 // ParseTargets parses CIDRs, IP ranges, or single/comma-separated IPs and returns a list of target host IPs.
-func ParseTargets(input string) ([]string, error) {
+func ParseTargets(input string, defaultCIDR string) ([]string, error) {
 	input = strings.TrimSpace(input)
 	if input == "" {
-		defaultCIDR, err := GetDefaultLocalCIDR()
-		if err != nil {
-			return nil, fmt.Errorf("no target specified and failed to auto-detect local subnet: %w", err)
+		if defaultCIDR == "" {
+			return nil, fmt.Errorf("no target specified and no default CIDR provided")
 		}
 		input = defaultCIDR
 	}

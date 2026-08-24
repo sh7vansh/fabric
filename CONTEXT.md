@@ -12,6 +12,9 @@ Fabric is a lightweight remote execution, service discovery, and networking mesh
 - **Mesh DNS**: RFC 1035-compliant DNS server embedded in `fabric-socket` (defaulting to the `.mesh` TLD) allowing inter-node name resolution.
 - **PTY Session**: A pseudo-terminal allocation streamed over WebSocket allowing full interactive shell access.
 - **Stitch / Discover**: Automated subnet scanner and SSH provisioning mechanism to bootstrap remote targets into the mesh.
+- **StreamMultiplexer**: A deep module wrapping the raw WebSocket to natively multiplex `io.Reader/Writer` streams using a binary protocol, replacing manual JSON stream chunking.
+- **OSEnvironment**: An adapter encapsulating system side-effects (like `/etc/hosts` mutation for Mesh DNS), enabling deterministic teardown and root-less testing.
+- **RemoteExecutor**: An adapter abstracting the SSH transport for `Stitch` provisioning, allowing pure testing of script generation.
 
 ---
 

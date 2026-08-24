@@ -1,16 +1,13 @@
 package cli
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fabric/internal/protocol"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/spf13/cobra"
 )
@@ -74,6 +71,11 @@ func runPort(cmd *cobra.Command, args []string) error {
 	}
 	defer conn.Close()
 
+	mux, err := protocol.NewStreamMultiplexer(conn, false)
+	if err != nil {
+		return fmt.Errorf("multiplexer error: %w", err)
+	}
+
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
 	if err != nil {
 		return fmt.Errorf("failed to bind local port %d: %w", localPort, err)
@@ -82,96 +84,31 @@ func runPort(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Forwarding 127.0.0.1:%d -> %s:%d (Ctrl+C to stop)...\n", localPort, nodeName, remotePort)
 
-	var activeConns = make(map[string]net.Conn)
-	var activeLock sync.RWMutex
-	connIDCounter := 0
-	var counterLock sync.Mutex
-
-	// Read ProxyStreams from WebSocket back to local TCP connections
-	go func() {
-		for {
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				break
-			}
-			var env map[string]interface{}
-			if err := json.Unmarshal(msg, &env); err != nil {
-				continue
-			}
-
-			if env["type"] == string(protocol.TypeProxyStream) {
-				var stream protocol.ProxyStream
-				if err := json.Unmarshal(msg, &stream); err != nil {
-					continue
-				}
-
-				activeLock.RLock()
-				c, ok := activeConns[stream.ConnID]
-				activeLock.RUnlock()
-
-				if ok {
-					if stream.IsClosed {
-						c.Close()
-						activeLock.Lock()
-						delete(activeConns, stream.ConnID)
-						activeLock.Unlock()
-					} else {
-						data, _ := base64.StdEncoding.DecodeString(stream.Data)
-						c.Write(data)
-					}
-				}
-			}
-		}
-	}()
-
 	for {
 		localConn, err := ln.Accept()
 		if err != nil {
 			return err
 		}
 
-		counterLock.Lock()
-		connIDCounter++
-		connID := fmt.Sprintf("port-fwd-%d", connIDCounter)
-		counterLock.Unlock()
+		go func(c net.Conn) {
+			defer c.Close()
 
-		activeLock.Lock()
-		activeConns[connID] = localConn
-		activeLock.Unlock()
-
-		go func(c net.Conn, id string) {
-			defer func() {
-				c.Close()
-				activeLock.Lock()
-				delete(activeConns, id)
-				activeLock.Unlock()
-			}()
-
-			buf := make([]byte, 4096)
-			for {
-				n, err := c.Read(buf)
-				if n > 0 {
-					conn.WriteJSON(protocol.ProxyStream{
-						Type:       protocol.TypeProxyStream,
-						ConnID:     id,
-						TargetPort: remotePort,
-						Data:       base64.StdEncoding.EncodeToString(buf[:n]),
-						IsClosed:   false,
-					})
-				}
-				if err != nil {
-					if err != io.EOF {
-						log.Printf("local connection read error: %v", err)
-					}
-					conn.WriteJSON(protocol.ProxyStream{
-						Type:       protocol.TypeProxyStream,
-						ConnID:     id,
-						TargetPort: remotePort,
-						IsClosed:   true,
-					})
-					break
-				}
+			stream, err := mux.Session.Open()
+			if err != nil {
+				return
 			}
-		}(localConn, connID)
+			defer stream.Close()
+
+			req := protocol.ProxyRequest{
+				Type:           protocol.TypeProxyRequest,
+				TargetHostname: nodeName,
+				TargetPort:     remotePort,
+			}
+			b, _ := json.Marshal(req)
+			stream.Write(b)
+
+			go io.Copy(stream, c)
+			io.Copy(c, stream)
+		}(localConn)
 	}
 }
