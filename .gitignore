@@ -3,3 +3,8 @@ bin/
 *.exe
 *.test
 *.out
+
+# Agent scratch & tracking
+.scratch/
+.wayfinder/
+scratch/
