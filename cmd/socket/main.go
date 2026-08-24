@@ -10,7 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"crypto/tls"
+	"fmt"
 	"fabric/internal/protocol"
+	"fabric/internal/tlsengine"
 
 	"github.com/gorilla/websocket"
 )
@@ -36,6 +39,12 @@ func main() {
 	}
 
 	domainFlag := flag.String("domain", defaultDomain, "Domain for the DNS server")
+	publicDomainFlag := flag.String("public-domain", os.Getenv("FABRIC_PUBLIC_DOMAIN"), "Public domain for ACME TLS certificates (e.g. example.com)")
+	acmeEmailFlag := flag.String("acme-email", os.Getenv("FABRIC_ACME_EMAIL"), "Email address for Let's Encrypt ACME registration")
+	acmeStagingFlag := flag.Bool("acme-staging", os.Getenv("FABRIC_ACME_STAGING") == "true", "Use Let's Encrypt staging environment")
+	tlsPortFlag := flag.Int("tls-port", 443, "Port for HTTPS/WSS TLS listener")
+	httpPortFlag := flag.Int("http-port", 80, "Port for HTTP / ACME HTTP-01 challenge listener")
+	caDirFlag := flag.String("ca-dir", "", "Directory to store internal Root CA")
 	flag.Parse()
 
 	token := os.Getenv("FABRIC_TOKEN")
@@ -43,7 +52,60 @@ func main() {
 		token = "default-secret"
 	}
 
-	go StartTCPProxy()
+	// Initialize Dual-Mode TLS Engine (Internal CA + ACME Autocert)
+	tlsEng, err := tlsengine.New(tlsengine.Config{
+		CADir:        *caDirFlag,
+		MeshDomain:   *domainFlag,
+		PublicDomain: *publicDomainFlag,
+		ACMEEmail:    *acmeEmailFlag,
+		ACMEStaging:  *acmeStagingFlag,
+		ActiveNodes: func() []string {
+			nodesLock.RLock()
+			defer nodesLock.RUnlock()
+			var list []string
+			for k := range nodes {
+				list = append(list, k)
+			}
+			return list
+		},
+	})
+	if err != nil {
+		log.Fatalf("Failed to initialize TLS engine: %v", err)
+	}
+
+	// Start Port 80 HTTP Server (ACME Challenges + 301 HTTPS Redirects)
+	go func() {
+		httpAddr := fmt.Sprintf(":%d", *httpPortFlag)
+		srv := &http.Server{
+			Addr:    httpAddr,
+			Handler: tlsEng.HTTPSRedirectHandler(*tlsPortFlag),
+		}
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("[HTTP] Port %d listener info (run with sudo for port 80): %v", *httpPortFlag, err)
+		}
+	}()
+
+	// Start Port 443 HTTPS / WSS Server (Dynamic Dual-Mode SNI)
+	go func() {
+		tlsAddr := fmt.Sprintf(":%d", *tlsPortFlag)
+		tlsLn, err := net.Listen("tcp", tlsAddr)
+		if err != nil {
+			log.Printf("[TLS] Port %d listener info (run with sudo for port 443): %v", *tlsPortFlag, err)
+			return
+		}
+		defer tlsLn.Close()
+		log.Printf("[TLS] Socket TLS listening on %s (HTTPS / WSS with Dual-Mode SNI)", tlsAddr)
+
+		secureSrv := &http.Server{
+			Handler:   http.DefaultServeMux,
+			TLSConfig: tlsEng.TLSConfig(),
+		}
+		secureLn := tls.NewListener(tlsLn, tlsEng.TLSConfig())
+		if err := secureSrv.Serve(secureLn); err != nil && err != http.ErrServerClosed {
+			log.Printf("[TLS] Server error on %s: %v", tlsAddr, err)
+		}
+	}()
+
 	go pingNodes()
 
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {

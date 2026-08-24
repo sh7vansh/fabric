@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
+	"time"
+
+	"fabric/internal/pki"
 
 	"github.com/gorilla/websocket"
 )
@@ -19,7 +21,7 @@ func NewClient(cfg *Config) *Client {
 }
 
 func (c *Client) DialWebSocket() (*websocket.Conn, error) {
-	u, err := url.Parse(c.Config.Host)
+	u, err := pki.NormalizeURL(c.Config.Host)
 	if err != nil {
 		return nil, fmt.Errorf("invalid host url: %w", err)
 	}
@@ -27,16 +29,29 @@ func (c *Client) DialWebSocket() (*websocket.Conn, error) {
 	header := http.Header{}
 	header.Add("Authorization", "Bearer "+c.Config.Token)
 
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), header)
+	dialer := websocket.DefaultDialer
+	if u.Scheme == "wss" {
+		tlsCfg, err := pki.BuildClientTLSConfig("")
+		if err != nil {
+			return nil, fmt.Errorf("failed to configure TLS: %w", err)
+		}
+		dialer = &websocket.Dialer{
+			Proxy:            http.ProxyFromEnvironment,
+			HandshakeTimeout: 15 * time.Second,
+			TLSClientConfig:  tlsCfg,
+		}
+	}
+
+	conn, _, err := dialer.Dial(u.String(), header)
 	if err != nil {
-		return nil, fmt.Errorf("websocket dial: %w", err)
+		return nil, pki.FormatTLSError(fmt.Errorf("websocket dial (%s): %w", u.String(), err))
 	}
 	return conn, nil
 }
 
 // HTTP request helper for REST API calls
 func (c *Client) DoHTTP(method, path string, body interface{}) (*http.Response, error) {
-	u, err := url.Parse(c.Config.Host)
+	u, err := pki.NormalizeURL(c.Config.Host)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +70,25 @@ func (c *Client) DoHTTP(method, path string, body interface{}) (*http.Response, 
 	}
 	req.Header.Add("Authorization", "Bearer "+c.Config.Token)
 
-	return http.DefaultClient.Do(req)
+	httpClient := http.DefaultClient
+	if scheme == "https" {
+		tlsCfg, err := pki.BuildClientTLSConfig("")
+		if err != nil {
+			return nil, fmt.Errorf("failed to configure TLS: %w", err)
+		}
+		httpClient = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: tlsCfg,
+			},
+			Timeout: 30 * time.Second,
+		}
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, pki.FormatTLSError(err)
+	}
+	return resp, nil
 }
 
 // Helper to decode JSON response

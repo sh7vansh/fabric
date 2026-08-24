@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -15,6 +14,7 @@ import (
 	"syscall"
 
 	"fabric/internal/meshdns"
+	"fabric/internal/pki"
 	"fabric/internal/protocol"
 
 	"github.com/creack/pty"
@@ -36,6 +36,7 @@ func main() {
 
 	serverURL := flag.String("url", defaultURL, "Socket URL (ws:// or wss://)")
 	domainFlag := flag.String("domain", defaultDomain, "Domain to register with the mesh")
+	caCertFlag := flag.String("ca-cert", os.Getenv("FABRIC_CA_CERT"), "Path to custom Root CA certificate")
 	flag.Parse()
 
 	token := os.Getenv("FABRIC_TOKEN")
@@ -43,7 +44,7 @@ func main() {
 		token = "default-secret"
 	}
 
-	u, err := url.Parse(*serverURL)
+	u, err := pki.NormalizeURL(*serverURL)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -72,7 +73,7 @@ func main() {
 	}()
 
 	for {
-		c := ConnectWithRetry(*u, token)
+		c := ConnectWithRetry(*u, token, *caCertFlag)
 
 		mux, err := protocol.NewStreamMultiplexer(c, false)
 		resolver.SetMultiplexer(mux)

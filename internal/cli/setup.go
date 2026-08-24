@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"fabric/internal/pki"
+
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +24,8 @@ var (
 	setupDomainFlag  string
 	setupAutoToken   bool
 	setupNonInteract bool
+	setupTrustCA     bool
+	setupUntrustCA   bool
 )
 
 var setupCmd = &cobra.Command{
@@ -29,10 +33,16 @@ var setupCmd = &cobra.Command{
 	Short:   "Interactive setup wizard to configure this machine as a Socket or Node",
 	GroupID: "cluster",
 	Long: `Interactive onboarding wizard to configure the local machine as either a central
-Fabric Socket (control plane) or a Fabric Node (agent daemon). Supports interactive prompts
-or non-interactive automation flags.`,
+Fabric Socket (control plane) or a Fabric Node (agent daemon). Supports interactive prompts,
+non-interactive automation flags, and automatic root CA trust installation.`,
 	Example: `  # Launch interactive setup wizard
   fabric setup
+
+  # Install local mesh root CA into the OS/browser trust store
+  fabric setup --trust-ca
+
+  # Remove local mesh root CA from the OS trust store
+  fabric setup --untrust-ca
 
   # Set up as a socket control plane non-interactively
   fabric setup --role=socket --domain=fabric.mesh --auto-token -y
@@ -41,6 +51,19 @@ or non-interactive automation flags.`,
   fabric setup --role=node --host=ws://192.168.1.50:8080/ws --token=secret-token -y`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		reader := bufio.NewReader(os.Stdin)
+
+		if setupUntrustCA {
+			trustStore := pki.NewSystemTrustStore()
+			if err := trustStore.UninstallCA("fabric-ca"); err != nil {
+				return fmt.Errorf("failed to remove root CA from system trust store: %w", err)
+			}
+			fmt.Println("[+] Successfully removed Fabric Root CA from system trust store.")
+			return nil
+		}
+
+		if setupTrustCA {
+			return installLocalCATrust()
+		}
 
 		fmt.Println("==================================================")
 		fmt.Println("       Fabric Mesh Network - Setup Wizard         ")
@@ -80,6 +103,8 @@ func init() {
 	setupCmd.Flags().StringVar(&setupDomainFlag, "domain", "fabric.mesh", "Domain for mesh DNS")
 	setupCmd.Flags().BoolVar(&setupAutoToken, "auto-token", false, "Auto-generate a secure random token")
 	setupCmd.Flags().BoolVarP(&setupNonInteract, "yes", "y", false, "Accept all defaults non-interactively")
+	setupCmd.Flags().BoolVar(&setupTrustCA, "trust-ca", false, "Install Fabric Root CA into system trust store")
+	setupCmd.Flags().BoolVar(&setupUntrustCA, "untrust-ca", false, "Remove Fabric Root CA from system trust store")
 }
 
 func runSocketSetup(reader *bufio.Reader) error {
@@ -106,7 +131,32 @@ func runSocketSetup(reader *bufio.Reader) error {
 
 	localIP := getOutboundIP()
 
-	// 1. Save local CLI config
+	// 1. Initialize local Cluster Root CA
+	home, _ := os.UserHomeDir()
+	caDir := filepath.Join(home, ".fabric", "ca")
+	ca, err := pki.LoadOrInitCA(caDir, domain)
+	if err != nil {
+		fmt.Printf("[!] Warning: Could not initialize cluster Root CA: %v\n", err)
+	} else {
+		fmt.Printf("[+] Initialized Fabric Root CA in %s\n", caDir)
+		trust := setupTrustCA
+		if !setupNonInteract && !trust {
+			resp := prompt(reader, "Install Fabric Root CA into system trust store for automatic HTTPS? (Y/n)", "Y")
+			if strings.ToLower(resp) == "y" || strings.ToLower(resp) == "yes" {
+				trust = true
+			}
+		}
+		if trust {
+			trustStore := pki.NewSystemTrustStore()
+			if err := trustStore.InstallCA(ca.CertPEM(), "fabric-ca"); err != nil {
+				fmt.Printf("[!] Note: Could not auto-install CA to system trust store (run with sudo or 'fabric setup --trust-ca'): %v\n", err)
+			} else {
+				fmt.Println("[+] Successfully installed Fabric Root CA into system trust store.")
+			}
+		}
+	}
+
+	// 2. Save local CLI config
 	cliCfg := &Config{
 		Host:  "ws://localhost:8080/ws",
 		Token: token,
@@ -117,7 +167,7 @@ func runSocketSetup(reader *bufio.Reader) error {
 		fmt.Println("[+] CLI configuration saved to ~/.fabric/config.json")
 	}
 
-	// 2. Save environment file and optionally install service
+	// 3. Save environment file and optionally install service
 	envContent := fmt.Sprintf("FABRIC_TOKEN=%s\nFABRIC_DOMAIN=%s\n", token, domain)
 	saveDaemonConfigAndService(reader, "socket", envContent)
 
@@ -126,13 +176,32 @@ func runSocketSetup(reader *bufio.Reader) error {
 	fmt.Println("==================================================")
 	fmt.Printf("Cluster Token: %s\n", token)
 	fmt.Printf("Mesh Domain:   %s\n", domain)
-	fmt.Printf("Socket URL:    ws://%s:8080/ws\n", localIP)
+	fmt.Printf("Socket URL:    ws://%s:8080/ws (or wss:// for TLS)\n", localIP)
 	fmt.Println("\nTo stitch a remote node via SSH, run:")
 	fmt.Printf("  fabric stitch user@<remote-ip>\n\n")
 	fmt.Println("Or manually on target node:")
 	fmt.Printf("  fabric setup --role=node --host=ws://%s:8080/ws --token=%s\n", localIP, token)
 	fmt.Println("==================================================")
 
+	return nil
+}
+
+func installLocalCATrust() error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	certPath := filepath.Join(home, ".fabric", "ca", "ca.crt")
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return fmt.Errorf("could not find Root CA at %s (run 'fabric setup --role=socket' first): %w", certPath, err)
+	}
+
+	trustStore := pki.NewSystemTrustStore()
+	if err := trustStore.InstallCA(certPEM, "fabric-ca"); err != nil {
+		return fmt.Errorf("failed to install CA into system trust store (try running with sudo): %w", err)
+	}
+	fmt.Println("[+] Successfully installed Fabric Root CA into system trust store.")
 	return nil
 }
 
