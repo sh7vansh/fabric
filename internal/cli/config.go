@@ -10,6 +10,10 @@ import (
 // DirectNodeEntry stores registration metadata for an inverted mode node.
 type DirectNodeEntry struct {
 	Address      string    `json:"address"`
+	Hostname     string    `json:"hostname,omitempty"`
+	Domain       string    `json:"domain,omitempty"`
+	OS           string    `json:"os,omitempty"`
+	Arch         string    `json:"arch,omitempty"`
 	Tags         []string  `json:"tags,omitempty"`
 	RegisteredAt time.Time `json:"registered_at"`
 }
@@ -150,7 +154,7 @@ func SaveConfig(cfg *Config) error {
 }
 
 // RegisterDirectNode records an inverted mode node into local direct registry config.
-func RegisterDirectNode(hostname, address string, tags []string) error {
+func RegisterDirectNode(name, address string, tags []string, extra ...string) error {
 	cfg := GetConfig()
 	if cfg.DirectNodes == nil {
 		cfg.DirectNodes = make(map[string]DirectNodeEntry)
@@ -166,8 +170,29 @@ func RegisterDirectNode(hostname, address string, tags []string) error {
 		tags = append(tags, "inverted")
 	}
 
-	cfg.DirectNodes[hostname] = DirectNodeEntry{
+	hostname := name
+	domain := "fabric.mesh"
+	osName := "linux"
+	arch := ""
+	if len(extra) > 0 && extra[0] != "" {
+		hostname = extra[0]
+	}
+	if len(extra) > 1 && extra[1] != "" {
+		domain = extra[1]
+	}
+	if len(extra) > 2 && extra[2] != "" {
+		osName = extra[2]
+	}
+	if len(extra) > 3 && extra[3] != "" {
+		arch = extra[3]
+	}
+
+	cfg.DirectNodes[name] = DirectNodeEntry{
 		Address:      address,
+		Hostname:     hostname,
+		Domain:       domain,
+		OS:           osName,
+		Arch:         arch,
 		Tags:         tags,
 		RegisteredAt: time.Now().UTC(),
 	}

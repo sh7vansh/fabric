@@ -136,9 +136,18 @@ func (c *Client) DialWebSocketForNode(targetNode string) (*websocket.Conn, error
 	} else if targetNode != "" && c.Config != nil && c.Config.DirectNodes != nil {
 		if entry, ok := c.Config.DirectNodes[targetNode]; ok && entry.Address != "" {
 			targetHost = entry.Address
-			if !strings.Contains(targetHost, "://") {
-				targetHost = "wss://" + targetHost
+		} else {
+			// Check if targetNode matches entry.Hostname or domain suffix
+			for k, entry := range c.Config.DirectNodes {
+				if k == targetNode || entry.Hostname == targetNode ||
+					(entry.Domain != "" && strings.TrimSuffix(targetNode, "."+entry.Domain) == entry.Hostname) {
+					targetHost = entry.Address
+					break
+				}
 			}
+		}
+		if !strings.Contains(targetHost, "://") {
+			targetHost = "wss://" + targetHost
 		}
 	}
 
@@ -235,18 +244,42 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 	// Merge direct nodes from local configuration
 	if c.Config != nil && len(c.Config.DirectNodes) > 0 {
 		seen := make(map[string]bool)
+		seenAddr := make(map[string]bool)
 		for _, n := range nodes {
 			seen[n.Hostname] = true
+			seenAddr[n.RemoteIP] = true
 		}
 		for name, entry := range c.Config.DirectNodes {
-			if !seen[name] {
+			// Skip FQDN duplicates in listing if base hostname or address is already listed
+			if strings.Count(name, ".") > 1 && entry.Hostname != "" && name != entry.Hostname {
+				continue
+			}
+			displayHost := entry.Hostname
+			if displayHost == "" {
+				displayHost = name
+			}
+			if !seen[displayHost] && !seenAddr[entry.Address] {
+				seen[displayHost] = true
+				seenAddr[entry.Address] = true
+
+				domain := entry.Domain
+				if domain == "" {
+					domain = "fabric.mesh"
+				}
+				osName := entry.OS
+				if osName == "" {
+					osName = "linux"
+				}
+
 				nodes = append(nodes, protocol.NodeMetadata{
-					ID:          "direct-" + name,
-					Hostname:    name,
+					ID:          "direct-" + displayHost,
+					Hostname:    displayHost,
 					RemoteIP:    entry.Address,
 					Status:      "online [MODE: inverted]",
+					OS:          osName,
+					Arch:        entry.Arch,
 					Tags:        entry.Tags,
-					Domain:      "direct",
+					Domain:      domain,
 					ConnectedAt: entry.RegisteredAt.Format(time.RFC3339),
 				})
 			}
@@ -263,15 +296,43 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 // GetNode retrieves metadata for a single mesh node from socket or local direct registry.
 func (c *Client) GetNode(hostname string) (*protocol.NodeMetadata, error) {
 	if c.Config != nil && c.Config.DirectNodes != nil {
+		var matchedEntry *DirectNodeEntry
+		displayHost := hostname
 		if entry, ok := c.Config.DirectNodes[hostname]; ok {
+			matchedEntry = &entry
+			if entry.Hostname != "" {
+				displayHost = entry.Hostname
+			}
+		} else {
+			for k, entry := range c.Config.DirectNodes {
+				if k == hostname || entry.Hostname == hostname || (entry.Domain != "" && strings.TrimSuffix(hostname, "."+entry.Domain) == entry.Hostname) {
+					matchedEntry = &entry
+					displayHost = entry.Hostname
+					break
+				}
+			}
+		}
+
+		if matchedEntry != nil {
+			domain := matchedEntry.Domain
+			if domain == "" {
+				domain = "fabric.mesh"
+			}
+			osName := matchedEntry.OS
+			if osName == "" {
+				osName = "linux"
+			}
+
 			return &protocol.NodeMetadata{
-				ID:          "direct-" + hostname,
-				Hostname:    hostname,
-				RemoteIP:    entry.Address,
+				ID:          "direct-" + displayHost,
+				Hostname:    displayHost,
+				RemoteIP:    matchedEntry.Address,
 				Status:      "online [MODE: inverted]",
-				Tags:        entry.Tags,
-				Domain:      "direct",
-				ConnectedAt: entry.RegisteredAt.Format(time.RFC3339),
+				OS:          osName,
+				Arch:        matchedEntry.Arch,
+				Tags:        matchedEntry.Tags,
+				Domain:      domain,
+				ConnectedAt: matchedEntry.RegisteredAt.Format(time.RFC3339),
 			}, nil
 		}
 	}

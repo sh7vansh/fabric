@@ -190,11 +190,17 @@ func registerInvertedIfApplicable(target, listenPort string, node *protocol.Node
 			targetHostOnly = target[atIdx+1:]
 		}
 		directAddr := net.JoinHostPort(targetHostOnly, listenPort)
+		domain := node.Domain
+		if domain == "" {
+			domain = "fabric.mesh"
+		}
+
 		if node.Hostname != "" {
-			_ = RegisterDirectNode(node.Hostname, directAddr, node.Tags)
+			_ = RegisterDirectNode(node.Hostname, directAddr, node.Tags, node.Hostname, domain, node.OS, node.Arch)
+			_ = RegisterDirectNode(node.Hostname+"."+domain, directAddr, node.Tags, node.Hostname, domain, node.OS, node.Arch)
 		}
 		if targetHostOnly != "" && targetHostOnly != node.Hostname {
-			_ = RegisterDirectNode(targetHostOnly, directAddr, node.Tags)
+			_ = RegisterDirectNode(targetHostOnly, directAddr, node.Tags, node.Hostname, domain, node.OS, node.Arch)
 		}
 	}
 }

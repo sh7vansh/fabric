@@ -57,7 +57,7 @@ type SSHExecutor struct {
 	Silent      bool
 }
 
-func (e *SSHExecutor) QueryArch() (string, string, error) {
+func (e *SSHExecutor) QuerySystemInfo() (string, string, string, error) {
 	var sshArgs []string
 	if e.Port != "" && e.Port != "22" {
 		sshArgs = append(sshArgs, "-p", e.Port)
@@ -65,17 +65,34 @@ func (e *SSHExecutor) QueryArch() (string, string, error) {
 	if e.IdentityKey != "" {
 		sshArgs = append(sshArgs, "-i", e.IdentityKey)
 	}
-	sshArgs = append(sshArgs, "-o", "StrictHostKeyChecking=accept-new", "--", e.Target, "uname -s && uname -m")
+	sshArgs = append(sshArgs, "-o", "StrictHostKeyChecking=accept-new", "--", e.Target, "uname -s && uname -m && hostname")
 
 	out, err := exec.Command("ssh", sshArgs...).Output()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) >= 2 {
-		return strings.ToLower(strings.TrimSpace(lines[0])), strings.ToLower(strings.TrimSpace(lines[1])), nil
+	osName := ""
+	arch := ""
+	hostname := ""
+	if len(lines) >= 1 {
+		osName = strings.ToLower(strings.TrimSpace(lines[0]))
 	}
-	return "", "", fmt.Errorf("unexpected output from uname")
+	if len(lines) >= 2 {
+		arch = strings.ToLower(strings.TrimSpace(lines[1]))
+	}
+	if len(lines) >= 3 {
+		hostname = strings.TrimSpace(lines[2])
+	}
+	if osName != "" && arch != "" {
+		return osName, arch, hostname, nil
+	}
+	return "", "", "", fmt.Errorf("unexpected output from uname/hostname")
+}
+
+func (e *SSHExecutor) QueryArch() (string, string, error) {
+	osName, arch, _, err := e.QuerySystemInfo()
+	return osName, arch, err
 }
 
 func (e *SSHExecutor) Run(script string) error {
@@ -599,23 +616,35 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 		}
 	}
 
-	if len(opts.BinaryData) == 0 {
+	remoteOS := "linux"
+	remoteArch := "amd64"
+	remoteHostname := ""
+
+	if sysExec, ok := exec.(interface{ QuerySystemInfo() (string, string, string, error) }); ok {
+		osName, arch, hname, err := sysExec.QuerySystemInfo()
+		if err == nil {
+			remoteOS = osName
+			remoteArch = arch
+			remoteHostname = hname
+		}
+	} else if exec != nil {
 		osName, arch, err := exec.QueryArch()
 		if err == nil {
-			nodeBytes, cliBytes, resolveErr := ResolveCrossPlatformBinaries(osName, arch)
-			if resolveErr == nil && len(nodeBytes) > 0 {
-				opts.BinaryData = nodeBytes
-				if len(cliBytes) > 0 {
-					opts.CliBinaryData = cliBytes
-				}
-			} else {
-				if !opts.SilentOutput {
-					fmt.Printf("[!] Warning: Could not resolve cross-platform binaries (%v). Falling back to local binaries...\n", resolveErr)
-				}
+			remoteOS = osName
+			remoteArch = arch
+		}
+	}
+
+	if len(opts.BinaryData) == 0 {
+		nodeBytes, cliBytes, resolveErr := ResolveCrossPlatformBinaries(remoteOS, remoteArch)
+		if resolveErr == nil && len(nodeBytes) > 0 {
+			opts.BinaryData = nodeBytes
+			if len(cliBytes) > 0 {
+				opts.CliBinaryData = cliBytes
 			}
 		} else {
 			if !opts.SilentOutput {
-				fmt.Printf("[!] Warning: Could not query remote architecture (%v). Falling back to local binaries...\n", err)
+				fmt.Printf("[!] Warning: Could not resolve cross-platform binaries (%v). Falling back to local binaries...\n", resolveErr)
 			}
 		}
 	}
@@ -657,7 +686,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 		if !opts.SilentOutput {
 			fmt.Printf("[+] Verifying inverted node listener via direct mTLS probe (%s)...", targetProbeAddr)
 		}
-		return verifyDirectInvertedProbe(proberFn, targetProbeAddr, caCertPath, targetHostOnly, listenPort, opts, false)
+		return verifyDirectInvertedProbe(proberFn, targetProbeAddr, caCertPath, targetHostOnly, listenPort, remoteHostname, remoteOS, remoteArch, opts, false)
 	}
 
 	// 2. Normal Mode Verification with Automatic Fallback State Machine
@@ -710,7 +739,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 				fmt.Printf("[+] Probing inverted node via direct mTLS (%s)...", targetProbeAddr)
 			}
 
-			return verifyDirectInvertedProbe(proberFn, targetProbeAddr, caCertPath, targetHostOnly, listenPort, opts, true)
+			return verifyDirectInvertedProbe(proberFn, targetProbeAddr, caCertPath, targetHostOnly, listenPort, remoteHostname, remoteOS, remoteArch, opts, true)
 
 		case <-ticker.C:
 			if !opts.SilentOutput {
@@ -737,7 +766,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 	}
 }
 
-func verifyDirectInvertedProbe(proberFn DirectProberFunc, targetProbeAddr, caCertPath, targetHostOnly, listenPort string, opts StitchHostOptions, isFallback bool) (*protocol.NodeMetadata, error) {
+func verifyDirectInvertedProbe(proberFn DirectProberFunc, targetProbeAddr, caCertPath, targetHostOnly, listenPort, remoteHostname, remoteOS, remoteArch string, opts StitchHostOptions, isFallback bool) (*protocol.NodeMetadata, error) {
 	prefix := "Direct"
 	if isFallback {
 		prefix = "Fallback direct"
@@ -763,13 +792,24 @@ func verifyDirectInvertedProbe(proberFn DirectProberFunc, targetProbeAddr, caCer
 		}
 	}
 
+	displayHostname := remoteHostname
+	if displayHostname == "" {
+		displayHostname = targetHostOnly
+	}
+	domain := opts.Domain
+	if domain == "" {
+		domain = "fabric.mesh"
+	}
+
 	return &protocol.NodeMetadata{
-		ID:          "direct-" + targetHostOnly,
-		Hostname:    targetHostOnly,
+		ID:          "direct-" + displayHostname,
+		Hostname:    displayHostname,
 		RemoteIP:    targetProbeAddr,
+		OS:          remoteOS,
+		Arch:        remoteArch,
 		Status:      "online [MODE: inverted]",
 		Tags:        append(opts.Tags, "inverted"),
-		Domain:      opts.Domain,
+		Domain:      domain,
 		ConnectedAt: time.Now().UTC().Format(time.RFC3339),
 	}, nil
 }
