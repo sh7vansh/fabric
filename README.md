@@ -139,6 +139,12 @@ fabric service uninstall node       # Cleanly remove systemd/supervisor service
 
 ---
 
+## Dependencies
+
+Fabric uses [HashiCorp Yamux](https://github.com/hashicorp/yamux) for stream multiplexing.
+
+---
+
 ## License
 
 Fabric is open-source software released under the [MIT License](LICENSE).
