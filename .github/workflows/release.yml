@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Build Binaries
+        run: |
+          mkdir -p dist
+          
+          # We build for the three architectures supported in install.sh
+          ARCHS=("amd64" "arm64" "arm")
+          
+          for ARCH in "${ARCHS[@]}"; do
+            echo "Building for linux/$ARCH..."
+            GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-linux-$ARCH" ./cmd/cli
+            GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-socket-linux-$ARCH" ./cmd/socket
+            GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-node-linux-$ARCH" ./cmd/node
+          done
+
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
