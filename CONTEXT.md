@@ -19,6 +19,7 @@ Fabric is a lightweight remote execution, service discovery, and networking mesh
 - **MeshClient**: A deep client module that encapsulates WebSocket session multiplexing, binary framing, terminal PTY state management, and RPC streaming for CLI operations (`Execute`, `Copy`, `ForwardPort`).
 - **Provisioner**: An autonomous domain module in `internal/provision` for subnet discovery probing, SSH script generation, and remote host bootstrapping into the mesh.
 - **RemoteExecutor**: An adapter abstracting the SSH transport for provisioning, allowing pure testing of script generation and host bootstrapping.
+- **Inverted Connection Mode**: An edge-case deployment mode where a Node acts as the server listening on a public port (`--listen`) and the operator uses the CLI (`--direct`) to bypass the Socket. Supported via Mutual TLS (mTLS).
 
 ---
 
@@ -36,7 +37,7 @@ Fabric is a lightweight remote execution, service discovery, and networking mesh
 
 ## Invariants & Design Rules
 
-1. **Outbound Only**: Nodes must never require inbound firewall holes; all communication originates outbound from nodes to the Socket.
+1. **Outbound Only**: Nodes generally must never require inbound firewall holes; communication originates outbound from nodes to the Socket. (Exception: Inverted Connection Mode where a node acts as the mTLS server).
 2. **Deterministic Teardown**: DNS hooks (`/etc/hosts` modifications) and PTY processes must be cleanly cleaned up on node shutdown or disconnect.
 3. **Streaming Transfers**: File copies (`cp`) and execution streams must operate incrementally over chunked tar/stream envelopes without holding unbounded memory buffers.
 

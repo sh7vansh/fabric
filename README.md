@@ -17,6 +17,7 @@ curl -fsSL https://raw.githubusercontent.com/sh7vansh/fabric/main/install.sh | b
 4. Automatically launches the interactive `fabric setup` wizard to get your node connected!
 
 ## Architecture Highlights
-* **Outbound Only**: Nodes must never require inbound firewall holes; all communication originates outbound from nodes to the Socket.
+* **Outbound Only**: Nodes generally must never require inbound firewall holes; communication originates outbound from nodes to the central Socket. 
+  * *(Edge Case: Supports an "Inverted Connection Mode" where a node can safely expose a public port via strict mTLS, allowing operators behind strict NATs to bypass the central socket using the CLI `--direct` flag).*
 * **Deterministic Teardown**: DNS hooks (`/etc/hosts` modifications) and PTY processes are cleanly cleaned up on node shutdown or disconnect.
 * **Streaming Transfers**: File copies (`cp`) and execution streams operate incrementally over chunked tar/stream envelopes without holding unbounded memory buffers.
