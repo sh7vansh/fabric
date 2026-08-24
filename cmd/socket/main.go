@@ -1,17 +1,18 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
-	"crypto/tls"
-	"fmt"
 	"fabric/internal/protocol"
 	"fabric/internal/tlsengine"
 
@@ -45,11 +46,12 @@ func main() {
 	tlsPortFlag := flag.Int("tls-port", 443, "Port for HTTPS/WSS TLS listener")
 	httpPortFlag := flag.Int("http-port", 80, "Port for HTTP / ACME HTTP-01 challenge listener")
 	caDirFlag := flag.String("ca-dir", "", "Directory to store internal Root CA")
+	tokenFlag := flag.String("token", os.Getenv("FABRIC_TOKEN"), "Pre-shared token for authentication")
 	flag.Parse()
 
-	token := os.Getenv("FABRIC_TOKEN")
+	token := *tokenFlag
 	if token == "" {
-		token = "default-secret"
+		log.Fatal("Authentication token required: set FABRIC_TOKEN environment variable or pass --token")
 	}
 
 	// Initialize Dual-Mode TLS Engine (Internal CA + ACME Autocert)
@@ -134,15 +136,30 @@ func main() {
 			var hs protocol.Handshake
 			json.Unmarshal(env, &hs)
 
-			if hs.Token != token {
-				log.Println("Unauthorized connection from:", hs.Hostname)
+			if !protocol.ValidateToken(hs.Token, token) {
+				log.Println("Unauthorized connection attempt from:", hs.Hostname)
 				conn.Close()
 				return
 			}
 
-			log.Printf("Node connected successfully: %s\n", hs.Hostname)
+			if hs.Hostname == "" {
+				log.Println("Handshake rejected: empty hostname")
+				conn.Close()
+				return
+			}
 
 			nodesLock.Lock()
+			if existing, exists := nodes[hs.Hostname]; exists {
+				if existing.Mux != nil && !existing.Mux.Session.IsClosed() && existing.Mux != mux {
+					nodesLock.Unlock()
+					log.Printf("Conflict: hostname %q is already actively registered by another connection\n", hs.Hostname)
+					conn.Close()
+					return
+				}
+			}
+
+			log.Printf("Node connected successfully: %s\n", hs.Hostname)
+
 			nodes[hs.Hostname] = &NodeState{
 				Mux: mux,
 				Metadata: protocol.NodeMetadata{
@@ -162,11 +179,11 @@ func main() {
 			go broadcastNodeSync()
 
 			go func() {
-				// We don't need handleNodeMessages anymore since router.Accept() will handle new streams.
-				// However, if the mux fails, we should remove the node.
 				<-mux.Session.CloseChan()
 				nodesLock.Lock()
-				delete(nodes, hs.Hostname)
+				if curr, ok := nodes[hs.Hostname]; ok && curr.Mux == mux {
+					delete(nodes, hs.Hostname)
+				}
 				nodesLock.Unlock()
 				go broadcastNodeSync()
 				conn.Close()
@@ -181,9 +198,6 @@ func main() {
 			resp := ProcessDNSQuery(query, *domainFlag, proxyIP)
 			b, _ := json.Marshal(resp)
 			
-			// We can respond directly on the same stream since DNS is request/response, 
-			// but we can also open a new stream. To keep it simple, we just write to the same stream.
-			// Actually the client expects it on `DNSResponse` handler.
 			outStream, err := mux.Session.Open()
 			if err == nil {
 				outStream.Write(b)
@@ -274,7 +288,12 @@ func main() {
 	})
 
 	authenticate := func(w http.ResponseWriter, r *http.Request) bool {
-		if r.Header.Get("Authorization") != "Bearer "+token {
+		authHeader := r.Header.Get("Authorization")
+		var provided string
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			provided = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+		if !protocol.ValidateToken(provided, token) {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return false
 		}
@@ -335,8 +354,6 @@ func pingNodes() {
 		nodesLock.RLock()
 		for _, state := range nodes {
 			state.Metadata.LastSeen = time.Now().UTC().Format(time.RFC3339)
-			// Yamux does its own keepalive, we can rely on that or send a custom ping.
-			// For now just update LastSeen.
 		}
 		nodesLock.RUnlock()
 	}

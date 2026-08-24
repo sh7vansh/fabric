@@ -4,9 +4,6 @@ import (
 	"encoding/json"
 	"fabric/internal/protocol"
 	"fmt"
-	"io"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -72,19 +69,9 @@ func runCp(cmd *cobra.Command, args []string) error {
 		b, _ := json.Marshal(req)
 		stream.Write(b)
 
-		dir := filepath.Dir(srcPath)
-		base := filepath.Base(srcPath)
-		tarCmd := exec.Command("tar", "-cf", "-", "-C", dir, base)
-		stdout, err := tarCmd.StdoutPipe()
-		if err != nil {
-			return err
+		if err := protocol.CreateTar(stream, srcPath); err != nil {
+			return fmt.Errorf("failed to create upload archive: %w", err)
 		}
-		if err := tarCmd.Start(); err != nil {
-			return fmt.Errorf("failed to start tar: %w", err)
-		}
-
-		io.Copy(stream, stdout)
-		tarCmd.Wait()
 		return nil
 	}
 
@@ -100,18 +87,8 @@ func runCp(cmd *cobra.Command, args []string) error {
 	b, _ := json.Marshal(req)
 	stream.Write(b)
 
-	destDir := destPath
-	tarCmd := exec.Command("tar", "-xf", "-", "-C", destDir)
-	stdin, err := tarCmd.StdinPipe()
-	if err != nil {
-		return err
+	if err := protocol.ExtractTar(stream, destPath); err != nil {
+		return fmt.Errorf("failed to extract download archive: %w", err)
 	}
-	if err := tarCmd.Start(); err != nil {
-		return fmt.Errorf("failed to start local tar unpacker: %w", err)
-	}
-
-	io.Copy(stdin, stream)
-	stdin.Close()
-	tarCmd.Wait()
 	return nil
 }

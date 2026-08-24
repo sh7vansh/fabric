@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
-	"sync"
 	"syscall"
 
 	"fabric/internal/meshdns"
@@ -37,11 +36,12 @@ func main() {
 	serverURL := flag.String("url", defaultURL, "Socket URL (ws:// or wss://)")
 	domainFlag := flag.String("domain", defaultDomain, "Domain to register with the mesh")
 	caCertFlag := flag.String("ca-cert", os.Getenv("FABRIC_CA_CERT"), "Path to custom Root CA certificate")
+	tokenFlag := flag.String("token", os.Getenv("FABRIC_TOKEN"), "Pre-shared token for authentication")
 	flag.Parse()
 
-	token := os.Getenv("FABRIC_TOKEN")
+	token := *tokenFlag
 	if token == "" {
-		token = "default-secret"
+		log.Fatal("Authentication token required: set FABRIC_TOKEN environment variable or pass --token")
 	}
 
 	u, err := pki.NormalizeURL(*serverURL)
@@ -207,11 +207,7 @@ func handleExec(stream net.Conn, env []byte) {
 
 		cmd.Start()
 
-		var wg sync.WaitGroup
-		wg.Add(2)
-
 		go func() {
-			defer wg.Done()
 			buf := make([]byte, 1024)
 			for {
 				n, err := stdout.Read(buf)
@@ -225,7 +221,6 @@ func handleExec(stream net.Conn, env []byte) {
 		}()
 
 		go func() {
-			defer wg.Done()
 			buf := make([]byte, 1024)
 			for {
 				n, err := stderr.Read(buf)
@@ -250,8 +245,6 @@ func handleExec(stream net.Conn, env []byte) {
 			}
 			stdin.Close()
 		}()
-
-		wg.Wait()
 	}
 
 	cmd.Wait()

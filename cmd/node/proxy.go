@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -18,12 +17,13 @@ func handleProxyRequest(stream net.Conn, envelope []byte) {
 		return
 	}
 
-	port := 80
-	if req.TargetPort > 0 {
-		port = req.TargetPort
+	targetAddr, err := protocol.ValidateProxyDestination(req.TargetHost, req.TargetPort)
+	if err != nil {
+		log.Println("Blocked proxy request:", err)
+		return
 	}
 
-	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	conn, err := net.Dial("tcp", targetAddr)
 	if err != nil {
 		log.Println("Node proxy dial error:", err)
 		return
