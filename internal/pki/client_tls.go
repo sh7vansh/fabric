@@ -69,15 +69,39 @@ func BuildMTLSConfig(customCAPath string) (*tls.Config, error) {
 	}
 
 	// 3. Opportunistically load client/node certificate for mTLS if it exists
+	var candidateDirs []string
 	if customCAPath != "" {
-		if cert, err := loadKeyPair(filepath.Dir(customCAPath)); err == nil {
+		candidateDirs = append(candidateDirs, filepath.Dir(customCAPath))
+	}
+	for _, p := range defaultPaths {
+		candidateDirs = append(candidateDirs, filepath.Dir(p))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidateDirs = append(candidateDirs, filepath.Join(home, ".fabric"))
+	}
+
+	for _, dir := range candidateDirs {
+		if cert, err := loadKeyPair(dir); err == nil {
 			tlsCfg.Certificates = append(tlsCfg.Certificates, *cert)
+			break
 		}
-	} else {
-		for _, p := range defaultPaths {
-			if cert, err := loadKeyPair(filepath.Dir(p)); err == nil {
-				tlsCfg.Certificates = append(tlsCfg.Certificates, *cert)
-				break
+	}
+
+	// 4. Auto-heal: If no client certificate was loaded, but a CA private key exists locally,
+	// auto-mint a client certificate and attach it.
+	if len(tlsCfg.Certificates) == 0 {
+		for _, dir := range candidateDirs {
+			if fileExists(filepath.Join(dir, "ca.crt")) && fileExists(filepath.Join(dir, "ca.key")) {
+				if ca, err := LoadOrInitCA(dir, "fabric.mesh"); err == nil && ca != nil {
+					_ = ca.EnsureClientCertificate(dir)
+					if home, err := os.UserHomeDir(); err == nil {
+						_ = ca.EnsureClientCertificate(filepath.Join(home, ".fabric"))
+					}
+					if cert, err := loadKeyPair(dir); err == nil {
+						tlsCfg.Certificates = append(tlsCfg.Certificates, *cert)
+						break
+					}
+				}
 			}
 		}
 	}

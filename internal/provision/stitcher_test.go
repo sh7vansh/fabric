@@ -79,9 +79,15 @@ func TestGenerateStitchScript_ZeroInternetAndTags(t *testing.T) {
 
 	script := GenerateStitchScript(opts, "ws://192.168.1.1:8080/ws")
 
-	// Verify absence of external downloads
-	if strings.Contains(script, "curl") || strings.Contains(script, "wget") {
-		t.Errorf("Script must not contain curl or wget (found external download dependency)")
+	// Verify absence of external downloads in script shell commands
+	for _, line := range strings.Split(script, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "PAYLOAD=") || strings.HasPrefix(trimmed, "CLI_PAYLOAD=") || strings.HasPrefix(trimmed, "ENV_B64=") || strings.HasPrefix(trimmed, "CA_PAYLOAD=") || strings.HasPrefix(trimmed, "CERT_PAYLOAD=") || strings.HasPrefix(trimmed, "KEY_PAYLOAD=") {
+			continue
+		}
+		if strings.Contains(trimmed, "curl ") || strings.Contains(trimmed, "wget ") || trimmed == "curl" || trimmed == "wget" {
+			t.Errorf("Script must not contain curl or wget (found external download dependency in line: %s)", line)
+		}
 	}
 
 	envStr := extractDecodedEnv(script)

@@ -134,7 +134,60 @@ func LoadOrInitCA(dir, domain string, opts ...Option) (*CA, error) {
 	pool.AddCert(ca.rootCert)
 	ca.certPool = pool
 
+	// Automatically ensure client certificate & key exist in CA dir and ~/.fabric
+	_ = ca.EnsureClientCertificate(dir)
+	if home, err := os.UserHomeDir(); err == nil {
+		fabricDir := filepath.Join(home, ".fabric")
+		if fabricDir != dir {
+			_ = ca.EnsureClientCertificate(fabricDir)
+		}
+	}
+
 	return ca, nil
+}
+
+// EnsureClientCertificate checks if client.crt and client.key exist in destDir.
+// If either is missing, it mints a client certificate and writes both files.
+func (c *CA) EnsureClientCertificate(destDir string) error {
+	if destDir == "" {
+		return nil
+	}
+	certPath := filepath.Join(destDir, "client.crt")
+	keyPath := filepath.Join(destDir, "client.key")
+	caCertPath := filepath.Join(destDir, "ca.crt")
+
+	// Ensure ca.crt also exists in destDir if not already present
+	if !fileExists(caCertPath) && len(c.certPEM) > 0 {
+		_ = os.MkdirAll(destDir, 0755)
+		_ = os.WriteFile(caCertPath, c.certPEM, 0644)
+	}
+
+	if fileExists(certPath) && fileExists(keyPath) {
+		return nil
+	}
+
+	hosts := []string{"fabric-client", "localhost", "127.0.0.1", "::1"}
+	if c.domain != "" {
+		hosts = append(hosts, "*."+c.domain, c.domain)
+	}
+
+	certPEM, keyPEM, err := c.MintCertificatePEM(hosts, 365*24*time.Hour)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(certPath, certPEM, 0644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func fileExists(path string) bool {

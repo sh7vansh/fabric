@@ -95,7 +95,7 @@ func (m *InitManager) GenerateSystemdSystemUnit(role, binPath string) string {
 	}
 	execStopPost := ""
 	if role == "node" {
-		execStopPost = "ExecStopPost=/usr/bin/resolvectl revert lo\n"
+		execStopPost = "ExecStopPost=-/usr/bin/resolvectl revert lo\n"
 	}
 
 	return fmt.Sprintf(`[Unit]
@@ -573,7 +573,7 @@ ExecStart=/usr/local/bin/fabric-node
 Restart=always
 RestartSec=3s
 LimitNOFILE=65536
-ExecStopPost=/usr/bin/resolvectl revert lo
+ExecStopPost=-/usr/bin/resolvectl revert lo
 
 [Install]
 WantedBy=multi-user.target

@@ -16,7 +16,7 @@ func TestGenerateSystemdSystemUnit(t *testing.T) {
 	if !strings.Contains(unit, "ExecStart=/usr/local/bin/fabric-node") {
 		t.Errorf("missing ExecStart in system unit: %s", unit)
 	}
-	if !strings.Contains(unit, "ExecStopPost=/usr/bin/resolvectl revert lo") {
+	if !strings.Contains(unit, "ExecStopPost=-/usr/bin/resolvectl revert lo") {
 		t.Errorf("missing ExecStopPost in node system unit: %s", unit)
 	}
 }

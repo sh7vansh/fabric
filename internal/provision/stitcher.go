@@ -548,17 +548,21 @@ type NodeVerifierFunc func(socketURL, token string) ([]protocol.NodeMetadata, er
 // ExecuteStitchHost performs the full bootstrap and mesh join verification workflow.
 func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier NodeVerifierFunc, prober ...DirectProberFunc) (*protocol.NodeMetadata, error) {
 	socketURL := opts.SocketURL
-	u, err := url.Parse(socketURL)
-	if err == nil {
-		host, port, err := net.SplitHostPort(u.Host)
-		if err == nil && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
-			outboundIP := GetOutboundIP()
-			u.Host = net.JoinHostPort(outboundIP, port)
-			socketURL = u.String()
-			if !opts.SilentOutput {
-				fmt.Printf("[+] Detected local loopback socket. Resolving remote socket URL to: %s\n", socketURL)
+	if opts.Mode != "inverted" {
+		u, err := url.Parse(socketURL)
+		if err == nil {
+			host, port, err := net.SplitHostPort(u.Host)
+			if err == nil && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
+				outboundIP := GetOutboundIP()
+				u.Host = net.JoinHostPort(outboundIP, port)
+				socketURL = u.String()
+				if !opts.SilentOutput {
+					fmt.Printf("[+] Detected local loopback socket. Resolving remote socket URL to: %s\n", socketURL)
+				}
 			}
 		}
+	} else {
+		socketURL = ""
 	}
 
 	listenPort := opts.ListenPort
@@ -639,6 +643,13 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 	caCertPath := ""
 	if opts.CADir != "" {
 		caCertPath = filepath.Join(opts.CADir, "ca.crt")
+	} else if home, err := os.UserHomeDir(); err == nil {
+		cand := filepath.Join(home, ".fabric", "ca", "ca.crt")
+		if _, err := os.Stat(cand); err == nil {
+			caCertPath = cand
+		} else if _, err := os.Stat(filepath.Join(home, ".fabric", "ca.crt")); err == nil {
+			caCertPath = filepath.Join(home, ".fabric", "ca.crt")
+		}
 	}
 
 	// 1. Explicit Inverted Mode Verification

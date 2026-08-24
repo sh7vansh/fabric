@@ -195,22 +195,26 @@ func (a *Agent) ListenAndServe(ctx context.Context) error {
 
 // Run executes the agent daemon loop until the provided context is canceled.
 func (a *Agent) Run(ctx context.Context) error {
-	u, err := pki.NormalizeURL(a.cfg.ServerURL)
-	if err != nil {
-		return fmt.Errorf("invalid server url: %w", err)
-	}
-
 	if err := a.dnsMgr.Start(); err != nil {
 		log.Printf("[Agent] Warning: DNS manager start failed: %v", err)
 	}
 	defer a.dnsMgr.Teardown()
 
 	if a.cfg.ListenAddress != "" {
+		if a.cfg.ServerURL == "" || a.cfg.ServerURL == "none" {
+			log.Printf("[Agent] Running in pure Inverted Mode (listener: %s)...", a.cfg.ListenAddress)
+			return a.ListenAndServe(ctx)
+		}
 		go func() {
 			if err := a.ListenAndServe(ctx); err != nil && err != context.Canceled {
 				log.Printf("[Agent] ListenAndServe error: %v", err)
 			}
 		}()
+	}
+
+	u, err := pki.NormalizeURL(a.cfg.ServerURL)
+	if err != nil {
+		return fmt.Errorf("invalid server url: %w", err)
 	}
 
 	backoff := a.cfg.InitialRetry
