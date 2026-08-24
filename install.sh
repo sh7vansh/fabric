@@ -78,7 +78,7 @@ cleanup() {
 trap cleanup EXIT
 
 # If running within the fabric source tree, build locally
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
 if [ -n "$REPO_DIR" ] && [ -f "$REPO_DIR/go.mod" ] && command -v go >/dev/null 2>&1; then
     echo "[+] Building Fabric binaries from source..."
     (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric" ./cmd/cli)
@@ -87,13 +87,17 @@ if [ -n "$REPO_DIR" ] && [ -f "$REPO_DIR/go.mod" ] && command -v go >/dev/null 2
 else
     # Check if download URL or release is configured
     RELEASE_TAG="${FABRIC_VERSION:-latest}"
-    DOWNLOAD_BASE="${FABRIC_DOWNLOAD_URL:-https://github.com/sh7vansh/fabric/releases/download}"
+    if [ "$RELEASE_TAG" = "latest" ]; then
+        DOWNLOAD_URL_PREFIX="${FABRIC_DOWNLOAD_URL:-https://github.com/sh7vansh/fabric/releases/latest/download}"
+    else
+        DOWNLOAD_URL_PREFIX="${FABRIC_DOWNLOAD_URL:-https://github.com/sh7vansh/fabric/releases/download/$RELEASE_TAG}"
+    fi
     
     echo "[+] Attempting to download Fabric ($RELEASE_TAG) for linux/$FABRIC_ARCH..."
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$DOWNLOAD_BASE/$RELEASE_TAG/fabric-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric" 2>/dev/null || true
-        curl -fsSL "$DOWNLOAD_BASE/$RELEASE_TAG/fabric-socket-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-socket" 2>/dev/null || true
-        curl -fsSL "$DOWNLOAD_BASE/$RELEASE_TAG/fabric-node-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-node" 2>/dev/null || true
+        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric" 2>/dev/null || true
+        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-socket-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-socket" 2>/dev/null || true
+        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-node-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-node" 2>/dev/null || true
     fi
 
     # Fallback to Go build if binaries were not downloaded and Go is available
