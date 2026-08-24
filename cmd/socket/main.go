@@ -39,15 +39,19 @@ func main() {
 	}
 
 	domainFlag := flag.String("domain", defaultDomain, "Domain for the DNS server")
+	proxyIPFlag := flag.String("proxy-ip", os.Getenv("FABRIC_PROXY_IP"), "Public IP of the socket for DNS resolution")
 	flag.Parse()
+
+	proxyIP := *proxyIPFlag
+	if proxyIP == "" {
+		proxyIP = "127.0.0.1"
+	}
 
 	token := os.Getenv("FABRIC_TOKEN")
 	if token == "" {
 		token = "default-secret"
 	}
 
-
-	go StartDNSServer("127.0.0.1", *domainFlag)
 	go StartTCPProxy()
 	go pingNodes()
 
@@ -111,7 +115,7 @@ func main() {
 				conn.Close()
 			}()
 
-			handleNodeMessages(conn, hs.Hostname)
+			handleNodeMessages(conn, hs.Hostname, *domainFlag, proxyIP)
 
 		case protocol.TypeCopyRequest:
 			var req protocol.CopyRequest
@@ -261,7 +265,7 @@ func pingNodes() {
 	}
 }
 
-func handleNodeMessages(conn *websocket.Conn, hostname string) {
+func handleNodeMessages(conn *websocket.Conn, hostname string, domain string, proxyIP string) {
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -273,6 +277,13 @@ func handleNodeMessages(conn *websocket.Conn, hostname string) {
 
 		envelopeType, _ := envelope["type"].(string)
 		switch protocol.EnvelopeType(envelopeType) {
+		case protocol.TypeDNSQuery:
+			var query protocol.DNSQuery
+			json.Unmarshal(message, &query)
+
+			resp := ProcessDNSQuery(query, domain, proxyIP)
+			conn.WriteJSON(resp)
+
 		case protocol.TypeExecStream:
 			var stream protocol.ExecStream
 			json.Unmarshal(message, &stream)

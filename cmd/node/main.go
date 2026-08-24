@@ -10,9 +10,14 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
+	"syscall"
+	"time"
 
+	"fabric/internal/meshdns"
 	"fabric/internal/protocol"
 
 	"github.com/creack/pty"
@@ -52,9 +57,49 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Clean any previous state on startup
+	meshdns.RevertOS()
+	meshdns.CleanHostsBlock()
+
+	resolver := meshdns.NewResolver(*domainFlag)
+	if err := resolver.Start(); err != nil {
+		log.Fatalf("Failed to start DNS resolver: %v", err)
+	}
+
+	// Configure system routing
+	if err := meshdns.ConfigureOS(*domainFlag); err != nil {
+		log.Printf("Failed to configure OS DNS routing: %v", err)
+	}
+
+	// Handle graceful teardown
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		log.Println("Shutting down... Reverting OS DNS configuration.")
+		meshdns.RevertOS()
+		meshdns.CleanHostsBlock()
+		resolver.Stop()
+		os.Exit(0)
+	}()
+
+	// Start a periodic background sync for /etc/hosts if needed
+	go func() {
+		// convert ws:// to http://
+		apiURL := strings.Replace(*serverURL, "ws://", "http://", 1)
+		apiURL = strings.Replace(apiURL, "wss://", "https://", 1)
+		// strip path /ws if present
+		apiURL = strings.Replace(apiURL, "/ws", "", 1)
+		
+		for {
+			meshdns.SyncHostsFile(apiURL, token, *domainFlag, *serverURL)
+			time.Sleep(10 * time.Second)
+		}
+	}()
 
 	for {
 		c := ConnectWithRetry(*u, token)
+		resolver.SetConnection(c)
 
 		hostname, _ := os.Hostname()
 		hs := protocol.Handshake{
@@ -90,6 +135,10 @@ func main() {
 
 			envelopeType, _ := envelope["type"].(string)
 			switch protocol.EnvelopeType(envelopeType) {
+			case protocol.TypeDNSResponse:
+				var resp protocol.DNSResponse
+				json.Unmarshal(message, &resp)
+				resolver.HandleDNSResponse(resp)
 			case protocol.TypeExecRequest:
 				var req protocol.ExecRequest
 				json.Unmarshal(message, &req)

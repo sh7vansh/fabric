@@ -1,15 +1,19 @@
 ## Destination
 
-Zero-touch Linux deployment and automated remote onboarding: A one-liner install script (`install.sh`), an interactive `fabric setup` command that detects/configures Socket or Node roles with native `systemd` service lifecycle management, and a `fabric stitch <ssh-target>` command that remotely bootstraps and connects remote nodes to the active socket over SSH.
+Internet-wide private mesh DNS resolution for `*.fabric.mesh`: Automatic Linux Split DNS configuration (`systemd-resolved` / local stub resolver) that routes mesh queries through the persistent outbound Fabric WebSocket tunnel without requiring public domain registrations or open inbound UDP port 53.
 
 ## Notes
 
-- **Domain:** Linux systems administration, systemd service management, SSH automation (`crypto/ssh`), shell script bootstrapping, CLI UX (prompts/surveys).
-- **Preferences:** Linux-first (systemd), pre-shared token propagation, zero-config automatic defaults, secure background daemonization, SSH remote push provisioning.
+- **Domain:** DNS protocols (RFC 1035), Linux network resolvers (`systemd-resolved`, `resolvectl`, `nsswitch`, `/etc/resolv.conf`), local stub listeners, WebSocket multiplexing.
+- **Preferences:** Linux-first (systemd-resolved), zero-touch automatic configuration on node connect, clean lifecycle teardown, secure multiplexed transport over existing WebSocket.
 - **Tracker:** Local Markdown
 
 ## Decisions so far
 
+- [017-node-dns-lifecycle-and-clean-teardown.md](tickets/017-node-dns-lifecycle-and-clean-teardown.md) — Implemented graceful signal reverts, systemd `ExecStopPost` fail-safes, and startup scrubbing for leak-free resolver teardown.
+- [016-dynamic-socket-mesh-dns-resolution.md](tickets/016-dynamic-socket-mesh-dns-resolution.md) — Implemented dynamic in-memory registry lookup with NXDOMAIN for offline nodes and wildcard subdomain routing.
+- [015-linux-systemd-resolved-split-dns-integration.md](tickets/015-linux-systemd-resolved-split-dns-integration.md) — Configured `resolvectl` on loopback with routing domain `~fabric.mesh` and `/etc/hosts` sync fallback for non-systemd environments.
+- [014-local-stub-resolver-and-dns-transport.md](tickets/014-local-stub-resolver-and-dns-transport.md) — Captured local DNS queries via loopback stub resolver (`127.0.0.1:53535`) and multiplexed RFC 1035 wire packets over WebSocket via `dns_query`/`dns_response` envelopes.
 - [013-fabric-stitch-ssh-bootstrapping.md](tickets/013-fabric-stitch-ssh-bootstrapping.md) — Built `fabric stitch [user@]host` to remotely bootstrap node daemon configs and verify live WebSocket connection.
 - [012-systemd-service-lifecycle-management.md](tickets/012-systemd-service-lifecycle-management.md) — Built `fabric service` CLI and daemon environment integration for systemd service generation, installation, and lifecycle.
 - [011-interactive-fabric-setup-wizard.md](tickets/011-interactive-fabric-setup-wizard.md) — Implemented `fabric setup` wizard with role selection (Socket/Node), secure token generation, config persistence, and join output.
@@ -26,12 +30,12 @@ Zero-touch Linux deployment and automated remote onboarding: A one-liner install
 
 ## Not yet specified
 
-- Sudo/root privilege escalation handling during remote `fabric stitch` over SSH when authenticated as a non-root user.
-- Idempotency and auto-update / re-stitch behavior for nodes that already have a previous version installed.
-- Real-time post-stitch connectivity verification loop and timeout rollback.
+- macOS split DNS integration via `/etc/resolver/fabric.mesh`.
+- Windows DNS client / NRPT (Name Resolution Policy Table) integration.
+- Custom domain namespaces per tenant / network cluster (`*.company.internal`).
+- Dynamic SRV / TXT service discovery records registered by nodes.
 
 ## Out of scope
 
-- Non-Linux OS service management (macOS launchd, Windows services) for initial setup/systemd flows.
-- Multi-cloud infrastructure provisioning APIs (AWS/GCP/Terraform integrations) — Fabric stitches via direct SSH.
-- Mutual TLS (mTLS) certificate authority generation (deferred to future security phase).
+- Public domain registrar DNS delegation / global public authoritative NS setup (we are using private Split DNS / Option B).
+- Direct peer-to-peer WireGuard kernel overlay routing (v1 routes through Fabric's multiplexed reverse proxy engine).

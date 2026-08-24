@@ -62,7 +62,25 @@ type NodeMetadata struct {
 const (
 	TypeCopyRequest EnvelopeType = "copy_request"
 	TypeCopyStream  EnvelopeType = "copy_stream"
+	TypeDNSQuery    EnvelopeType = "dns_query"
+	TypeDNSResponse EnvelopeType = "dns_response"
 )
+
+type DNSQuery struct {
+	Type      EnvelopeType `json:"type"` // "dns_query"
+	SessionID string       `json:"session_id"`
+	Name      string       `json:"name"`
+	QType     uint16       `json:"qtype"`
+	Data      string       `json:"data"` // Base64 encoded RFC 1035 query wire data
+}
+
+type DNSResponse struct {
+	Type      EnvelopeType `json:"type"` // "dns_response"
+	SessionID string       `json:"session_id"`
+	RCode     int          `json:"rcode"`
+	TTL       uint32       `json:"ttl"`
+	Data      string       `json:"data"` // Base64 encoded wire response
+}
 
 type CopyRequest struct {
 	Type           EnvelopeType `json:"type"` // "copy_request"
