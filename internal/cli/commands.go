@@ -115,6 +115,8 @@ var (
 	execAll         bool
 	execTag         string
 	execConcurrency int
+	execDirect      string
+	cpDirect        string
 )
 
 func init() {
@@ -127,4 +129,6 @@ func init() {
 	execCmd.Flags().BoolVarP(&execAll, "all", "a", false, "Execute across all connected nodes in parallel")
 	execCmd.Flags().StringVarP(&execTag, "tag", "l", "", "Filter target nodes by tag")
 	execCmd.Flags().IntVarP(&execConcurrency, "concurrency", "c", 10, "Maximum concurrent execution worker pool limit")
+	execCmd.Flags().StringVar(&execDirect, "direct", "", "Directly connect to a listening node (e.g. 192.168.1.10:8443)")
+	cpCmd.Flags().StringVar(&cpDirect, "direct", "", "Directly connect to a listening node (e.g. 192.168.1.10:8443)")
 }

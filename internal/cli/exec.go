@@ -75,6 +75,9 @@ type NodeExecResult struct {
 
 func runExec(cmd *cobra.Command, args []string) error {
 	client := NewClient(GetConfig())
+	if execDirect != "" {
+		client.DirectAddress = execDirect
+	}
 
 	// Multi-node broadcast mode (--all or --tag)
 	if execAll || execTag != "" {

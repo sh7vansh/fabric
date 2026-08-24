@@ -53,10 +53,32 @@ func BuildClientTLSConfig(customCAPath string) (*tls.Config, error) {
 		}
 	}
 
-	return &tls.Config{
+	tlsCfg := &tls.Config{
 		RootCAs:    pool,
 		MinVersion: tls.VersionTLS12,
-	}, nil
+	}
+
+	// 3. Opportunistically load client certificate for mTLS if it exists
+	if customCAPath != "" {
+		caDir := filepath.Dir(customCAPath)
+		certPath := filepath.Join(caDir, "client.crt")
+		keyPath := filepath.Join(caDir, "client.key")
+		if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+			tlsCfg.Certificates = append(tlsCfg.Certificates, cert)
+		}
+	} else {
+		for _, p := range defaultPaths {
+			caDir := filepath.Dir(p)
+			certPath := filepath.Join(caDir, "client.crt")
+			keyPath := filepath.Join(caDir, "client.key")
+			if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+				tlsCfg.Certificates = append(tlsCfg.Certificates, cert)
+				break
+			}
+		}
+	}
+
+	return tlsCfg, nil
 }
 
 // NewWSSDialer constructs a websocket.Dialer configured with cluster root CAs and custom CA support.

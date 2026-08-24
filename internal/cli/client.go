@@ -32,7 +32,8 @@ type ExecOptions struct {
 
 // Client provides deep operational methods to communicate with a Fabric Socket and mesh nodes.
 type Client struct {
-	Config *Config
+	Config        *Config
+	DirectAddress string
 }
 
 // NewClient creates a new Mesh Client with the given CLI configuration.
@@ -47,9 +48,17 @@ func (c *Client) caCertPath() string {
 	return ""
 }
 
-// DialWebSocket dials the central socket control plane.
+// DialWebSocket dials the central socket control plane or a direct node.
 func (c *Client) DialWebSocket() (*websocket.Conn, error) {
-	u, err := pki.NormalizeURL(c.Config.Host)
+	targetHost := c.Config.Host
+	if c.DirectAddress != "" {
+		targetHost = c.DirectAddress
+		if !strings.Contains(targetHost, "://") {
+			targetHost = "wss://" + targetHost
+		}
+	}
+
+	u, err := pki.NormalizeURL(targetHost)
 	if err != nil {
 		return nil, fmt.Errorf("invalid host url: %w", err)
 	}
@@ -63,6 +72,10 @@ func (c *Client) DialWebSocket() (*websocket.Conn, error) {
 		dialer, err = pki.NewWSSDialer(c.caCertPath())
 		if err != nil {
 			return nil, fmt.Errorf("failed to configure TLS: %w", err)
+		}
+		if c.DirectAddress != "" {
+			// In direct mode, the node uses an ephemeral server cert
+			dialer.TLSClientConfig.InsecureSkipVerify = true
 		}
 	}
 

@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -23,16 +25,17 @@ import (
 
 // Config configures the NodeAgent daemon.
 type Config struct {
-	ServerURL    string
-	Domain       string
-	Token        string
-	CACertPath   string
-	Hostname     string
-	Version      string
-	Tags         []string
-	DNSManager   *meshdns.SystemDNSManager
-	MaxBackoff   time.Duration
-	InitialRetry time.Duration
+	ServerURL     string
+	ListenAddress string // e.g. ":8080" for inverted connection mode
+	Domain        string
+	Token         string
+	CACertPath    string
+	Hostname      string
+	Version       string
+	Tags          []string
+	DNSManager    *meshdns.SystemDNSManager
+	MaxBackoff    time.Duration
+	InitialRetry  time.Duration
 }
 
 // Agent is the deep autonomous node daemon module managing connection resilience,
@@ -77,6 +80,67 @@ func (a *Agent) DNSManager() *meshdns.SystemDNSManager {
 	return a.dnsMgr
 }
 
+// ListenAndServe starts a public listener for direct Inverted Connection Mode.
+func (a *Agent) ListenAndServe(ctx context.Context) error {
+	log.Printf("[Agent] Starting direct listener on %s", a.cfg.ListenAddress)
+
+	tlsCfg, err := pki.BuildClientTLSConfig(a.cfg.CACertPath)
+	if err != nil {
+		return fmt.Errorf("failed to build TLS config for listener: %w", err)
+	}
+
+	// Enforce strict client cert validation for mTLS
+	tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
+	tlsCfg.ClientCAs = tlsCfg.RootCAs
+
+	// Generate an ephemeral certificate for the server to use
+	ca, err := pki.LoadOrInitCA(os.TempDir()+"/fabric-agent-ca-"+strconv.Itoa(os.Getpid()), a.cfg.Domain)
+	if err != nil {
+		return fmt.Errorf("failed to init ephemeral CA for listener: %w", err)
+	}
+	tlsCfg.GetCertificate = ca.GetCertificate
+
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Printf("[Agent] Direct listener upgrade error: %v", err)
+			return
+		}
+
+		streamMux, err := protocol.NewStreamMultiplexer(conn, true)
+		if err != nil {
+			conn.Close()
+			return
+		}
+
+		a.dnsMgr.SetMultiplexer(streamMux)
+		router := protocol.NewRouter(streamMux.Session)
+		router.HandleFunc(string(protocol.TypeExecRequest), a.HandleExec)
+		router.HandleFunc(string(protocol.TypeCopyRequest), a.HandleCopy)
+		router.HandleFunc(string(protocol.TypeProxyRequest), a.HandleProxy)
+		
+		go router.Accept()
+	})
+
+	server := &http.Server{
+		Addr:      a.cfg.ListenAddress,
+		Handler:   mux,
+		TLSConfig: tlsCfg,
+	}
+
+	go func() {
+		<-ctx.Done()
+		server.Close()
+	}()
+
+	return server.ListenAndServeTLS("", "")
+}
+
 // Run executes the agent daemon loop until the provided context is canceled.
 func (a *Agent) Run(ctx context.Context) error {
 	u, err := pki.NormalizeURL(a.cfg.ServerURL)
@@ -88,6 +152,14 @@ func (a *Agent) Run(ctx context.Context) error {
 		log.Printf("[Agent] Warning: DNS manager start failed: %v", err)
 	}
 	defer a.dnsMgr.Teardown()
+
+	if a.cfg.ListenAddress != "" {
+		go func() {
+			if err := a.ListenAndServe(ctx); err != nil && err != context.Canceled {
+				log.Printf("[Agent] ListenAndServe error: %v", err)
+			}
+		}()
+	}
 
 	backoff := a.cfg.InitialRetry
 	sessionID := fmt.Sprintf("node-%s-%d", a.cfg.Hostname, time.Now().UnixNano())

@@ -34,6 +34,9 @@ func runCp(cmd *cobra.Command, args []string) error {
 	}
 
 	client := NewClient(GetConfig())
+	if cpDirect != "" {
+		client.DirectAddress = cpDirect
+	}
 
 	if !srcIsRemote && destIsRemote {
 		// Upload: local -> remote node
