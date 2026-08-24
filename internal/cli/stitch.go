@@ -20,6 +20,7 @@ var (
 	stitchSocketURL    string
 	stitchTokenFlag    string
 	stitchDomainFlag   string
+	stitchTagsFlag     string
 	stitchNoWait       bool
 
 	// Discover flags
@@ -35,6 +36,7 @@ var (
 	discoverSocketURL       string
 	discoverTokenFlag       string
 	discoverDomainFlag      string
+	discoverTagsFlag        string
 )
 
 var stitchCmd = &cobra.Command{
@@ -48,8 +50,8 @@ configures environment variables with cluster tokens, and verifies active mesh c
 	Example: `  # Stitch a remote machine with default SSH credentials
   fabric stitch root@192.168.1.50
 
-  # Stitch using a specific SSH key and port
-  fabric stitch -i ~/.ssh/id_ed25519 -p 2222 ubuntu@10.0.0.12
+  # Stitch using a specific SSH key, port, and custom tags
+  fabric stitch -i ~/.ssh/id_ed25519 -p 2222 --tags web,prod ubuntu@10.0.0.12
 
   # Scan network and batch stitch discovered machines
   fabric stitch discover 192.168.1.0/24`,
@@ -69,7 +71,7 @@ stitch the selected machines into the Fabric mesh.`,
   fabric stitch discover 192.168.1.0/24
 
   # Scan with custom SSH port and default user
-  fabric stitch discover -p 22,2222 -u ubuntu 10.0.0.0/24`,
+  fabric stitch discover -p 22,2222 -u ubuntu --tags worker 10.0.0.0/24`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runStitchDiscover,
 }
@@ -83,6 +85,7 @@ func init() {
 	stitchCmd.Flags().StringVar(&stitchSocketURL, "socket-url", "", "Socket URL override (e.g. ws://192.168.1.50:8080/ws)")
 	stitchCmd.Flags().StringVar(&stitchTokenFlag, "token", "", "Cluster token override")
 	stitchCmd.Flags().StringVar(&stitchDomainFlag, "domain", "fabric.mesh", "Domain to register on the mesh")
+	stitchCmd.Flags().StringVar(&stitchTagsFlag, "tags", "", "Comma-separated metadata tags to assign to the node (e.g. web,prod)")
 	stitchCmd.Flags().BoolVar(&stitchNoWait, "no-wait", false, "Do not wait for mesh connection verification")
 
 	// Discover command flags
@@ -99,11 +102,26 @@ func init() {
 	stitchDiscoverCmd.Flags().StringVar(&discoverSocketURL, "socket-url", "", "Socket URL override")
 	stitchDiscoverCmd.Flags().StringVar(&discoverTokenFlag, "token", "", "Cluster token override")
 	stitchDiscoverCmd.Flags().StringVar(&discoverDomainFlag, "domain", "fabric.mesh", "Domain to register on the mesh")
+	stitchDiscoverCmd.Flags().StringVar(&discoverTagsFlag, "tags", "", "Comma-separated metadata tags to assign to discovered nodes")
 }
 
 func nodeVerifier(socketURL, token string) ([]protocol.NodeMetadata, error) {
 	client := NewClient(&Config{Host: socketURL, Token: token})
 	return client.ListNodes()
+}
+
+func parseTags(raw string) []string {
+	if raw == "" {
+		return nil
+	}
+	var tags []string
+	for _, t := range strings.Split(raw, ",") {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			tags = append(tags, t)
+		}
+	}
+	return tags
 }
 
 func runStitch(cmd *cobra.Command, args []string) error {
@@ -127,6 +145,7 @@ func runStitch(cmd *cobra.Command, args []string) error {
 		SocketURL:   stitchSocketURL,
 		Token:       stitchTokenFlag,
 		Domain:      stitchDomainFlag,
+		Tags:        parseTags(stitchTagsFlag),
 		NoWait:      stitchNoWait,
 	}
 
@@ -283,6 +302,7 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 			SocketURL:   socketURL,
 			Token:       token,
 			Domain:      discoverDomainFlag,
+			Tags:        parseTags(discoverTagsFlag),
 			NoWait:      discoverNoWaitFlag,
 		}
 		if st.User != "" {

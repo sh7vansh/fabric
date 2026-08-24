@@ -50,6 +50,7 @@ func TestRelayNodeRegistrationAndDisplacement(t *testing.T) {
 		Hostname: "worker-1",
 		OS:       "linux",
 		Arch:     "amd64",
+		Tags:     []string{"web", "prod"},
 	}
 
 	sess1, err := r.RegisterNode(meta1, sMux1)
@@ -59,17 +60,23 @@ func TestRelayNodeRegistrationAndDisplacement(t *testing.T) {
 	if sess1.Metadata.Hostname != "worker-1" {
 		t.Errorf("unexpected hostname: %s", sess1.Metadata.Hostname)
 	}
+	if len(sess1.Metadata.Tags) != 2 || sess1.Metadata.Tags[0] != "web" {
+		t.Errorf("unexpected tags: %v", sess1.Metadata.Tags)
+	}
 
 	// Verify GetNode and ListNodes
 	got, ok := r.GetNode("worker-1")
 	if !ok || got.Hostname != "worker-1" {
 		t.Errorf("GetNode failed to find worker-1")
 	}
+	if len(got.Tags) != 2 || got.Tags[1] != "prod" {
+		t.Errorf("GetNode tags mismatch: %v", got.Tags)
+	}
 	if len(r.ListNodes()) != 1 {
 		t.Errorf("expected 1 node in list, got %d", len(r.ListNodes()))
 	}
 
-	// Displacement: connect same hostname with new mux
+	// Displacement: connect same hostname with new mux without tags -> preserves tags
 	sMux2, cMux2 := createMockMultiplexers(t)
 	defer cMux2.Session.Close()
 
@@ -85,6 +92,9 @@ func TestRelayNodeRegistrationAndDisplacement(t *testing.T) {
 	}
 	if sess2.Metadata.Arch != "arm64" {
 		t.Errorf("expected updated arch arm64, got %s", sess2.Metadata.Arch)
+	}
+	if len(sess2.Metadata.Tags) != 2 || sess2.Metadata.Tags[0] != "web" {
+		t.Errorf("expected preserved tags across displacement, got %v", sess2.Metadata.Tags)
 	}
 
 	time.Sleep(50 * time.Millisecond)

@@ -10,6 +10,7 @@ func TestHandshakeJSON(t *testing.T) {
 		Type:     TypeHandshake,
 		Hostname: "test-node",
 		Token:    "secret123",
+		Tags:     []string{"web", "prod"},
 	}
 
 	b, err := json.Marshal(h)
@@ -22,8 +23,36 @@ func TestHandshakeJSON(t *testing.T) {
 		t.Fatalf("Failed to unmarshal Handshake: %v", err)
 	}
 
-	if h2.Hostname != h.Hostname || h2.Token != h.Token {
+	if h2.Hostname != h.Hostname || h2.Token != h.Token || len(h2.Tags) != 2 || h2.Tags[0] != "web" || h2.Tags[1] != "prod" {
 		t.Errorf("Unmarshaled struct does not match original: got %+v, want %+v", h2, h)
+	}
+}
+
+func TestNodeMetadataJSON(t *testing.T) {
+	m := NodeMetadata{
+		ID:          "test-node",
+		Hostname:    "test-node",
+		Domain:      "fabric.mesh",
+		OS:          "linux",
+		Arch:        "amd64",
+		Version:     "1.0.0",
+		Status:      "online",
+		ConnectedAt: "2026-01-01T00:00:00Z",
+		Tags:        []string{"gpu", "worker"},
+	}
+
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("Failed to marshal NodeMetadata: %v", err)
+	}
+
+	var m2 NodeMetadata
+	if err := json.Unmarshal(b, &m2); err != nil {
+		t.Fatalf("Failed to unmarshal NodeMetadata: %v", err)
+	}
+
+	if m2.Hostname != m.Hostname || len(m2.Tags) != 2 || m2.Tags[0] != "gpu" || m2.Tags[1] != "worker" {
+		t.Errorf("Unmarshaled struct does not match original: got %+v, want %+v", m2, m)
 	}
 }
 

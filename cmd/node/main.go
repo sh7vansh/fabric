@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"fabric/internal/agent"
@@ -29,11 +30,22 @@ func main() {
 	domainFlag := flag.String("domain", defaultDomain, "Domain to register with the mesh")
 	caCertFlag := flag.String("ca-cert", os.Getenv("FABRIC_CA_CERT"), "Path to custom Root CA certificate")
 	tokenFlag := flag.String("token", os.Getenv("FABRIC_TOKEN"), "Pre-shared token for authentication")
+	tagsFlag := flag.String("tags", os.Getenv("FABRIC_TAGS"), "Comma-separated metadata tags (e.g. web,prod)")
 	flag.Parse()
 
 	token := *tokenFlag
 	if token == "" {
 		log.Fatal("Authentication token required: set FABRIC_TOKEN environment variable or pass --token")
+	}
+
+	var tags []string
+	if *tagsFlag != "" {
+		for _, t := range strings.Split(*tagsFlag, ",") {
+			t = strings.TrimSpace(t)
+			if t != "" {
+				tags = append(tags, t)
+			}
+		}
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -44,6 +56,7 @@ func main() {
 		Domain:     *domainFlag,
 		CACertPath: *caCertFlag,
 		Token:      token,
+		Tags:       tags,
 	})
 
 	if err := ag.Run(ctx); err != nil {

@@ -12,10 +12,11 @@ type Handshake struct {
 	SessionID string       `json:"session_id,omitempty"`
 	Hostname  string       `json:"hostname"`
 	Domain    string       `json:"domain,omitempty"`
-	Token     string       `json:"token"`
-	OS        string       `json:"os,omitempty"`
-	Arch      string       `json:"arch,omitempty"`
-	Version   string       `json:"version,omitempty"`
+	Token     string   `json:"token"`
+	OS        string   `json:"os,omitempty"`
+	Arch      string   `json:"arch,omitempty"`
+	Version   string   `json:"version,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
 }
 
 type ExecRequest struct {
@@ -32,18 +33,19 @@ type ExecRequest struct {
 }
 
 type NodeMetadata struct {
-	ID          string `json:"id"`
-	SessionID   string `json:"session_id,omitempty"`
-	Hostname    string `json:"hostname"`
-	Domain      string `json:"domain"`
-	OS          string `json:"os"`
-	Arch        string `json:"arch"`
-	Version     string `json:"version"`
-	RemoteIP    string `json:"remote_ip"`
-	Status      string `json:"status"` // "online"
-	ConnectedAt string `json:"connected_at"`
-	LastSeen    string `json:"last_seen"`
-	Uptime      string `json:"uptime"`
+	ID          string   `json:"id"`
+	SessionID   string   `json:"session_id,omitempty"`
+	Hostname    string   `json:"hostname"`
+	Domain      string   `json:"domain"`
+	OS          string   `json:"os"`
+	Arch        string   `json:"arch"`
+	Version     string   `json:"version"`
+	RemoteIP    string   `json:"remote_ip"`
+	Status      string   `json:"status"` // "online"
+	ConnectedAt string   `json:"connected_at"`
+	LastSeen    string   `json:"last_seen"`
+	Uptime      string   `json:"uptime"`
+	Tags        []string `json:"tags,omitempty"`
 }
 
 const (

@@ -110,6 +110,9 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 
 	r.mu.Lock()
 	if existing, exists := r.nodes[meta.Hostname]; exists {
+		if len(meta.Tags) == 0 && len(existing.Metadata.Tags) > 0 {
+			meta.Tags = existing.Metadata.Tags
+		}
 		if existing.Mux != nil && existing.Mux != mux {
 			log.Printf("[Relay] Renewing registration for %q (displacing previous session)\n", meta.Hostname)
 			go existing.Mux.Session.Close()

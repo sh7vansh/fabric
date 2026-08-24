@@ -66,6 +66,7 @@ func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer, *re
 				SessionID: sessID,
 				Hostname:  hs.Hostname,
 				Status:    "online",
+				Tags:      hs.Tags,
 			}
 
 			if _, err := meshRelay.RegisterNode(meta, smux); err != nil {
@@ -73,6 +74,18 @@ func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer, *re
 				return
 			}
 		})
+
+		router.HandleFunc(string(protocol.TypeExecRequest), func(stream net.Conn, env []byte) {
+			var req protocol.ExecRequest
+			if err := json.Unmarshal(env, &req); err != nil {
+				stream.Close()
+				return
+			}
+			if err := meshRelay.RouteStream(req.TargetHostname, env, stream); err != nil {
+				stream.Close()
+			}
+		})
+
 		router.Accept()
 	})
 
@@ -221,4 +234,105 @@ func TestServerWebSocketHandshakeAuthAndReconnect(t *testing.T) {
 
 	conn2.Close()
 	conn3.Close()
+}
+
+func TestServerMultiNodeParallelExecution(t *testing.T) {
+	testToken := "secret-broadcast-token"
+	ts, dialer, r := setupTestServer(testToken)
+	defer ts.Close()
+	defer r.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+
+	// Connect Node 1 (worker-1, tags: [web, prod])
+	conn1, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial node1 failed: %v", err)
+	}
+	defer conn1.Close()
+	mux1, err := protocol.NewStreamMultiplexer(conn1, false)
+	if err != nil {
+		t.Fatalf("mux node1 failed: %v", err)
+	}
+	s1, _ := mux1.Session.Open()
+	hs1 := protocol.Handshake{
+		Type:     protocol.TypeHandshake,
+		Hostname: "worker-1",
+		Token:    testToken,
+		Tags:     []string{"web", "prod"},
+	}
+	b1, _ := json.Marshal(hs1)
+	s1.Write(b1)
+	s1.Close()
+
+	// Mock node1 agent stream handler
+	go func() {
+		for {
+			stream, err := mux1.Session.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				protocol.WriteFrame(c, protocol.StreamStdout, []byte("output from worker-1\n"))
+				protocol.WriteFrame(c, protocol.StreamExit, []byte("0"))
+			}(stream)
+		}
+	}()
+
+	// Connect Node 2 (worker-2, tags: [db, prod])
+	conn2, _, err := dialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial node2 failed: %v", err)
+	}
+	defer conn2.Close()
+	mux2, err := protocol.NewStreamMultiplexer(conn2, false)
+	if err != nil {
+		t.Fatalf("mux node2 failed: %v", err)
+	}
+	s2, _ := mux2.Session.Open()
+	hs2 := protocol.Handshake{
+		Type:     protocol.TypeHandshake,
+		Hostname: "worker-2",
+		Token:    testToken,
+		Tags:     []string{"db", "prod"},
+	}
+	b2, _ := json.Marshal(hs2)
+	s2.Write(b2)
+	s2.Close()
+
+	// Mock node2 agent stream handler (returns exit code 1)
+	go func() {
+		for {
+			stream, err := mux2.Session.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				protocol.WriteFrame(c, protocol.StreamStderr, []byte("error on worker-2\n"))
+				protocol.WriteFrame(c, protocol.StreamExit, []byte("1"))
+			}(stream)
+		}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	nodes := r.ListNodes()
+	if len(nodes) != 2 {
+		t.Fatalf("expected 2 registered nodes, got %d", len(nodes))
+	}
+
+	// Verify tag filtering
+	var prodNodes []string
+	for _, n := range nodes {
+		for _, tag := range n.Tags {
+			if tag == "prod" {
+				prodNodes = append(prodNodes, n.Hostname)
+			}
+		}
+	}
+	if len(prodNodes) != 2 {
+		t.Errorf("expected 2 prod nodes, got %d", len(prodNodes))
+	}
 }

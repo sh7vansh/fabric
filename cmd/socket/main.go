@@ -162,6 +162,7 @@ func main() {
 				RemoteIP:    r.RemoteAddr,
 				Status:      "online",
 				ConnectedAt: time.Now().UTC().Format(time.RFC3339),
+				Tags:        hs.Tags,
 			}
 
 			if _, err := meshRelay.RegisterNode(meta, mux); err != nil {

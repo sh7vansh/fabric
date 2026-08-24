@@ -104,7 +104,7 @@ var nodeInspectCmd = &cobra.Command{
 	},
 }
 
-// Global flags for exec (populated later by ticket 007)
+// Global flags for exec
 var (
 	execPty         bool
 	execInteractive bool
@@ -112,6 +112,9 @@ var (
 	execEnv         []string
 	execWorkdir     string
 	execUser        string
+	execAll         bool
+	execTag         string
+	execConcurrency int
 )
 
 func init() {
@@ -121,5 +124,7 @@ func init() {
 	execCmd.Flags().StringArrayVarP(&execEnv, "env", "e", []string{}, "Set environment variables")
 	execCmd.Flags().StringVarP(&execWorkdir, "workdir", "w", "", "Working directory inside the node")
 	execCmd.Flags().StringVarP(&execUser, "user", "u", "", "Username or UID")
-
+	execCmd.Flags().BoolVarP(&execAll, "all", "a", false, "Execute across all connected nodes in parallel")
+	execCmd.Flags().StringVarP(&execTag, "tag", "l", "", "Filter target nodes by tag")
+	execCmd.Flags().IntVarP(&execConcurrency, "concurrency", "c", 10, "Maximum concurrent execution worker pool limit")
 }

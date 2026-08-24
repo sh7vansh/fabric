@@ -1,11 +1,15 @@
 package provision
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,6 +24,9 @@ type StitchHostOptions struct {
 	SocketURL    string
 	Token        string
 	Domain       string
+	Tags         []string
+	BinaryPath   string
+	BinaryData   []byte
 	NoWait       bool
 	SilentOutput bool
 }
@@ -57,49 +64,254 @@ func (e *SSHExecutor) Run(script string) error {
 	return sshCmd.Run()
 }
 
-// GenerateStitchScript generates the bash script to bootstrap a node.
+// FindLocalBinary locates the fabric-node binary on the local machine.
+func FindLocalBinary(preferredPath string) (string, error) {
+	if preferredPath != "" {
+		if _, err := os.Stat(preferredPath); err == nil {
+			return preferredPath, nil
+		}
+		return "", fmt.Errorf("specified binary path not found: %s", preferredPath)
+	}
+
+	// 1. Check directory of current executable
+	if execPath, err := os.Executable(); err == nil {
+		execDir := filepath.Dir(execPath)
+		candidate := filepath.Join(execDir, "fabric-node")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+
+	// 2. Check system PATH
+	if p, err := exec.LookPath("fabric-node"); err == nil {
+		return p, nil
+	}
+
+	// 3. Check common bin locations
+	candidates := []string{
+		"./bin/fabric-node",
+		"bin/fabric-node",
+		"/usr/local/bin/fabric-node",
+	}
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+
+	return "", fmt.Errorf("fabric-node binary not found locally")
+}
+
+// PackageBinaryPayload compresses and base64-encodes binary data into an embedded payload string.
+func PackageBinaryPayload(data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", nil
+	}
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(data); err != nil {
+		return "", err
+	}
+	if err := gz.Close(); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+// GenerateStitchScript generates the self-contained air-gapped bootstrap script for a remote host.
 func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
+	payload := ""
+	if len(opts.BinaryData) > 0 {
+		if p, err := PackageBinaryPayload(opts.BinaryData); err == nil {
+			payload = p
+		}
+	} else {
+		binPath, err := FindLocalBinary(opts.BinaryPath)
+		if err == nil {
+			if data, readErr := os.ReadFile(binPath); readErr == nil {
+				if p, pkgErr := PackageBinaryPayload(data); pkgErr == nil {
+					payload = p
+				}
+			}
+		}
+	}
+
+	tagsJoined := strings.Join(opts.Tags, ",")
+
 	return fmt.Sprintf(`#!/usr/bin/env bash
 set -e
 
-echo "[+] Initializing Fabric node setup on remote host..."
+echo "[+] Initializing Fabric air-gapped zero-internet bootstrap..."
 
+# 1. Privilege Level Detection
+IS_ROOT=0
 SUDO=""
-if [ "$EUID" -ne 0 ]; then
-    if command -v sudo >/dev/null 2>&1; then
-        SUDO="sudo"
+if [ "$EUID" -eq 0 ]; then
+    IS_ROOT=1
+elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    IS_ROOT=1
+    SUDO="sudo"
+fi
+
+# 2. Systemd Capability Detection
+HAS_SYSTEMD=0
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    HAS_SYSTEMD=1
+fi
+
+# 3. Determine Installation Paths
+if [ "$IS_ROOT" -eq 1 ]; then
+    INSTALL_BIN_DIR="/usr/local/bin"
+    CONFIG_DIR="/etc/fabric"
+    RUN_DIR="/var/run/fabric"
+    $SUDO mkdir -p "$INSTALL_BIN_DIR" "$CONFIG_DIR" "$RUN_DIR"
+else
+    INSTALL_BIN_DIR="$HOME/.local/bin"
+    CONFIG_DIR="$HOME/.config/fabric"
+    RUN_DIR="$HOME/.fabric"
+    mkdir -p "$INSTALL_BIN_DIR" "$CONFIG_DIR" "$RUN_DIR"
+fi
+
+TARGET_BIN="$INSTALL_BIN_DIR/fabric-node"
+ENV_FILE="$CONFIG_DIR/node.env"
+
+# 4. Extract Injected Self-Contained Binary Payload
+PAYLOAD="%s"
+if [ -n "$PAYLOAD" ]; then
+    echo "[+] Unpacking injected fabric-node binary to $TARGET_BIN..."
+    if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
+        (echo "$PAYLOAD" | base64 -d | gzip -d | $SUDO tee "$TARGET_BIN" > /dev/null 2>&1) || (echo "$PAYLOAD" | base64 -d | gunzip | $SUDO tee "$TARGET_BIN" > /dev/null 2>&1)
+        $SUDO chmod 755 "$TARGET_BIN"
+    else
+        (echo "$PAYLOAD" | base64 -d | gzip -d > "$TARGET_BIN" 2>/dev/null) || (echo "$PAYLOAD" | base64 -d | gunzip > "$TARGET_BIN" 2>/dev/null)
+        chmod 755 "$TARGET_BIN"
     fi
 fi
 
-$SUDO mkdir -p /etc/fabric /usr/local/bin
+# Validate binary integrity and executable permissions
+if [ ! -s "$TARGET_BIN" ] || [ ! -x "$TARGET_BIN" ]; then
+    if command -v fabric-node >/dev/null 2>&1; then
+        TARGET_BIN="$(command -v fabric-node)"
+    elif [ -x "/usr/local/bin/fabric-node" ]; then
+        TARGET_BIN="/usr/local/bin/fabric-node"
+    else
+        echo "[!] Binary validation failed: $TARGET_BIN not found or not executable" >&2
+        exit 1
+    fi
+fi
+echo "[+] Validated binary integrity: $TARGET_BIN"
 
-cat << ENVEOF | $SUDO tee /etc/fabric/node.env > /dev/null
-FABRIC_SOCKET_URL=%s
+# 5. Write Environment Configuration
+ENV_CONTENT="FABRIC_SOCKET_URL=%s
 FABRIC_TOKEN=%s
 FABRIC_DOMAIN=%s
-ENVEOF
+FABRIC_TAGS=%s"
 
-$SUDO chmod 600 /etc/fabric/node.env
-
-if command -v fabric >/dev/null 2>&1; then
-    echo "[+] Fabric CLI found on target."
-    $SUDO fabric service install node || true
-elif [ -f /usr/local/bin/fabric ]; then
-    $SUDO /usr/local/bin/fabric service install node || true
+if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
+    echo "$ENV_CONTENT" | $SUDO tee "$ENV_FILE" > /dev/null
+    $SUDO chmod 600 "$ENV_FILE"
 else
-    echo "[+] Installing Fabric binaries on remote..."
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL https://get.fabric.mesh/install.sh 2>/dev/null | FABRIC_NO_SETUP=1 bash || true
-    fi
+    echo "$ENV_CONTENT" > "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
 fi
 
-if command -v systemctl >/dev/null 2>&1; then
-    $SUDO systemctl daemon-reload || true
+# 6. Multi-Tier Init Selection & Service Activation
+if [ "$IS_ROOT" -eq 1 ] && [ "$HAS_SYSTEMD" -eq 1 ]; then
+    # Tier 1: Root / Sudo with systemd (System service)
+    echo "[+] Configuring systemd system service (/etc/systemd/system/fabric-node.service)..."
+    cat << 'UNIT_EOF' | $SUDO tee /etc/systemd/system/fabric-node.service > /dev/null
+[Unit]
+Description=Fabric Mesh Network Node
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/fabric/node.env
+ExecStart=/usr/local/bin/fabric-node
+Restart=always
+RestartSec=3s
+LimitNOFILE=65536
+ExecStopPost=/usr/bin/resolvectl revert lo
+
+[Install]
+WantedBy=multi-user.target
+UNIT_EOF
+
+    $SUDO chmod 644 /etc/systemd/system/fabric-node.service
+    $SUDO systemctl daemon-reload
     $SUDO systemctl restart fabric-node || true
     $SUDO systemctl enable fabric-node || true
-    echo "[+] fabric-node systemd service enabled and started."
+    echo "[+] Systemd system service enabled and active."
+
+elif [ "$IS_ROOT" -eq 0 ] && [ "$HAS_SYSTEMD" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
+    # Tier 2: Non-root with systemd (User service)
+    echo "[+] Configuring systemd user service (~/.config/systemd/user/fabric-node.service)..."
+    mkdir -p "$HOME/.config/systemd/user"
+    cat << UNIT_EOF > "$HOME/.config/systemd/user/fabric-node.service"
+[Unit]
+Description=Fabric Mesh Network Node (User)
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=-$HOME/.config/fabric/node.env
+ExecStart=$TARGET_BIN
+Restart=always
+RestartSec=3s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=default.target
+UNIT_EOF
+
+    chmod 644 "$HOME/.config/systemd/user/fabric-node.service"
+    loginctl enable-linger "$(whoami)" 2>/dev/null || true
+    systemctl --user daemon-reload || true
+    systemctl --user restart fabric-node || true
+    systemctl --user enable fabric-node || true
+    echo "[+] Systemd user service enabled and active."
+
+else
+    # Tier 3: Non-systemd / Edge / Container (Supervised background daemon)
+    echo "[+] Configuring standalone supervisor daemon in $RUN_DIR..."
+    PIDFILE="$RUN_DIR/fabric-node.pid"
+    SUPERVISOR="$RUN_DIR/fabric-node-supervisor.sh"
+
+    if [ -f "$PIDFILE" ]; then
+        OLD_PID=$(cat "$PIDFILE" 2>/dev/null || true)
+        if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+            kill "$OLD_PID" 2>/dev/null || true
+            sleep 1
+        fi
+        rm -f "$PIDFILE"
+    fi
+
+    cat << 'SUPERVISOR_EOF' > "$SUPERVISOR"
+#!/usr/bin/env bash
+PIDFILE="$1"
+ENVFILE="$2"
+BIN="$3"
+if [ -f "$ENVFILE" ]; then
+    set -a
+    . "$ENVFILE"
+    set +a
 fi
-`, socketURL, opts.Token, opts.Domain)
+while true; do
+    "$BIN" &
+    CHILD_PID=$!
+    echo "$CHILD_PID" > "$PIDFILE"
+    wait "$CHILD_PID"
+    sleep 2
+done
+SUPERVISOR_EOF
+
+    chmod 755 "$SUPERVISOR"
+    nohup "$SUPERVISOR" "$PIDFILE" "$ENV_FILE" "$TARGET_BIN" > /dev/null 2>&1 &
+    echo $! > "$RUN_DIR/fabric-node-supervisor.pid"
+    echo "[+] Supervised background daemon started (PID file: $PIDFILE)."
+fi
+`, payload, socketURL, opts.Token, opts.Domain, tagsJoined)
 }
 
 // NodeVerifierFunc is a callback that queries the Socket for connected nodes.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"time"
 
 	"fabric/internal/meshdns"
@@ -28,6 +29,7 @@ type Config struct {
 	CACertPath   string
 	Hostname     string
 	Version      string
+	Tags         []string
 	DNSManager   *meshdns.SystemDNSManager
 	MaxBackoff   time.Duration
 	InitialRetry time.Duration
@@ -167,6 +169,7 @@ func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) 
 		OS:        runtime.GOOS,
 		Arch:      runtime.GOARCH,
 		Version:   a.cfg.Version,
+		Tags:      a.cfg.Tags,
 	}
 
 	b, _ := json.Marshal(hs)
@@ -329,8 +332,16 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		}()
 	}
 
-	cmd.Wait()
-	protocol.WriteFrame(stream, protocol.StreamExit, []byte("0"))
+	err := cmd.Wait()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = 1
+		}
+	}
+	protocol.WriteFrame(stream, protocol.StreamExit, []byte(strconv.Itoa(exitCode)))
 }
 
 // HandleCopy handles tar streaming upload or download requests.

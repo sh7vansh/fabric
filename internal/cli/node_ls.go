@@ -4,21 +4,26 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"text/template"
 	"time"
+
+	"fabric/internal/protocol"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	quietFlag  bool
-	formatFlag string
+	quietFlag     bool
+	formatFlag    string
+	tagFilterFlag string
 )
 
 func registerNodeListingFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "Only display numeric IDs")
 	cmd.Flags().StringVar(&formatFlag, "format", "", "Pretty-print nodes using a Go template or json")
+	cmd.Flags().StringVarP(&tagFilterFlag, "tag", "l", "", "Filter nodes by tag")
 	cmd.RunE = runNodeLs
 }
 
@@ -32,6 +37,19 @@ func runNodeLs(cmd *cobra.Command, args []string) error {
 	nodes, err := client.ListNodes()
 	if err != nil {
 		return err
+	}
+
+	if tagFilterFlag != "" {
+		var filtered []protocol.NodeMetadata
+		for _, n := range nodes {
+			for _, t := range n.Tags {
+				if t == tagFilterFlag {
+					filtered = append(filtered, n)
+					break
+				}
+			}
+		}
+		nodes = filtered
 	}
 
 	if formatFlag == "json" {
@@ -60,13 +78,17 @@ func runNodeLs(cmd *cobra.Command, args []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NODE ID\tHOSTNAME\tSTATUS\tIP\tDOMAIN\tUPTIME")
+	fmt.Fprintln(w, "NODE ID\tHOSTNAME\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
 	for _, n := range nodes {
 		uptime := ""
 		if t, err := time.Parse(time.RFC3339, n.ConnectedAt); err == nil {
 			uptime = time.Since(t).Round(time.Second).String()
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", n.ID, n.Hostname, n.Status, n.RemoteIP, n.Domain, uptime)
+		tagsStr := "-"
+		if len(n.Tags) > 0 {
+			tagsStr = strings.Join(n.Tags, ",")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n.ID, n.Hostname, n.Status, tagsStr, n.RemoteIP, n.Domain, uptime)
 	}
 	w.Flush()
 	return nil
