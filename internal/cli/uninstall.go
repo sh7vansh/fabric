@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"fabric/internal/pki"
+
 	"github.com/spf13/cobra"
 )
 
@@ -26,7 +28,16 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 	_ = UninstallService("node")
 	_ = UninstallService("socket")
 
-	// 2. Remove configuration directory
+	// 2. Remove Root CA from system trust store (if it was installed)
+	trustStore := pki.NewSystemTrustStore()
+	if installed, _ := trustStore.IsInstalled("fabric-ca"); installed {
+		fmt.Println("[+] Removing Fabric Root CA from system trust store...")
+		if err := trustStore.UninstallCA("fabric-ca"); err != nil {
+			fmt.Printf("[!] Warning: Failed to fully remove CA certificate: %v\n", err)
+		}
+	}
+
+	// 3. Remove configuration directory
 	home, err := os.UserHomeDir()
 	if err == nil {
 		configDir := filepath.Join(home, ".config", "fabric")
