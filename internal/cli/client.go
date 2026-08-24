@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -287,10 +289,76 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 	}
 
 	if socketErr != nil && len(nodes) == 0 {
-		return nil, socketErr
+		if localNode := detectLocalNode(); localNode != nil {
+			return []protocol.NodeMetadata{*localNode}, nil
+		}
+		return nil, fmt.Errorf("%w\n  👉 Tip: If you are logged into a managed node, inspect local daemon status with 'fabric service status node'. To query the mesh, run 'fabric ps' from your workstation or pass --host.", socketErr)
 	}
 
 	return nodes, nil
+}
+
+func detectLocalNode() *protocol.NodeMetadata {
+	envCandidates := []string{
+		"/etc/fabric/node.env",
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		envCandidates = append(envCandidates,
+			filepath.Join(home, ".config", "fabric", "node.env"),
+			filepath.Join(home, ".fabric", "node.env"),
+		)
+	}
+
+	for _, p := range envCandidates {
+		envVars := parseEnvFile(p)
+		if len(envVars) > 0 {
+			listenAddr := envVars["FABRIC_LISTEN"]
+			domain := envVars["FABRIC_DOMAIN"]
+			if domain == "" {
+				domain = "fabric.mesh"
+			}
+			tagsRaw := envVars["FABRIC_TAGS"]
+			var tags []string
+			if tagsRaw != "" {
+				for _, t := range strings.Split(tagsRaw, ",") {
+					if t = strings.TrimSpace(t); t != "" {
+						tags = append(tags, t)
+					}
+				}
+			}
+			if listenAddr != "" {
+				tags = append(tags, "inverted")
+			}
+
+			hostname, _ := os.Hostname()
+			if hostname == "" {
+				hostname = "localhost"
+			}
+
+			status := "online [local daemon]"
+			if listenAddr != "" {
+				status = "online [MODE: inverted (local)]"
+			}
+
+			ip := listenAddr
+			if ip == "" {
+				ip = "127.0.0.1"
+			}
+
+			return &protocol.NodeMetadata{
+				ID:          "local-" + hostname,
+				Hostname:    hostname,
+				RemoteIP:    ip,
+				Status:      status,
+				OS:          runtime.GOOS,
+				Arch:        runtime.GOARCH,
+				Tags:        tags,
+				Domain:      domain,
+				ConnectedAt: time.Now().UTC().Format(time.RFC3339),
+			}
+		}
+	}
+	return nil
 }
 
 // GetNode retrieves metadata for a single mesh node from socket or local direct registry.
@@ -334,6 +402,14 @@ func (c *Client) GetNode(hostname string) (*protocol.NodeMetadata, error) {
 				Domain:      domain,
 				ConnectedAt: matchedEntry.RegisteredAt.Format(time.RFC3339),
 			}, nil
+		}
+	}
+
+	if localNode := detectLocalNode(); localNode != nil {
+		if hostname == "self" || hostname == "local" || hostname == "localhost" ||
+			hostname == localNode.Hostname || hostname == localNode.ID ||
+			hostname == localNode.Hostname+"."+localNode.Domain {
+			return localNode, nil
 		}
 	}
 

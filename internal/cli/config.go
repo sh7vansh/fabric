@@ -4,8 +4,31 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
+
+func parseEnvFile(path string) map[string]string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	res := make(map[string]string)
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			k := strings.TrimSpace(parts[0])
+			v := strings.TrimSpace(parts[1])
+			v = strings.Trim(v, `"'`)
+			res[k] = v
+		}
+	}
+	return res
+}
 
 // DirectNodeEntry stores registration metadata for an inverted mode node.
 type DirectNodeEntry struct {
@@ -81,6 +104,41 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 					}
 				}
 			}
+		}
+	}
+
+	// Fallback to local daemon environment files if present
+	envCandidates := []string{
+		"/etc/fabric/node.env",
+		"/etc/fabric/socket.env",
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		envCandidates = append(envCandidates,
+			filepath.Join(home, ".config", "fabric", "node.env"),
+			filepath.Join(home, ".fabric", "node.env"),
+		)
+	}
+	for _, p := range envCandidates {
+		envVars := parseEnvFile(p)
+		if len(envVars) > 0 {
+			if cfg.Host == "ws://localhost:8080/ws" {
+				if sURL, ok := envVars["FABRIC_SOCKET_URL"]; ok && sURL != "" {
+					cfg.Host = sURL
+				} else if hURL, ok := envVars["FABRIC_HOST"]; ok && hURL != "" {
+					cfg.Host = hURL
+				}
+			}
+			if cfg.Token == "default-secret" {
+				if tok, ok := envVars["FABRIC_TOKEN"]; ok && tok != "" {
+					cfg.Token = tok
+				}
+			}
+			if cfg.CACert == "" {
+				if ca, ok := envVars["FABRIC_CA_CERT"]; ok && ca != "" {
+					cfg.CACert = ca
+				}
+			}
+			break
 		}
 	}
 
