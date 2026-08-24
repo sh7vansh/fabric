@@ -27,8 +27,8 @@ func TestInvertedConnectionMode(t *testing.T) {
 		t.Fatalf("failed to init test CA: %v", err)
 	}
 
-	// Mint a client cert
-	clientCert, err := ca.MintCertificate([]string{"cli.fabric.test"}, time.Hour)
+	// Mint a single certificate valid for both client auth and server auth (for 127.0.0.1)
+	clientCert, err := ca.MintCertificate([]string{"cli.fabric.test", "127.0.0.1"}, time.Hour)
 	if err != nil {
 		t.Fatalf("failed to mint client cert: %v", err)
 	}
@@ -43,11 +43,10 @@ func TestInvertedConnectionMode(t *testing.T) {
 	os.WriteFile(tmpDir+"/client.crt", certPEM, 0644)
 	os.WriteFile(tmpDir+"/client.key", keyPEM, 0600)
 
-	// 2. Start Agent daemon with Inverted Connection Mode enabled
-	listenAddr := "127.0.0.1:0"
+	// 2. Start Agent daemon with Inverted Connection Mode enabled on dynamic port
 	ag := agent.New(agent.Config{
 		ServerURL:     "ws://dummy",
-		ListenAddress: listenAddr,
+		ListenAddress: "127.0.0.1:0", // dynamic port
 		Domain:        "fabric.test",
 		Hostname:      "test-node",
 		Token:         "test-token",
@@ -57,35 +56,32 @@ func TestInvertedConnectionMode(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Use a fixed port or find an open port.
-	// We'll let it try to bind to a high port or we can just give it a specific port.
-	// Actually, 127.0.0.1:0 will choose a random port but how do we know which port?
-	// The agent config takes a string. Let's just use a high port.
-	listenAddr = "127.0.0.1:48123"
-	ag = agent.New(agent.Config{
-		ServerURL:     "ws://dummy",
-		ListenAddress: listenAddr,
-		Domain:        "fabric.test",
-		Hostname:      "test-node",
-		Token:         "test-token",
-		CACertPath:    tmpDir + "/ca.crt",
-	})
-
 	go func() {
 		ag.ListenAndServe(ctx)
 	}()
 
-	// Wait for listener to start
-	time.Sleep(500 * time.Millisecond)
+	// Wait for listener to bind and update its ListenAddress
+	var listenAddr string
+	for i := 0; i < 50; i++ {
+		addr := ag.ListenAddr()
+		if addr != "" && addr != "127.0.0.1:0" {
+			listenAddr = addr
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if listenAddr == "" {
+		t.Fatalf("agent listener failed to start")
+	}
 
 	// 3. Configure CLI Client
 	cfg := &Config{
-		Host:   "wss://dummy",
-		Token:  "test-token",
-		CACert: tmpDir + "/ca.crt",
+		Host:          "wss://dummy",
+		Token:         "test-token",
+		CACert:        tmpDir + "/ca.crt",
+		DirectAddress: listenAddr,
 	}
 	client := NewClient(cfg)
-	client.DirectAddress = listenAddr
 
 	// 4. Test Exec (echo command)
 	opts := ExecOptions{

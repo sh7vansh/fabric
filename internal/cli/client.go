@@ -38,7 +38,10 @@ type Client struct {
 
 // NewClient creates a new Mesh Client with the given CLI configuration.
 func NewClient(cfg *Config) *Client {
-	return &Client{Config: cfg}
+	return &Client{
+		Config:        cfg,
+		DirectAddress: cfg.DirectAddress,
+	}
 }
 
 func (c *Client) caCertPath() string {
@@ -73,10 +76,6 @@ func (c *Client) DialWebSocket() (*websocket.Conn, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to configure TLS: %w", err)
 		}
-		if c.DirectAddress != "" {
-			// In direct mode, the node uses an ephemeral server cert
-			dialer.TLSClientConfig.InsecureSkipVerify = true
-		}
 	}
 
 	conn, _, err := dialer.Dial(u.String(), header)
@@ -108,7 +107,7 @@ func (c *Client) DoHTTP(method, path string, body interface{}) (*http.Response, 
 
 	httpClient := http.DefaultClient
 	if scheme == "https" {
-		tlsCfg, err := pki.BuildClientTLSConfig(c.caCertPath())
+		tlsCfg, err := pki.BuildMTLSConfig(c.caCertPath())
 		if err != nil {
 			return nil, fmt.Errorf("failed to configure TLS: %w", err)
 		}

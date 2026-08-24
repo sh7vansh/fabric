@@ -7,9 +7,10 @@ import (
 )
 
 type Config struct {
-	Host   string
-	Token  string
-	CACert string
+	Host          string
+	Token         string
+	CACert        string
+	DirectAddress string
 }
 
 type FileConfig struct {
@@ -21,7 +22,7 @@ type FileConfig struct {
 	} `json:"contexts"`
 }
 
-func LoadConfig(hostFlag, tokenFlag string, caCertFlag ...string) *Config {
+func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *Config {
 	cfg := &Config{
 		Host:  "ws://localhost:8080/ws",
 		Token: "default-secret",
@@ -71,6 +72,9 @@ func LoadConfig(hostFlag, tokenFlag string, caCertFlag ...string) *Config {
 	}
 	if len(caCertFlag) > 0 && caCertFlag[0] != "" {
 		cfg.CACert = caCertFlag[0]
+	}
+	if directFlag != "" {
+		cfg.DirectAddress = directFlag
 	}
 
 	return cfg

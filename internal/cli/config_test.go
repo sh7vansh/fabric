@@ -13,7 +13,7 @@ func TestLoadConfig(t *testing.T) {
 	defer os.Unsetenv("HOME")
 
 	// 1. Test Defaults
-	cfg := LoadConfig("", "")
+	cfg := LoadConfig("", "", "")
 	if cfg.Host != "ws://localhost:8080/ws" {
 		t.Errorf("expected default host, got %s", cfg.Host)
 	}
@@ -27,7 +27,7 @@ func TestLoadConfig(t *testing.T) {
 	configFile := filepath.Join(configDir, "config.json")
 	os.WriteFile(configFile, []byte(`{"contexts": {"default": {"host": "ws://remote:8080/ws", "token": "file-secret", "ca_cert": "/etc/ca.crt"}}, "current_context": "default"}`), 0644)
 
-	cfg = LoadConfig("", "")
+	cfg = LoadConfig("", "", "")
 	if cfg.Host != "ws://remote:8080/ws" {
 		t.Errorf("expected file host, got %s", cfg.Host)
 	}
@@ -46,7 +46,7 @@ func TestLoadConfig(t *testing.T) {
 	defer os.Unsetenv("FABRIC_TOKEN")
 	defer os.Unsetenv("FABRIC_CA_CERT")
 
-	cfg = LoadConfig("", "")
+	cfg = LoadConfig("", "", "")
 	if cfg.Host != "ws://env:8080/ws" {
 		t.Errorf("expected env host, got %s", cfg.Host)
 	}
@@ -58,7 +58,7 @@ func TestLoadConfig(t *testing.T) {
 	}
 
 	// 4. Test Flags
-	cfg = LoadConfig("ws://flag:8080/ws", "flag-secret", "/flag/ca.crt")
+	cfg = LoadConfig("ws://flag:8080/ws", "flag-secret", "", "/flag/ca.crt")
 	if cfg.Host != "ws://flag:8080/ws" {
 		t.Errorf("expected flag host, got %s", cfg.Host)
 	}

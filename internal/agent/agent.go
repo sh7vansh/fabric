@@ -80,11 +80,14 @@ func (a *Agent) DNSManager() *meshdns.SystemDNSManager {
 	return a.dnsMgr
 }
 
+// ListenAddr returns the actual bound listening address.
+func (a *Agent) ListenAddr() string {
+	return a.cfg.ListenAddress
+}
+
 // ListenAndServe starts a public listener for direct Inverted Connection Mode.
 func (a *Agent) ListenAndServe(ctx context.Context) error {
-	log.Printf("[Agent] Starting direct listener on %s", a.cfg.ListenAddress)
-
-	tlsCfg, err := pki.BuildClientTLSConfig(a.cfg.CACertPath)
+	tlsCfg, err := pki.BuildMTLSConfig(a.cfg.CACertPath)
 	if err != nil {
 		return fmt.Errorf("failed to build TLS config for listener: %w", err)
 	}
@@ -92,13 +95,6 @@ func (a *Agent) ListenAndServe(ctx context.Context) error {
 	// Enforce strict client cert validation for mTLS
 	tlsCfg.ClientAuth = tls.RequireAndVerifyClientCert
 	tlsCfg.ClientCAs = tlsCfg.RootCAs
-
-	// Generate an ephemeral certificate for the server to use
-	ca, err := pki.LoadOrInitCA(os.TempDir()+"/fabric-agent-ca-"+strconv.Itoa(os.Getpid()), a.cfg.Domain)
-	if err != nil {
-		return fmt.Errorf("failed to init ephemeral CA for listener: %w", err)
-	}
-	tlsCfg.GetCertificate = ca.GetCertificate
 
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
@@ -127,8 +123,14 @@ func (a *Agent) ListenAndServe(ctx context.Context) error {
 		go router.Accept()
 	})
 
+	ln, err := net.Listen("tcp", a.cfg.ListenAddress)
+	if err != nil {
+		return fmt.Errorf("failed to bind listen address: %w", err)
+	}
+	a.cfg.ListenAddress = ln.Addr().String()
+	log.Printf("[Agent] Started direct listener on %s", a.cfg.ListenAddress)
+
 	server := &http.Server{
-		Addr:      a.cfg.ListenAddress,
 		Handler:   mux,
 		TLSConfig: tlsCfg,
 	}
@@ -138,7 +140,7 @@ func (a *Agent) ListenAndServe(ctx context.Context) error {
 		server.Close()
 	}()
 
-	return server.ListenAndServeTLS("", "")
+	return server.ServeTLS(ln, "", "")
 }
 
 // Run executes the agent daemon loop until the provided context is canceled.

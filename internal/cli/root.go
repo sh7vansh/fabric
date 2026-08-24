@@ -11,6 +11,7 @@ var (
 	hostFlag   string
 	tokenFlag  string
 	caCertFlag string
+	directFlag string
 )
 
 var rootCmd = &cobra.Command{
@@ -79,6 +80,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&hostFlag, "host", "H", "", "Socket URL to connect to (e.g., ws://localhost:8080/ws)")
 	rootCmd.PersistentFlags().StringVar(&tokenFlag, "token", "", "Pre-shared token for authentication")
 	rootCmd.PersistentFlags().StringVar(&caCertFlag, "ca-cert", "", "Path to custom Root CA certificate for TLS verification")
+	rootCmd.PersistentFlags().StringVar(&directFlag, "direct", "", "Directly connect to a listening node (e.g. 192.168.1.10:8443)")
 
 	nodeCmd.GroupID = "cluster"
 	setupCmd.GroupID = "cluster"
@@ -102,5 +104,5 @@ func Execute() {
 }
 
 func GetConfig() *Config {
-	return LoadConfig(hostFlag, tokenFlag, caCertFlag)
+	return LoadConfig(hostFlag, tokenFlag, directFlag, caCertFlag)
 }
