@@ -8,7 +8,7 @@ import (
 )
 
 // StartDNSServer starts a simple DNS server on UDP port 53.
-// It resolves the given domain (and its subdomains) to the Socket's own IP address, 
+// It resolves the given domain (and its subdomains) to the Socket's own IP address,
 // forcing traffic to hit our reverse proxy.
 func StartDNSServer(socketIP string, domain string) {
 	dns.HandleFunc(domain+".", func(w dns.ResponseWriter, r *dns.Msg) {

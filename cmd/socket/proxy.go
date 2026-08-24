@@ -67,7 +67,7 @@ func handleTCPConn(conn net.Conn) {
 	for {
 		n, err := conn.Read(buf)
 		if n > 0 {
-			nodeConn.WriteJSON(protocol.ProxyStream{
+			nodeConn.Conn.WriteJSON(protocol.ProxyStream{
 				Type:     protocol.TypeProxyStream,
 				ConnID:   connID,
 				Data:     base64.StdEncoding.EncodeToString(buf[:n]),
@@ -78,7 +78,7 @@ func handleTCPConn(conn net.Conn) {
 			if err != io.EOF {
 				log.Println("TCP proxy read error:", err)
 			}
-			nodeConn.WriteJSON(protocol.ProxyStream{
+			nodeConn.Conn.WriteJSON(protocol.ProxyStream{
 				Type:     protocol.TypeProxyStream,
 				ConnID:   connID,
 				Data:     "",

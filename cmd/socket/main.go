@@ -19,11 +19,16 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+type NodeState struct {
+	Conn     *websocket.Conn
+	Metadata protocol.NodeMetadata
+}
+
 var (
-	nodes     = make(map[string]*websocket.Conn)
+	nodes     = make(map[string]*NodeState)
 	nodesLock sync.RWMutex
 
-	cliConns     = make(map[string][]*websocket.Conn) // targetHostname -> CLI conns
+	cliConns     = make(map[string]*websocket.Conn) // sessionID -> CLI conn
 	cliConnsLock sync.RWMutex
 )
 
@@ -76,7 +81,21 @@ func main() {
 			log.Printf("Node connected successfully: %s\n", hs.Hostname)
 
 			nodesLock.Lock()
-			nodes[hs.Hostname] = conn
+			nodes[hs.Hostname] = &NodeState{
+				Conn: conn,
+				Metadata: protocol.NodeMetadata{
+					ID:          hs.Hostname, // simplifiy ID for now
+					Hostname:    hs.Hostname,
+					Domain:      hs.Domain,
+					OS:          hs.OS,
+					Arch:        hs.Arch,
+					Version:     hs.Version,
+					RemoteIP:    r.RemoteAddr,
+					Status:      "online",
+					ConnectedAt: time.Now().UTC().Format(time.RFC3339),
+					LastSeen:    time.Now().UTC().Format(time.RFC3339),
+				},
+			}
 			nodesLock.Unlock()
 
 			defer func() {
@@ -88,6 +107,31 @@ func main() {
 
 			handleNodeMessages(conn, hs.Hostname)
 
+		case protocol.TypeCopyRequest:
+			var req protocol.CopyRequest
+			json.Unmarshal(message, &req)
+
+			nodesLock.RLock()
+			nodeState, ok := nodes[req.TargetHostname]
+			nodesLock.RUnlock()
+
+			if !ok {
+				conn.Close()
+				return
+			}
+
+			cliConnsLock.Lock()
+			cliConns[req.TransferID] = conn
+			cliConnsLock.Unlock()
+
+			defer func() {
+				cliConnsLock.Lock()
+				delete(cliConns, req.TransferID)
+				cliConnsLock.Unlock()
+			}()
+
+			nodeState.Conn.WriteJSON(req)
+			handleCLIMessages(conn, nodeState.Conn)
 		case protocol.TypeExecRequest:
 			var req protocol.ExecRequest
 			json.Unmarshal(message, &req)
@@ -95,7 +139,7 @@ func main() {
 			log.Printf("CLI requested exec on %s: %s\n", req.TargetHostname, req.Command)
 
 			nodesLock.RLock()
-			nodeConn, ok := nodes[req.TargetHostname]
+			nodeState, ok := nodes[req.TargetHostname]
 			nodesLock.RUnlock()
 
 			if !ok {
@@ -105,32 +149,67 @@ func main() {
 			}
 
 			cliConnsLock.Lock()
-			cliConns[req.TargetHostname] = append(cliConns[req.TargetHostname], conn)
+			cliConns[req.SessionID] = conn
 			cliConnsLock.Unlock()
 
 			defer func() {
 				cliConnsLock.Lock()
-				conns := cliConns[req.TargetHostname]
-				for i, c := range conns {
-					if c == conn {
-						cliConns[req.TargetHostname] = append(conns[:i], conns[i+1:]...)
-						break
-					}
-				}
+				delete(cliConns, req.SessionID)
 				cliConnsLock.Unlock()
 				conn.Close()
 			}()
 
-			err = nodeConn.WriteJSON(req)
+			err = nodeState.Conn.WriteJSON(req)
 			if err != nil {
 				log.Println("Error forwarding exec_request to node:", err)
 				return
 			}
 
-			handleCLIMessages(conn, nodeConn)
+			handleCLIMessages(conn, nodeState.Conn)
 		default:
 			conn.Close()
 		}
+	})
+
+	http.HandleFunc("/nodes", func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer "+token {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		nodesLock.RLock()
+		defer nodesLock.RUnlock()
+
+		var list []protocol.NodeMetadata
+		for _, state := range nodes {
+			list = append(list, state.Metadata)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(list)
+	})
+
+	http.HandleFunc("/nodes/", func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer "+token {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		hostname := r.URL.Path[len("/nodes/"):]
+
+		nodesLock.RLock()
+		defer nodesLock.RUnlock()
+
+		state, ok := nodes[hostname]
+		if !ok {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(state.Metadata)
 	})
 
 	log.Println("Socket listening on :8080")
@@ -141,8 +220,9 @@ func pingNodes() {
 	for {
 		time.Sleep(5 * time.Second)
 		nodesLock.RLock()
-		for _, conn := range nodes {
-			conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(time.Second))
+		for _, state := range nodes {
+			state.Metadata.LastSeen = time.Now().UTC().Format(time.RFC3339)
+			state.Conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(time.Second))
 		}
 		nodesLock.RUnlock()
 	}
@@ -165,16 +245,27 @@ func handleNodeMessages(conn *websocket.Conn, hostname string) {
 			json.Unmarshal(message, &stream)
 
 			cliConnsLock.RLock()
-			conns := cliConns[hostname]
+			cliConn, ok := cliConns[stream.SessionID]
 			cliConnsLock.RUnlock()
 
-			for _, cliConn := range conns {
+			if ok {
+				cliConn.WriteJSON(stream)
+			}
+		case protocol.TypeCopyStream:
+			var stream protocol.CopyStream
+			json.Unmarshal(message, &stream)
+
+			cliConnsLock.RLock()
+			cliConn, ok := cliConns[stream.TransferID]
+			cliConnsLock.RUnlock()
+
+			if ok {
 				cliConn.WriteJSON(stream)
 			}
 		case protocol.TypeProxyStream:
 			var stream protocol.ProxyStream
 			json.Unmarshal(message, &stream)
-			
+
 			proxyConnsLock.RLock()
 			proxyConn, ok := proxyConns[stream.ConnID]
 			proxyConnsLock.RUnlock()
@@ -205,7 +296,7 @@ func handleCLIMessages(cliConn *websocket.Conn, nodeConn *websocket.Conn) {
 		json.Unmarshal(message, &envelope)
 
 		envelopeType, _ := envelope["type"].(string)
-		if protocol.EnvelopeType(envelopeType) == protocol.TypeExecStream {
+		if protocol.EnvelopeType(envelopeType) == protocol.TypeExecStream || protocol.EnvelopeType(envelopeType) == protocol.TypeCopyStream {
 			nodeConn.WriteMessage(websocket.TextMessage, message)
 		}
 	}

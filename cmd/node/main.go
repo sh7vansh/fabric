@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"sync"
 
 	"fabric/internal/protocol"
@@ -46,6 +47,9 @@ func main() {
 			Hostname: hostname,
 			Domain:   *domainFlag,
 			Token:    token,
+			OS:       runtime.GOOS,
+			Arch:     runtime.GOARCH,
+			Version:  "1.0.0",
 		}
 
 		err = c.WriteJSON(hs)
@@ -81,12 +85,19 @@ func main() {
 				if stream.Stream == protocol.StreamStdin {
 					data, _ := base64.StdEncoding.DecodeString(stream.Data)
 					stdinWritersLock.RLock()
-					// Since we removed SessionID, just write to the first/only stdin available for now
-					for _, w := range stdinWriters {
+					if w, ok := stdinWriters[stream.SessionID]; ok {
 						w.Write(data)
 					}
 					stdinWritersLock.RUnlock()
 				}
+			case protocol.TypeCopyRequest:
+				var req protocol.CopyRequest
+				json.Unmarshal(message, &req)
+				handleCopyRequest(c, req)
+			case protocol.TypeCopyStream:
+				var stream protocol.CopyStream
+				json.Unmarshal(message, &stream)
+				handleCopyStream(stream)
 			case protocol.TypeProxyStream:
 				var stream protocol.ProxyStream
 				json.Unmarshal(message, &stream)
@@ -98,16 +109,17 @@ func main() {
 	}
 }
 
-func streamIOToSocket(r io.Reader, c *websocket.Conn, streamType protocol.StreamType) {
+func streamIOToSocket(r io.Reader, c *websocket.Conn, sessionID string, streamType protocol.StreamType) {
 	buf := make([]byte, 1024)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
 			data := base64.StdEncoding.EncodeToString(buf[:n])
 			c.WriteJSON(protocol.ExecStream{
-				Type:   protocol.TypeExecStream,
-				Stream: streamType,
-				Data:   data,
+				Type:      protocol.TypeExecStream,
+				SessionID: sessionID,
+				Stream:    streamType,
+				Data:      data,
 			})
 		}
 		if err != nil {
@@ -118,14 +130,21 @@ func streamIOToSocket(r io.Reader, c *websocket.Conn, streamType protocol.Stream
 
 func handleExec(c *websocket.Conn, req protocol.ExecRequest) {
 	cmd := exec.Command("sh", "-c", req.Command)
-	
+	if req.WorkDir != "" {
+		cmd.Dir = req.WorkDir
+	}
+	if len(req.Env) > 0 {
+		cmd.Env = append(os.Environ(), req.Env...)
+	}
+	// user switching omitted for brevity unless using syscall.Credential
+
 	// Create a dummy session key since we removed SessionID from the struct
-	sessionKey := "active_exec"
+	sessionKey := req.SessionID
 
 	if req.AllocatePTY {
 		ptmx, err := pty.Start(cmd)
 		if err != nil {
-			sendExit(c, err.Error())
+			sendExit(c, req.SessionID, "1")
 			return
 		}
 		defer ptmx.Close()
@@ -140,7 +159,7 @@ func handleExec(c *websocket.Conn, req protocol.ExecRequest) {
 			stdinWritersLock.Unlock()
 		}()
 
-		streamIOToSocket(ptmx, c, protocol.StreamStdout)
+		streamIOToSocket(ptmx, c, req.SessionID, protocol.StreamStdout)
 	} else {
 		stdout, _ := cmd.StdoutPipe()
 		stderr, _ := cmd.StderrPipe()
@@ -163,25 +182,26 @@ func handleExec(c *websocket.Conn, req protocol.ExecRequest) {
 
 		go func() {
 			defer wg.Done()
-			streamIOToSocket(stdout, c, protocol.StreamStdout)
+			streamIOToSocket(stdout, c, req.SessionID, protocol.StreamStdout)
 		}()
 
 		go func() {
 			defer wg.Done()
-			streamIOToSocket(stderr, c, protocol.StreamStderr)
+			streamIOToSocket(stderr, c, req.SessionID, protocol.StreamStderr)
 		}()
 
 		wg.Wait()
 	}
 
 	cmd.Wait()
-	sendExit(c, "0")
+	sendExit(c, req.SessionID, "0")
 }
 
-func sendExit(c *websocket.Conn, code string) {
+func sendExit(c *websocket.Conn, sessionID string, code string) {
 	c.WriteJSON(protocol.ExecStream{
-		Type:   protocol.TypeExecStream,
-		Stream: protocol.StreamExit,
-		Data:   base64.StdEncoding.EncodeToString([]byte(code)),
+		Type:      protocol.TypeExecStream,
+		SessionID: sessionID,
+		Stream:    protocol.StreamExit,
+		Data:      base64.StdEncoding.EncodeToString([]byte(code)),
 	})
 }
