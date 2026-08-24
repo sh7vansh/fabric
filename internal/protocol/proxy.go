@@ -9,8 +9,7 @@ import (
 )
 
 const (
-	TypeProxyRequest  EnvelopeType = "proxy_request"
-	TypeProxyResponse EnvelopeType = "proxy_response"
+	TypeProxyRequest EnvelopeType = "proxy_request"
 )
 
 type ProxyRequest struct {
@@ -20,11 +19,6 @@ type ProxyRequest struct {
 	TargetPort     int          `json:"target_port,omitempty"`
 }
 
-type ProxyResponse struct {
-	Type    EnvelopeType `json:"type"`
-	Success bool         `json:"success"`
-	Error   string       `json:"error,omitempty"`
-}
 
 // ValidateProxyDestination checks that the requested target host and port are valid and safe.
 func ValidateProxyDestination(host string, port int) (string, error) {
@@ -51,17 +45,25 @@ func ValidateProxyDestination(host string, port int) (string, error) {
 }
 
 func Proxy(a, b net.Conn) {
-	defer a.Close()
-	defer b.Close()
+	var once sync.Once
+	closeBoth := func() {
+		a.Close()
+		b.Close()
+	}
+	defer closeBoth()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		io.Copy(a, b)
+		once.Do(closeBoth)
 	}()
 	go func() {
 		defer wg.Done()
 		io.Copy(b, a)
+		once.Do(closeBoth)
 	}()
 	wg.Wait()
 }
+

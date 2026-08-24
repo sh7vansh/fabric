@@ -58,7 +58,7 @@ func New(cfg Config) *Agent {
 		cfg.Domain = "fabric.mesh"
 	}
 	if cfg.Version == "" {
-		cfg.Version = "2.1.0"
+		cfg.Version = "2.2.0"
 	}
 	if cfg.Hostname == "" {
 		h, _ := os.Hostname()
@@ -510,31 +510,16 @@ func (a *Agent) HandleProxy(stream net.Conn, env []byte) {
 	targetAddr, err := protocol.ValidateProxyDestination(req.TargetHost, req.TargetPort)
 	if err != nil {
 		log.Println("[Agent] Blocked proxy request:", err)
-		resp := protocol.ProxyResponse{
-			Type:    protocol.TypeProxyResponse,
-			Success: false,
-			Error:   err.Error(),
-		}
-		if b, marshalErr := json.Marshal(resp); marshalErr == nil {
-			stream.Write(b)
-		}
 		return
 	}
 
 	conn, err := net.Dial("tcp", targetAddr)
 	if err != nil {
 		log.Println("[Agent] Node proxy dial error:", err)
-		resp := protocol.ProxyResponse{
-			Type:    protocol.TypeProxyResponse,
-			Success: false,
-			Error:   err.Error(),
-		}
-		if b, marshalErr := json.Marshal(resp); marshalErr == nil {
-			stream.Write(b)
-		}
 		return
 	}
 	defer conn.Close()
 
 	protocol.Proxy(stream, conn)
 }
+

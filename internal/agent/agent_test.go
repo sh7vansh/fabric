@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net"
@@ -148,6 +149,138 @@ func TestAgentHandleProxy(t *testing.T) {
 		t.Errorf("expected echo 'ping proxy', got %q, err: %v", string(buf[:n]), err)
 	}
 }
+
+// TestAgentHandleProxy_Regression_NoInjectedBytes verifies that HandleProxy never writes
+// any control or response envelope (such as ProxyResponse JSON) before or during proxying.
+func TestAgentHandleProxy_Regression_NoInjectedBytes(t *testing.T) {
+	ag := New(Config{
+		Domain:   "fabric.mesh",
+		Hostname: "test-node",
+	})
+
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer targetLn.Close()
+
+	targetReceived := make(chan []byte, 1)
+	go func() {
+		conn, err := targetLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 64)
+		n, _ := conn.Read(buf)
+		targetReceived <- buf[:n]
+		conn.Write([]byte("TARGET_RAW_RESPONSE"))
+	}()
+
+	targetPort := targetLn.Addr().(*net.TCPAddr).Port
+
+	sConn, cConn := net.Pipe()
+	defer sConn.Close()
+	defer cConn.Close()
+
+	req := protocol.ProxyRequest{
+		TargetHost: "127.0.0.1",
+		TargetPort: targetPort,
+	}
+	env, _ := json.Marshal(req)
+
+	go ag.HandleProxy(sConn, env)
+
+	// Invariant: Before the client sends anything, the agent MUST NOT write any bytes (no ProxyResponse JSON).
+	// Set a short read deadline on cConn.
+	_ = cConn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	buf := make([]byte, 64)
+	n, readErr := cConn.Read(buf)
+	if n > 0 {
+		t.Fatalf("Regression violation: HandleProxy injected %d bytes before data phase: %q", n, string(buf[:n]))
+	}
+	if readErr == nil {
+		t.Fatalf("expected read timeout or EOF, got nil error with 0 bytes")
+	}
+
+	// Reset deadline
+	_ = cConn.SetReadDeadline(time.Time{})
+
+	// Now send client raw payload
+	clientPayload := []byte{0x16, 0x03, 0x01, 0x00, 0x05, 'H', 'E', 'L', 'L', 'O'} // Simulated TLS-like bytes
+	if _, err := cConn.Write(clientPayload); err != nil {
+		t.Fatalf("client write failed: %v", err)
+	}
+
+	select {
+	case received := <-targetReceived:
+		if !bytes.Equal(received, clientPayload) {
+			t.Fatalf("target received corrupted payload: got %v, want %v", received, clientPayload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timeout waiting for target to receive payload")
+	}
+
+	// Read response back from cConn
+	respBuf := make([]byte, 64)
+	n, err = cConn.Read(respBuf)
+	if err != nil {
+		t.Fatalf("read from proxy client failed: %v", err)
+	}
+	if string(respBuf[:n]) != "TARGET_RAW_RESPONSE" {
+		t.Fatalf("expected 'TARGET_RAW_RESPONSE', got %q", string(respBuf[:n]))
+	}
+}
+
+// TestAgentHandleProxy_NoProxyResponseOnError verifies that validation and connection failures
+// cleanly close the stream without polluting it with ProxyResponse JSON.
+func TestAgentHandleProxy_NoProxyResponseOnError(t *testing.T) {
+	ag := New(Config{
+		Domain:   "fabric.mesh",
+		Hostname: "test-node",
+	})
+
+	// Case 1: Restricted cloud metadata IP
+	sConn1, cConn1 := net.Pipe()
+	req1 := protocol.ProxyRequest{
+		TargetHost: "169.254.169.254",
+		TargetPort: 80,
+	}
+	env1, _ := json.Marshal(req1)
+
+	go ag.HandleProxy(sConn1, env1)
+
+	buf1 := make([]byte, 256)
+	n1, err1 := cConn1.Read(buf1)
+	if n1 > 0 {
+		t.Fatalf("HandleProxy wrote %d bytes on validation error: %q (must not write JSON on data stream)", n1, string(buf1[:n1]))
+	}
+	if err1 == nil {
+		t.Fatalf("expected EOF / stream close on validation error")
+	}
+	cConn1.Close()
+
+	// Case 2: Unreachable / closed target port
+	sConn2, cConn2 := net.Pipe()
+	req2 := protocol.ProxyRequest{
+		TargetHost: "127.0.0.1",
+		TargetPort: 65432, // Unused port
+	}
+	env2, _ := json.Marshal(req2)
+
+	go ag.HandleProxy(sConn2, env2)
+
+	buf2 := make([]byte, 256)
+	n2, err2 := cConn2.Read(buf2)
+	if n2 > 0 {
+		t.Fatalf("HandleProxy wrote %d bytes on dial error: %q (must not write JSON on data stream)", n2, string(buf2[:n2]))
+	}
+	if err2 == nil {
+		t.Fatalf("expected EOF / stream close on dial error")
+	}
+	cConn2.Close()
+}
+
 
 func TestAgentContextCancellation(t *testing.T) {
 	dnsMgr := meshdns.NewSystemDNSManager("fabric.mesh")

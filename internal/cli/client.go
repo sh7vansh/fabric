@@ -858,6 +858,7 @@ func (c *Client) ForwardPort(targetNode string, localPort, remotePort int) error
 			req := protocol.ProxyRequest{
 				Type:           protocol.TypeProxyRequest,
 				TargetHostname: targetNode,
+				TargetHost:     "127.0.0.1",
 				TargetPort:     remotePort,
 			}
 			b, _ := json.Marshal(req)

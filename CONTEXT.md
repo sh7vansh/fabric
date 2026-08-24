@@ -54,6 +54,8 @@ fabric
 ├── port              # Forward/proxy TCP ports across the mesh
 ├── setup             # Interactive CLI and configuration onboarding wizard
 ├── version           # Print version, build commit, and date
+├── update            # Self-update Fabric binaries to latest or specified release
+├── uninstall         # Completely remove Fabric, its services, and configuration
 ├── node              # Manage fabric nodes
 │   ├── ls            # List all connected online nodes
 │   └── inspect       # Show detailed metadata and telemetry for a specific node
@@ -84,6 +86,9 @@ fabric
 | `fabric setup` | Interactive setup helper for config/keys |
 | `fabric service <action>` | Manage background `systemd` service unit |
 | `fabric version` | Display version info |
+| `fabric update` | Self-update Fabric binaries to latest or specified release |
+| `fabric uninstall` | Completely remove Fabric, its services, and configuration |
 | `fabric help <topic>` | In-depth topic guides (`architecture`, `networking`, `security`, `workflows`) |
+
 
 

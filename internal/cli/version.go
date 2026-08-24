@@ -7,6 +7,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version is the current semantic release version of Fabric.
+var Version = "2.2.0"
+
 var versionCmd = &cobra.Command{
 	Use:     "version",
 	Short:   "Show Fabric version information for client and socket",
@@ -14,8 +17,8 @@ var versionCmd = &cobra.Command{
 	Example: `  # Display client version and query socket version
   fabric version`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		clientVersion := "2.1.0"
-		fmt.Printf("Client Version: %s\n", clientVersion)
+		fmt.Printf("Client Version: %s\n", Version)
+
 
 		client := NewClient(GetConfig())
 		resp, err := client.DoHTTP("GET", "/version", nil)
