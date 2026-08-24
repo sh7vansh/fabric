@@ -1,25 +1,35 @@
 package protocol
 
+type EnvelopeType string
+type StreamType string
+
+const (
+	TypeHandshake   EnvelopeType = "handshake"
+	TypeExecRequest EnvelopeType = "exec_request"
+	TypeExecStream  EnvelopeType = "exec_stream"
+	TypeProxyStream EnvelopeType = "proxy_stream"
+
+	StreamStdout StreamType = "stdout"
+	StreamStderr StreamType = "stderr"
+	StreamStdin  StreamType = "stdin"
+	StreamExit   StreamType = "exit"
+)
+
 type Handshake struct {
-	Type     string `json:"type"`
-	Hostname string `json:"hostname"`
-	OS       string `json:"os"`
-	Arch     string `json:"arch"`
-	Token    string `json:"token"`
-	LocalIP  string `json:"local_ip"`
+	Type     EnvelopeType `json:"type"`
+	Hostname string       `json:"hostname"`
+	Token    string       `json:"token"`
 }
 
 type ExecRequest struct {
-	Type           string `json:"type"` // "exec_request"
-	SessionID      string `json:"session_id"`
-	TargetHostname string `json:"target_hostname"`
-	Command        string `json:"command"`
-	AllocatePTY    bool   `json:"allocate_pty"`
+	Type           EnvelopeType `json:"type"` // "exec_request"
+	TargetHostname string       `json:"target_hostname"`
+	Command        string       `json:"command"`
+	AllocatePTY    bool         `json:"allocate_pty"`
 }
 
 type ExecStream struct {
-	Type      string `json:"type"`       // "exec_stream"
-	SessionID string `json:"session_id"`
-	Stream    string `json:"stream"`     // "stdout", "stderr", "stdin", "exit"
-	Data      string `json:"data"`       // Base64 encoded chunk
+	Type   EnvelopeType `json:"type"`   // "exec_stream"
+	Stream StreamType   `json:"stream"` // "stdout", "stderr", "stdin", "exit"
+	Data   string       `json:"data"`   // Base64 encoded chunk
 }

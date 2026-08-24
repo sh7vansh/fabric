@@ -7,7 +7,7 @@ import (
 
 func TestHandshakeJSON(t *testing.T) {
 	h := Handshake{
-		Type:     "handshake",
+		Type:     TypeHandshake,
 		Hostname: "test-node",
 		Token:    "secret123",
 	}

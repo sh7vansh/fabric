@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"time"
 
 	"fabric/internal/protocol"
 
@@ -21,7 +22,7 @@ var (
 	nodes     = make(map[string]*websocket.Conn)
 	nodesLock sync.RWMutex
 
-	cliConns     = make(map[string]*websocket.Conn) // SessionID -> CLI conn
+	cliConns     = make(map[string][]*websocket.Conn) // targetHostname -> CLI conns
 	cliConnsLock sync.RWMutex
 )
 
@@ -32,7 +33,8 @@ func main() {
 	}
 
 	go StartDNSServer("127.0.0.1")
-	go StartHTTPProxy()
+	go StartTCPProxy()
+	go pingNodes()
 
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -48,15 +50,16 @@ func main() {
 			return
 		}
 
-		var env map[string]interface{}
-		if err := json.Unmarshal(message, &env); err != nil {
+		var envelope map[string]interface{}
+		if err := json.Unmarshal(message, &envelope); err != nil {
 			conn.Close()
 			return
 		}
 
-		msgType, _ := env["type"].(string)
+		envelopeType, _ := envelope["type"].(string)
 
-		if msgType == "handshake" {
+		switch protocol.EnvelopeType(envelopeType) {
+		case protocol.TypeHandshake:
 			var hs protocol.Handshake
 			json.Unmarshal(message, &hs)
 
@@ -66,7 +69,7 @@ func main() {
 				return
 			}
 
-			log.Printf("Node connected successfully: %s (%s/%s)\n", hs.Hostname, hs.OS, hs.Arch)
+			log.Printf("Node connected successfully: %s\n", hs.Hostname)
 
 			nodesLock.Lock()
 			nodes[hs.Hostname] = conn
@@ -81,7 +84,7 @@ func main() {
 
 			handleNodeMessages(conn, hs.Hostname)
 
-		} else if msgType == "exec_request" {
+		case protocol.TypeExecRequest:
 			var req protocol.ExecRequest
 			json.Unmarshal(message, &req)
 
@@ -98,12 +101,18 @@ func main() {
 			}
 
 			cliConnsLock.Lock()
-			cliConns[req.SessionID] = conn
+			cliConns[req.TargetHostname] = append(cliConns[req.TargetHostname], conn)
 			cliConnsLock.Unlock()
 
 			defer func() {
 				cliConnsLock.Lock()
-				delete(cliConns, req.SessionID)
+				conns := cliConns[req.TargetHostname]
+				for i, c := range conns {
+					if c == conn {
+						cliConns[req.TargetHostname] = append(conns[:i], conns[i+1:]...)
+						break
+					}
+				}
 				cliConnsLock.Unlock()
 				conn.Close()
 			}()
@@ -115,11 +124,24 @@ func main() {
 			}
 
 			handleCLIMessages(conn, nodeConn)
+		default:
+			conn.Close()
 		}
 	})
 
 	log.Println("Socket listening on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
+}
+
+func pingNodes() {
+	for {
+		time.Sleep(5 * time.Second)
+		nodesLock.RLock()
+		for _, conn := range nodes {
+			conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(time.Second))
+		}
+		nodesLock.RUnlock()
+	}
 }
 
 func handleNodeMessages(conn *websocket.Conn, hostname string) {
@@ -129,22 +151,23 @@ func handleNodeMessages(conn *websocket.Conn, hostname string) {
 			break
 		}
 
-		var env map[string]interface{}
-		json.Unmarshal(message, &env)
+		var envelope map[string]interface{}
+		json.Unmarshal(message, &envelope)
 
-		msgType, _ := env["type"].(string)
-		if msgType == "exec_stream" {
+		envelopeType, _ := envelope["type"].(string)
+		switch protocol.EnvelopeType(envelopeType) {
+		case protocol.TypeExecStream:
 			var stream protocol.ExecStream
 			json.Unmarshal(message, &stream)
 
 			cliConnsLock.RLock()
-			cliConn, ok := cliConns[stream.SessionID]
+			conns := cliConns[hostname]
 			cliConnsLock.RUnlock()
 
-			if ok {
+			for _, cliConn := range conns {
 				cliConn.WriteJSON(stream)
 			}
-		} else if msgType == "proxy_stream" {
+		case protocol.TypeProxyStream:
 			var stream protocol.ProxyStream
 			json.Unmarshal(message, &stream)
 			
@@ -174,12 +197,11 @@ func handleCLIMessages(cliConn *websocket.Conn, nodeConn *websocket.Conn) {
 			break
 		}
 
-		var env map[string]interface{}
-		json.Unmarshal(message, &env)
+		var envelope map[string]interface{}
+		json.Unmarshal(message, &envelope)
 
-		msgType, _ := env["type"].(string)
-		if msgType == "exec_stream" {
-			// Forward stdin stream to node
+		envelopeType, _ := envelope["type"].(string)
+		if protocol.EnvelopeType(envelopeType) == protocol.TypeExecStream {
 			nodeConn.WriteMessage(websocket.TextMessage, message)
 		}
 	}
