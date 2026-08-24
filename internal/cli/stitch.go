@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -43,6 +44,7 @@ var stitchCmd = &cobra.Command{
 	Use:     "stitch [flags] [user@]hostname[:port]",
 	Short:   "Bootstrap and stitch a remote host into the Fabric mesh over SSH",
 	GroupID: "network",
+	SilenceUsage: true,
 	Long: `Automate provisioning of remote machines into the Fabric mesh over SSH.
 
 The command connects via SSH, installs the fabric-node binary, creates systemd units,
@@ -62,6 +64,7 @@ configures environment variables with cluster tokens, and verifies active mesh c
 var stitchDiscoverCmd = &cobra.Command{
 	Use:   "discover [flags] [CIDR]",
 	Short: "Scan local or specified network for SSH endpoints and batch stitch into the mesh",
+	SilenceUsage: true,
 	Long: `Scan a CIDR block for open SSH ports, prompt for host selection, and automatically
 stitch the selected machines into the Fabric mesh.`,
 	Example: `  # Scan default local interface subnet
@@ -158,7 +161,50 @@ func runStitch(cmd *cobra.Command, args []string) error {
 
 	node, err := provision.ExecuteStitchHost(opts, nil, nodeVerifier)
 	if err != nil {
-		return err
+		if strings.Contains(err.Error(), "exit status 255") {
+			fmt.Println("\n[!] SSH Authentication Failed (Permission denied).")
+			
+			home, _ := os.UserHomeDir()
+			sshDir := filepath.Join(home, ".ssh")
+			files, _ := os.ReadDir(sshDir)
+			var keys []string
+			for _, f := range files {
+				if !f.IsDir() && !strings.HasSuffix(f.Name(), ".pub") && !strings.HasPrefix(f.Name(), "known_hosts") && !strings.HasPrefix(f.Name(), "config") && !strings.HasPrefix(f.Name(), "authorized_keys") {
+					keys = append(keys, filepath.Join(sshDir, f.Name()))
+				}
+			}
+			
+			if len(keys) > 0 {
+				fmt.Println("\nAvailable SSH keys found in ~/.ssh:")
+				for i, key := range keys {
+					fmt.Printf("  [%d] %s\n", i+1, key)
+				}
+				fmt.Printf("  [c] Cancel\n")
+				fmt.Printf("\nSelect a key to retry, or press 'c' to cancel: ")
+				reader := bufio.NewReader(os.Stdin)
+				input, _ := reader.ReadString('\n')
+				input = strings.TrimSpace(input)
+				if input == "c" || input == "C" || input == "" {
+					return fmt.Errorf("aborted")
+				}
+				if idx, parseErr := strconv.Atoi(input); parseErr == nil && idx > 0 && idx <= len(keys) {
+					opts.IdentityKey = keys[idx-1]
+					fmt.Printf("\n[+] Retrying with identity key: %s\n", opts.IdentityKey)
+					node, err = provision.ExecuteStitchHost(opts, nil, nodeVerifier)
+					if err != nil {
+						return fmt.Errorf("retry failed: %w", err)
+					}
+				} else {
+					return fmt.Errorf("invalid selection")
+				}
+			} else {
+				fmt.Println("\nHint: You may need to specify a password or add your SSH key using:")
+				fmt.Printf("  ssh-copy-id %s\n", opts.Target)
+				return err
+			}
+		} else {
+			return err
+		}
 	}
 
 	if node != nil {
