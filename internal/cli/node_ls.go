@@ -14,9 +14,10 @@ import (
 )
 
 var (
-	quietFlag     bool
-	formatFlag    string
-	tagFilterFlag string
+	quietFlag      bool
+	formatFlag     string
+	tagFilterFlag  string
+	peerFilterFlag string
 )
 
 var threadCmd = &cobra.Command{
@@ -31,6 +32,9 @@ var threadCmd = &cobra.Command{
 
   # Filter threads by tag
   fabric thread ls -l web
+
+  # Filter threads by peer gateway
+  fabric thread ls --peer gw-eu-west
 
   # Inspect a specific thread
   fabric thread inspect worker-1`,
@@ -49,13 +53,17 @@ var threadLsCmd = &cobra.Command{
   fabric thread ls -q
 
   # Filter by tag
-  fabric thread ls -l prod`,
+  fabric thread ls -l prod
+
+  # Filter by gateway
+  fabric thread ls --peer gw-eu-west`,
 }
 
 func registerThreadListingFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "Only display thread names")
 	cmd.Flags().StringVar(&formatFlag, "format", "", "Pretty-print threads using a Go template or json")
 	cmd.Flags().StringVarP(&tagFilterFlag, "tag", "l", "", "Filter threads by tag")
+	cmd.Flags().StringVarP(&peerFilterFlag, "peer", "p", "", "Filter threads by gateway ID")
 }
 
 func init() {
@@ -80,6 +88,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 		quietFlag = false
 		formatFlag = ""
 		tagFilterFlag = ""
+		peerFilterFlag = ""
 	}()
 
 	client := NewClient(GetConfig())
@@ -96,6 +105,16 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 					filtered = append(filtered, n)
 					break
 				}
+			}
+		}
+		nodes = filtered
+	}
+
+	if peerFilterFlag != "" {
+		var filtered []protocol.NodeMetadata
+		for _, n := range nodes {
+			if n.GatewayID == peerFilterFlag || (n.GatewayID == "" && peerFilterFlag == "local") {
+				filtered = append(filtered, n)
 			}
 		}
 		nodes = filtered
@@ -133,7 +152,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 	}
 
 	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "THREAD\tHOSTNAME\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
+	fmt.Fprintln(w, "THREAD\tHOSTNAME\tGATEWAY\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
 	for _, n := range nodes {
 		uptime := ""
 		if t, err := time.Parse(time.RFC3339, n.ConnectedAt); err == nil {
@@ -154,7 +173,11 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 		if displayName == "" {
 			displayName = n.ID
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayName, n.Hostname, n.Status, tagsStr, n.RemoteIP, domainStr, uptime)
+		gwStr := n.GatewayID
+		if gwStr == "" {
+			gwStr = "local"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayName, n.Hostname, gwStr, n.Status, tagsStr, n.RemoteIP, domainStr, uptime)
 	}
 	w.Flush()
 	return nil

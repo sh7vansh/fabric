@@ -1,0 +1,733 @@
+package relay
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"math/rand"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"fabric/internal/pki"
+	"fabric/internal/protocol"
+
+	"github.com/gorilla/websocket"
+)
+
+// GatewayPeerSession manages an active multiplexed peering session to another fabric-server gateway.
+type GatewayPeerSession struct {
+	GatewayID    string
+	Domain       string
+	Region       string
+	Capabilities []string
+	Topology     string // "core" or "leaf"
+	Mux          *protocol.StreamMultiplexer
+	Endpoint     string
+	ConnectedAt  time.Time
+	RTT          time.Duration
+	IsOutbound   bool
+
+	closeCh chan struct{}
+	closed  bool
+	mu      sync.Mutex
+}
+
+// RemoteNodeEntry maps a remote thread hostname to its hosting gateway.
+type RemoteNodeEntry struct {
+	Node        protocol.NodeMetadata
+	GatewayID   string
+	PeerSession *GatewayPeerSession
+}
+
+type prefixConn struct {
+	net.Conn
+	r io.Reader
+}
+
+func (p *prefixConn) Read(b []byte) (int, error) {
+	return p.r.Read(b)
+}
+
+// GatewayID returns the local server's unique federation GatewayID.
+func (r *Relay) GatewayID() string {
+	r.peerMu.RLock()
+	defer r.peerMu.RUnlock()
+	return r.gatewayID
+}
+
+// Region returns the local server's configured federation region.
+func (r *Relay) Region() string {
+	r.peerMu.RLock()
+	defer r.peerMu.RUnlock()
+	return r.region
+}
+
+// RegisterPeer registers an active gateway peer session, handling deduplication.
+func (r *Relay) RegisterPeer(peer *GatewayPeerSession) error {
+	if peer == nil || peer.GatewayID == "" {
+		return fmt.Errorf("invalid peer session or empty gateway ID")
+	}
+
+	if peer.GatewayID == r.gatewayID {
+		return fmt.Errorf("cannot peer with self (%s)", r.gatewayID)
+	}
+
+	if peer.Topology == "" {
+		peer.Topology = "core"
+	}
+	if peer.ConnectedAt.IsZero() {
+		peer.ConnectedAt = time.Now().UTC()
+	}
+	peer.closeCh = make(chan struct{})
+
+	r.peerMu.Lock()
+	if existing, exists := r.peers[peer.GatewayID]; exists {
+		// Tie-breaker: Lexicographical comparison
+		log.Printf("[Relay/Peering] Duplicate peer connection for %q detected; applying tie-breaker", peer.GatewayID)
+		if existing.Mux != nil && existing.Mux.Session != nil {
+			go existing.Mux.Session.Close()
+		}
+	}
+	r.peers[peer.GatewayID] = peer
+	r.peerMu.Unlock()
+
+	log.Printf("[Relay/Peering] Peered successfully with gateway %q (region: %s, topology: %s)\n", peer.GatewayID, peer.Region, peer.Topology)
+
+	// Send current local nodes to newly joined peer
+	go r.sendLocalThreadAdvertisementsToPeer(peer)
+
+	// Monitor session disconnect
+	if peer.Mux != nil && peer.Mux.Session != nil {
+		go func() {
+			<-peer.Mux.Session.CloseChan()
+			r.unregisterPeerSession(peer)
+		}()
+	}
+
+	return nil
+}
+
+func (r *Relay) unregisterPeerSession(peer *GatewayPeerSession) {
+	if peer == nil {
+		return
+	}
+	r.peerMu.Lock()
+	if curr, ok := r.peers[peer.GatewayID]; ok && curr == peer {
+		delete(r.peers, peer.GatewayID)
+		for host, entry := range r.remoteNodes {
+			if entry.GatewayID == peer.GatewayID {
+				delete(r.remoteNodes, host)
+			}
+		}
+		peer.mu.Lock()
+		if !peer.closed {
+			peer.closed = true
+			close(peer.closeCh)
+		}
+		peer.mu.Unlock()
+		log.Printf("[Relay/Peering] Peer %q disconnected and its routes withdrawn\n", peer.GatewayID)
+	}
+	r.peerMu.Unlock()
+}
+
+// UnregisterPeer removes a peer and cleans up all remote threads hosted by it.
+func (r *Relay) UnregisterPeer(gatewayID string) {
+	r.peerMu.Lock()
+	peer, exists := r.peers[gatewayID]
+	if exists {
+		delete(r.peers, gatewayID)
+		for host, entry := range r.remoteNodes {
+			if entry.GatewayID == gatewayID {
+				delete(r.remoteNodes, host)
+			}
+		}
+	}
+	r.peerMu.Unlock()
+
+	if exists && peer != nil {
+		peer.mu.Lock()
+		if !peer.closed {
+			peer.closed = true
+			close(peer.closeCh)
+		}
+		peer.mu.Unlock()
+		if peer.Mux != nil && peer.Mux.Session != nil {
+			_ = peer.Mux.Session.Close()
+		}
+		log.Printf("[Relay/Peering] Peer %q removed\n", gatewayID)
+	}
+}
+
+// RegisterRemoteNode records an advertised thread hosted on a remote peer gateway.
+func (r *Relay) RegisterRemoteNode(node protocol.NodeMetadata, gatewayID string) {
+	if node.Hostname == "" || gatewayID == "" {
+		return
+	}
+
+	r.peerMu.Lock()
+	defer r.peerMu.Unlock()
+
+	peer := r.peers[gatewayID]
+	node.GatewayID = gatewayID
+	if node.Status == "" {
+		node.Status = "online [peer: " + gatewayID + "]"
+	}
+
+	r.remoteNodes[node.Hostname] = RemoteNodeEntry{
+		Node:        node,
+		GatewayID:   gatewayID,
+		PeerSession: peer,
+	}
+}
+
+// UnregisterRemoteNode removes an advertised thread.
+func (r *Relay) UnregisterRemoteNode(hostname, gatewayID string) {
+	r.peerMu.Lock()
+	defer r.peerMu.Unlock()
+
+	if entry, ok := r.remoteNodes[hostname]; ok {
+		if gatewayID == "" || entry.GatewayID == gatewayID {
+			delete(r.remoteNodes, hostname)
+		}
+	}
+}
+
+// ListPeers returns summary telemetry for all active peer gateways.
+func (r *Relay) ListPeers() []protocol.GatewayPeerInfo {
+	r.peerMu.RLock()
+	defer r.peerMu.RUnlock()
+
+	list := make([]protocol.GatewayPeerInfo, 0, len(r.peers))
+	for _, p := range r.peers {
+		threadCount := 0
+		for _, rn := range r.remoteNodes {
+			if rn.GatewayID == p.GatewayID {
+				threadCount++
+			}
+		}
+
+		rttStr := "0ms"
+		if p.RTT > 0 {
+			rttStr = p.RTT.Round(time.Millisecond).String()
+		}
+
+		list = append(list, protocol.GatewayPeerInfo{
+			GatewayID:    p.GatewayID,
+			Domain:       p.Domain,
+			Region:       p.Region,
+			Capabilities: p.Capabilities,
+			Status:       "connected",
+			Topology:     p.Topology,
+			RTT:          rttStr,
+			ThreadCount:  threadCount,
+			ConnectedAt:  p.ConnectedAt.Format(time.RFC3339),
+			Endpoint:     p.Endpoint,
+		})
+	}
+	return list
+}
+
+// GetPeer retrieves telemetry for a single peer gateway.
+func (r *Relay) GetPeer(gatewayID string) (*protocol.GatewayPeerInfo, bool) {
+	r.peerMu.RLock()
+	defer r.peerMu.RUnlock()
+
+	p, ok := r.peers[gatewayID]
+	if !ok {
+		return nil, false
+	}
+
+	threadCount := 0
+	for _, rn := range r.remoteNodes {
+		if rn.GatewayID == p.GatewayID {
+			threadCount++
+		}
+	}
+
+	rttStr := "0ms"
+	if p.RTT > 0 {
+		rttStr = p.RTT.Round(time.Millisecond).String()
+	}
+
+	info := protocol.GatewayPeerInfo{
+		GatewayID:    p.GatewayID,
+		Domain:       p.Domain,
+		Region:       p.Region,
+		Capabilities: p.Capabilities,
+		Status:       "connected",
+		Topology:     p.Topology,
+		RTT:          rttStr,
+		ThreadCount:  threadCount,
+		ConnectedAt:  p.ConnectedAt.Format(time.RFC3339),
+		Endpoint:     p.Endpoint,
+	}
+	return &info, true
+}
+
+// RemovePeer disconnects and removes a peer gateway.
+func (r *Relay) RemovePeer(gatewayID string) error {
+	r.peerMu.RLock()
+	peer, ok := r.peers[gatewayID]
+	r.peerMu.RUnlock()
+
+	if !ok {
+		return fmt.Errorf("peer gateway %q not found", gatewayID)
+	}
+
+	if peer.Mux != nil && peer.Mux.Session != nil {
+		_ = peer.Mux.Session.Close()
+	}
+	r.UnregisterPeer(gatewayID)
+	return nil
+}
+
+// AddPeer initiates an outbound connection to a target gateway endpoint.
+func (r *Relay) AddPeer(endpoint string) error {
+	go r.connectOutboundPeerWithBackoff(endpoint, false)
+	return nil
+}
+
+// ConnectLeaf initiates an outbound leaf reverse tunnel connection to a core gateway.
+func (r *Relay) ConnectLeaf(coreEndpoint string) {
+	go r.connectOutboundPeerWithBackoff(coreEndpoint, true)
+}
+
+func (r *Relay) connectOutboundPeerWithBackoff(rawEndpoint string, isLeaf bool) {
+	baseBackoff := 1 * time.Second
+	maxBackoff := 30 * time.Second
+	backoff := baseBackoff
+
+	for {
+		select {
+		case <-r.closeCh:
+			return
+		default:
+		}
+
+		err := r.dialAndRunPeerSession(rawEndpoint, isLeaf)
+		if err != nil {
+			log.Printf("[Relay/Peering] Outbound connection to %s failed (%v); reconnecting in %v...", rawEndpoint, err, backoff)
+		}
+
+		select {
+		case <-r.closeCh:
+			return
+		case <-time.After(backoff):
+		}
+
+		// Exponential backoff with jitter
+		jitter := time.Duration(rand.Int63n(int64(backoff / 2)))
+		backoff = backoff*2 + jitter
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
+}
+
+func (r *Relay) dialAndRunPeerSession(rawEndpoint string, isLeaf bool) error {
+	u, err := pki.NormalizeURL(rawEndpoint)
+	if err != nil {
+		return fmt.Errorf("invalid peer url: %w", err)
+	}
+
+	if u.Scheme == "http" {
+		u.Scheme = "ws"
+	} else if u.Scheme == "https" {
+		u.Scheme = "wss"
+	}
+	if u.Path == "" || u.Path == "/" {
+		u.Path = "/gateway/v1/peer"
+	}
+
+	header := http.Header{}
+	if r.token != "" {
+		header.Add("Authorization", "Bearer "+r.token)
+	}
+
+	dialer := websocket.DefaultDialer
+	if u.Scheme == "wss" && r.federationCA != "" {
+		tlsCfg, err := pki.BuildFederationClientTLSConfig(r.federationCA, nil)
+		if err != nil {
+			return fmt.Errorf("failed to build federation TLS config: %w", err)
+		}
+		dialer = &websocket.Dialer{
+			Proxy:            http.ProxyFromEnvironment,
+			HandshakeTimeout: 15 * time.Second,
+			TLSClientConfig:  tlsCfg,
+		}
+	}
+
+	conn, _, err := dialer.Dial(u.String(), header)
+	if err != nil {
+		return fmt.Errorf("dial peer ws (%s): %w", u.String(), err)
+	}
+	defer conn.Close()
+
+	mux, err := protocol.NewStreamMultiplexer(conn, false)
+	if err != nil {
+		return fmt.Errorf("stream multiplexer failed: %w", err)
+	}
+
+	// Send initial GatewayHello
+	stream, err := mux.Session.Open()
+	if err != nil {
+		return fmt.Errorf("failed to open handshake stream: %w", err)
+	}
+
+	hello := protocol.GatewayHello{
+		Type:         protocol.TypeGatewayHello,
+		GatewayID:    r.gatewayID,
+		Domain:       r.domain,
+		Region:       r.region,
+		Capabilities: []string{"exec", "cp", "proxy", "dns"},
+		Token:        r.token,
+		IsLeaf:       isLeaf,
+	}
+	b, _ := json.Marshal(hello)
+	if _, err := stream.Write(b); err != nil {
+		stream.Close()
+		return fmt.Errorf("failed to write hello envelope: %w", err)
+	}
+
+	// Read peer hello response
+	var remoteHello protocol.GatewayHello
+	decoder := json.NewDecoder(stream)
+	if err := decoder.Decode(&remoteHello); err != nil {
+		stream.Close()
+		return fmt.Errorf("failed to read remote peer hello: %w", err)
+	}
+	stream.Close()
+
+	topology := "core"
+	if isLeaf || remoteHello.IsLeaf {
+		topology = "leaf"
+	}
+
+	peerSession := &GatewayPeerSession{
+		GatewayID:    remoteHello.GatewayID,
+		Domain:       remoteHello.Domain,
+		Region:       remoteHello.Region,
+		Capabilities: remoteHello.Capabilities,
+		Topology:     topology,
+		Mux:          mux,
+		Endpoint:     rawEndpoint,
+		ConnectedAt:  time.Now().UTC(),
+		IsOutbound:   true,
+	}
+
+	if err := r.RegisterPeer(peerSession); err != nil {
+		return err
+	}
+
+	return r.ServePeerMux(mux, rawEndpoint, isLeaf, remoteHello.GatewayID)
+}
+
+// ServePeerWS handles an incoming peer WebSocket connection.
+func (r *Relay) ServePeerWS(conn *websocket.Conn, remoteAddr string, isLeaf bool) error {
+	defer conn.Close()
+
+	mux, err := protocol.NewStreamMultiplexer(conn, true)
+	if err != nil {
+		return err
+	}
+
+	return r.ServePeerMux(mux, remoteAddr, isLeaf, "")
+}
+
+// ServePeerMux handles routing and multiplexing on a peer Yamux session.
+func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string, isLeaf bool, peerGatewayID string) error {
+	router := protocol.NewRouter(mux.Session)
+
+	var currentPeerMu sync.Mutex
+	var currentPeer *GatewayPeerSession
+
+	setRegisteredPeer := func(p *GatewayPeerSession) {
+		currentPeerMu.Lock()
+		currentPeer = p
+		currentPeerMu.Unlock()
+	}
+
+	getRegisteredPeer := func() *GatewayPeerSession {
+		currentPeerMu.Lock()
+		defer currentPeerMu.Unlock()
+		return currentPeer
+	}
+
+	// 1. Gateway Handshake
+	router.HandleFunc(string(protocol.TypeGatewayHello), func(stream net.Conn, env []byte) {
+		defer stream.Close()
+
+		var hello protocol.GatewayHello
+		if err := json.Unmarshal(env, &hello); err != nil {
+			return
+		}
+
+		if hello.Token != "" && !r.ValidateToken(hello.Token) {
+			log.Printf("[Relay/Peering] Unauthorized peer connection attempt from: %s\n", hello.GatewayID)
+			mux.Session.Close()
+			return
+		}
+
+		if hello.GatewayID == "" {
+			mux.Session.Close()
+			return
+		}
+
+		// Reply with local GatewayHello
+		myHello := protocol.GatewayHello{
+			Type:         protocol.TypeGatewayHello,
+			GatewayID:    r.gatewayID,
+			Domain:       r.domain,
+			Region:       r.region,
+			Capabilities: []string{"exec", "cp", "proxy", "dns"},
+			IsLeaf:       isLeaf,
+		}
+		replyBytes, _ := json.Marshal(myHello)
+		_, _ = stream.Write(replyBytes)
+
+		topology := "core"
+		if hello.IsLeaf || isLeaf {
+			topology = "leaf"
+		}
+
+		peerSession := &GatewayPeerSession{
+			GatewayID:    hello.GatewayID,
+			Domain:       hello.Domain,
+			Region:       hello.Region,
+			Capabilities: hello.Capabilities,
+			Topology:     topology,
+			Mux:          mux,
+			Endpoint:     remoteAddr,
+			ConnectedAt:  time.Now().UTC(),
+		}
+
+		setRegisteredPeer(peerSession)
+		if err := r.RegisterPeer(peerSession); err != nil {
+			log.Printf("[Relay/Peering] Failed to register peer %s: %v\n", hello.GatewayID, err)
+			mux.Session.Close()
+			return
+		}
+	})
+
+	// 2. Thread Advertisement
+	router.HandleFunc(string(protocol.TypeThreadAdvertise), func(stream net.Conn, env []byte) {
+		defer stream.Close()
+
+		var adv protocol.ThreadAdvertise
+		if err := json.Unmarshal(env, &adv); err != nil {
+			return
+		}
+
+		for _, node := range adv.Nodes {
+			r.RegisterRemoteNode(node, adv.GatewayID)
+		}
+	})
+
+	// 3. Thread Withdrawal
+	router.HandleFunc(string(protocol.TypeThreadWithdraw), func(stream net.Conn, env []byte) {
+		defer stream.Close()
+
+		var with protocol.ThreadWithdraw
+		if err := json.Unmarshal(env, &with); err != nil {
+			return
+		}
+
+		r.UnregisterRemoteNode(with.Hostname, with.GatewayID)
+	})
+
+	// 4. Cross-gateway ExecRequest
+	router.HandleFunc(string(protocol.TypeExecRequest), func(stream net.Conn, env []byte) {
+		var req protocol.ExecRequest
+		if err := json.Unmarshal(env, &req); err != nil {
+			stream.Close()
+			return
+		}
+
+		// Loop avoidance check
+		for _, p := range req.Path {
+			if p == r.gatewayID {
+				log.Printf("[Relay/Peering] Circular routing loop detected for ExecRequest path=%v, dropping\n", req.Path)
+				stream.Close()
+				return
+			}
+		}
+
+		cleanTarget := r.cleanTargetHostname(req.TargetHostname)
+		multiReader := io.MultiReader(strings.NewReader(""), stream)
+		prefixedConn := &prefixConn{Conn: stream, r: multiReader}
+
+		if err := r.RouteStream(cleanTarget, env, prefixedConn); err != nil {
+			log.Printf("[Relay/Peering] Failed to route ExecRequest to %s: %v\n", cleanTarget, err)
+		}
+	})
+
+	// 5. Cross-gateway CopyRequest
+	router.HandleFunc(string(protocol.TypeCopyRequest), func(stream net.Conn, env []byte) {
+		var req protocol.CopyRequest
+		if err := json.Unmarshal(env, &req); err != nil {
+			stream.Close()
+			return
+		}
+
+		for _, p := range req.Path {
+			if p == r.gatewayID {
+				log.Printf("[Relay/Peering] Circular routing loop detected for CopyRequest path=%v, dropping\n", req.Path)
+				stream.Close()
+				return
+			}
+		}
+
+		cleanTarget := r.cleanTargetHostname(req.TargetHostname)
+		multiReader := io.MultiReader(strings.NewReader(""), stream)
+		prefixedConn := &prefixConn{Conn: stream, r: multiReader}
+
+		if err := r.RouteStream(cleanTarget, env, prefixedConn); err != nil {
+			log.Printf("[Relay/Peering] Failed to route CopyRequest to %s: %v\n", cleanTarget, err)
+		}
+	})
+
+	// 6. Cross-gateway ProxyRequest
+	router.HandleFunc(string(protocol.TypeProxyRequest), func(stream net.Conn, env []byte) {
+		var req protocol.ProxyRequest
+		if err := json.Unmarshal(env, &req); err != nil {
+			stream.Close()
+			return
+		}
+
+		for _, p := range req.Path {
+			if p == r.gatewayID {
+				log.Printf("[Relay/Peering] Circular routing loop detected for ProxyRequest path=%v, dropping\n", req.Path)
+				stream.Close()
+				return
+			}
+		}
+
+		cleanTarget := r.cleanTargetHostname(req.TargetHostname)
+		multiReader := io.MultiReader(strings.NewReader(""), stream)
+		prefixedConn := &prefixConn{Conn: stream, r: multiReader}
+
+		if err := r.RouteProxyStream(cleanTarget, env, prefixedConn); err != nil {
+			log.Printf("[Relay/Peering] Failed to route ProxyRequest to %s: %v\n", cleanTarget, err)
+		}
+	})
+
+	err := router.Accept()
+
+	if p := getRegisteredPeer(); p != nil {
+		r.unregisterPeerSession(p)
+	}
+
+	return err
+}
+
+func (r *Relay) cleanTargetHostname(target string) string {
+	// If target is thread.gw-id or thread.gw-id.fabric, strip local gateway or domain
+	if idx := strings.Index(target, "."); idx > 0 {
+		base := target[:idx]
+		rest := target[idx+1:]
+		if rest == r.gatewayID || rest == r.gatewayID+"."+r.domain || rest == r.domain {
+			return base
+		}
+	}
+	return target
+}
+
+func (r *Relay) sendLocalThreadAdvertisementsToPeer(peer *GatewayPeerSession) {
+	r.mu.RLock()
+	localNodes := r.listNodesLocked()
+	r.mu.RUnlock()
+
+	if len(localNodes) == 0 {
+		return
+	}
+
+	adv := protocol.ThreadAdvertise{
+		Type:      protocol.TypeThreadAdvertise,
+		GatewayID: r.gatewayID,
+		Nodes:     localNodes,
+	}
+	b, err := json.Marshal(adv)
+	if err != nil {
+		return
+	}
+
+	if peer.Mux != nil && peer.Mux.Session != nil && !peer.Mux.Session.IsClosed() {
+		stream, err := peer.Mux.Session.Open()
+		if err == nil {
+			_, _ = stream.Write(b)
+			stream.Close()
+		}
+	}
+}
+
+// BroadcastThreadAdvertise sends thread advertisement to all active peers.
+func (r *Relay) BroadcastThreadAdvertise(nodes []protocol.NodeMetadata) {
+	r.peerMu.RLock()
+	peersList := make([]*GatewayPeerSession, 0, len(r.peers))
+	for _, p := range r.peers {
+		peersList = append(peersList, p)
+	}
+	r.peerMu.RUnlock()
+
+	if len(peersList) == 0 || len(nodes) == 0 {
+		return
+	}
+
+	adv := protocol.ThreadAdvertise{
+		Type:      protocol.TypeThreadAdvertise,
+		GatewayID: r.gatewayID,
+		Nodes:     nodes,
+	}
+	b, err := json.Marshal(adv)
+	if err != nil {
+		return
+	}
+
+	for _, p := range peersList {
+		if p.Mux != nil && p.Mux.Session != nil && !p.Mux.Session.IsClosed() {
+			stream, err := p.Mux.Session.Open()
+			if err == nil {
+				_, _ = stream.Write(b)
+				stream.Close()
+			}
+		}
+	}
+}
+
+// BroadcastThreadWithdraw sends thread withdrawal notice to all active peers.
+func (r *Relay) BroadcastThreadWithdraw(hostname string) {
+	r.peerMu.RLock()
+	peersList := make([]*GatewayPeerSession, 0, len(r.peers))
+	for _, p := range r.peers {
+		peersList = append(peersList, p)
+	}
+	r.peerMu.RUnlock()
+
+	if len(peersList) == 0 || hostname == "" {
+		return
+	}
+
+	with := protocol.ThreadWithdraw{
+		Type:      protocol.TypeThreadWithdraw,
+		GatewayID: r.gatewayID,
+		Hostname:  hostname,
+	}
+	b, err := json.Marshal(with)
+	if err != nil {
+		return
+	}
+
+	for _, p := range peersList {
+		if p.Mux != nil && p.Mux.Session != nil && !p.Mux.Session.IsClosed() {
+			stream, err := p.Mux.Session.Open()
+			if err == nil {
+				_, _ = stream.Write(b)
+				stream.Close()
+			}
+		}
+	}
+}

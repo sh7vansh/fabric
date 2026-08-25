@@ -29,6 +29,8 @@ Fabric is a lightweight remote execution, service discovery, and networking plat
 - **RemoteExecutor**: An adapter abstracting the SSH transport for provisioning, allowing pure testing of script generation and host bootstrapping.
 - **InitManager**: A deep module in `internal/service` encapsulating multi-tier init rules (system systemd, user systemd, standalone supervisor), canonical unit/supervisor script definitions, and local lifecycle management or remote script rendering.
 - **Local vs Remote**: User-centric connection topologies. In standard operation, agents initiate outbound connections to the server; in direct remote mode, an agent listens directly with mTLS.
+- **Federation / Peering**: Inter-server mesh connecting multiple `fabric-server` gateways across regions, clouds, and on-premise networks.
+- **Core Gateway vs Leaf Relay**: Core gateways peer symmetrically with public/VPC IPs; Leaf relays run behind NAT/firewalls and maintain persistent outbound reverse-tunnels to Core gateways.
 
 ---
 
@@ -37,19 +39,23 @@ Fabric is a lightweight remote execution, service discovery, and networking plat
 ```text
 [ fabric CLI ] ----WebSocket----> [ fabric-server Gateway ] <----WebSocket---- [ fabric-agent Daemon ]
 (Exec/CP/Port)                           (Relay & DNS)                             (Thread / Host Control)
+                                               ▲
+                                               │ Yamux Peering
+                                               ▼
+                                  [ fabric-server Peer/Leaf ]
 ```
 
-- **Protocol**: Bidirectional JSON envelopes over WebSocket (`TypeHandshake`, `TypeExecRequest`, `TypeExecStream`, `TypeCopyRequest`, `TypeDNSQuery`, `TypeNodeSync`).
+- **Protocol**: Bidirectional JSON envelopes over WebSocket (`TypeHandshake`, `TypeExecRequest`, `TypeExecStream`, `TypeCopyRequest`, `TypeDNSQuery`, `TypeNodeSync`, `TypeGatewayHello`, `TypeThreadAdvertise`).
 - **Binary Data**: Tar archives, raw TTY I/O, and DNS query payloads are Base64 encoded inside stream envelopes.
 
 ---
 
 ## Invariants & Design Rules
 
-1. **Outbound Only**: Threads generally never require inbound firewall holes; communication originates outbound from agents to the Fabric Server.
+1. **Outbound Only**: Threads generally never require inbound firewall holes; communication originates outbound from agents to the Fabric Server, and from Leaf gateways to Core gateways.
 2. **Deterministic Teardown**: DNS hooks (`/etc/hosts` modifications) and PTY processes must be cleanly cleaned up on agent shutdown or disconnect.
 3. **Streaming Transfers**: File copies (`cp`) and execution streams must operate incrementally over chunked tar/stream envelopes without holding unbounded memory buffers.
-4. **Obvious Verbs & Personality Nouns**: Keep standard system commands obvious (`ps`, `exec`, `cp`, `port`, `stitch`) and conceptual nouns focused (`thread`, `Fabric`).
+4. **Obvious Verbs & Personality Nouns**: Keep standard system commands obvious (`ps`, `exec`, `cp`, `port`, `stitch`, `peer`) and conceptual nouns focused (`thread`, `Fabric`).
 
 ---
 
@@ -61,6 +67,11 @@ fabric
 ├── exec [flags] <thread> [cmd...]          # Execute a command or interactive shell on a remote thread
 ├── cp <src> <dst>                          # Copy files/directories to/from a remote thread
 ├── port <thread> [local:remote]            # Forward/proxy TCP ports across the Fabric
+├── peer <action>                           # Manage server-to-server federation peers
+│   ├── ls                                  # List connected server peers and regions
+│   ├── add <endpoint>                      # Connect to a remote gateway peer
+│   ├── rm <gateway-id>                     # Disconnect a gateway peer
+│   └── inspect <gateway-id>                # Telemetry & routing table for peer
 ├── thread                                  # Manage Fabric threads
 │   ├── ls [flags]                          # List all connected online threads
 │   └── inspect <thread...>                 # Show detailed metadata and telemetry for threads

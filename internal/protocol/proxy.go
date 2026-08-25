@@ -17,6 +17,8 @@ type ProxyRequest struct {
 	TargetHostname string       `json:"target_hostname,omitempty"`
 	TargetHost     string       `json:"target_host,omitempty"`
 	TargetPort     int          `json:"target_port,omitempty"`
+	Path           []string     `json:"path,omitempty"`
+	Hops           int          `json:"hops,omitempty"`
 }
 
 

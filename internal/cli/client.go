@@ -202,11 +202,23 @@ func (c *Client) DoHTTP(method, path string, body interface{}) (*http.Response, 
 	basePath = strings.TrimRight(basePath, "/")
 	u.Path = basePath + "/" + strings.TrimLeft(path, "/")
 
-	req, err := http.NewRequest(method, u.String(), nil)
+	var bodyReader io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+		}
+		bodyReader = bytes.NewReader(b)
+	}
+
+	req, err := http.NewRequest(method, u.String(), bodyReader)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Add("Authorization", "Bearer "+c.Config.Token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 
 	httpClient := http.DefaultClient
 	if scheme == "https" {
@@ -227,6 +239,75 @@ func (c *Client) DoHTTP(method, path string, body interface{}) (*http.Response, 
 		return nil, pki.FormatTLSError(err)
 	}
 	return resp, nil
+}
+
+// ListPeers retrieves all connected peer gateways from the fabric server.
+func (c *Client) ListPeers() ([]protocol.GatewayPeerInfo, error) {
+	resp, err := c.DoHTTP("GET", "/peers", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to list peers: HTTP %s", resp.Status)
+	}
+
+	var peers []protocol.GatewayPeerInfo
+	if err := json.NewDecoder(resp.Body).Decode(&peers); err != nil {
+		return nil, err
+	}
+	return peers, nil
+}
+
+// GetPeer retrieves telemetry for a single peer gateway.
+func (c *Client) GetPeer(gatewayID string) (*protocol.GatewayPeerInfo, error) {
+	resp, err := c.DoHTTP("GET", "/peers/"+gatewayID, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("peer gateway '%s' not found", gatewayID)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get peer %s: HTTP %s", gatewayID, resp.Status)
+	}
+
+	var info protocol.GatewayPeerInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+// AddPeer initiates a peer connection to the given endpoint.
+func (c *Client) AddPeer(endpoint string) error {
+	resp, err := c.DoHTTP("POST", "/peers", map[string]string{"endpoint": endpoint})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to add peer: HTTP %s", resp.Status)
+	}
+	return nil
+}
+
+// RemovePeer disconnects a peer gateway.
+func (c *Client) RemovePeer(gatewayID string) error {
+	resp, err := c.DoHTTP("DELETE", "/peers/"+gatewayID, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to remove peer %s: HTTP %s", gatewayID, resp.Status)
+	}
+	return nil
 }
 
 // ListNodes retrieves metadata for all connected mesh nodes, merging direct inverted nodes.

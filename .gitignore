@@ -8,3 +8,4 @@ bin/
 *.scratch/
 *.wayfinder/
 *scratch/
+*graphify-out/

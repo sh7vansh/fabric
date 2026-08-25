@@ -30,6 +30,11 @@ func main() {
 	httpPortFlag := flag.Int("http-port", 80, "Port for HTTP / ACME HTTP-01 challenge listener")
 	caDirFlag := flag.String("ca-dir", "", "Directory to store internal Root CA")
 	tokenFlag := flag.String("token", os.Getenv("FABRIC_TOKEN"), "Pre-shared token for authentication")
+	gatewayIDFlag := flag.String("gateway-id", os.Getenv("FABRIC_GATEWAY_ID"), "Unique gateway identifier for federation")
+	regionFlag := flag.String("region", os.Getenv("FABRIC_REGION"), "Geographic region for this gateway (e.g. us-east, eu-west)")
+	federationCAFlag := flag.String("federation-ca", os.Getenv("FABRIC_FEDERATION_CA"), "Path to shared Federation Root CA certificate")
+	peerFlag := flag.String("peer", os.Getenv("FABRIC_PEERS"), "Comma-separated list of peer gateway URLs to connect to")
+	leafOfFlag := flag.String("leaf-of", os.Getenv("FABRIC_LEAF_OF"), "Core gateway URL to connect to as an outbound Leaf relay")
 	flag.Parse()
 
 	token := *tokenFlag
@@ -37,11 +42,25 @@ func main() {
 		log.Fatal("Authentication token required: set FABRIC_TOKEN environment variable or pass --token")
 	}
 
+	var initialPeers []string
+	if *peerFlag != "" {
+		for _, p := range strings.Split(*peerFlag, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				initialPeers = append(initialPeers, p)
+			}
+		}
+	}
+
 	// Initialize Relay control-plane module
 	meshRelay := relay.New(relay.Config{
-		Domain:   *domainFlag,
-		Token:    token,
-		PingFreq: 5 * time.Second,
+		Domain:       *domainFlag,
+		Token:        token,
+		PingFreq:     5 * time.Second,
+		GatewayID:    *gatewayIDFlag,
+		Region:       *regionFlag,
+		FederationCA: *federationCAFlag,
+		Peers:        initialPeers,
+		LeafOf:       *leafOfFlag,
 	})
 	defer meshRelay.Close()
 
@@ -124,6 +143,28 @@ func main() {
 		}()
 	})
 
+	// /gateway/v1/peer WebSocket endpoint for inter-server Yamux peering
+	http.HandleFunc("/gateway/v1/peer", func(w http.ResponseWriter, r *http.Request) {
+		provided := extractBearerToken(r)
+		if provided != "" && !meshRelay.ValidateToken(provided) {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		isLeaf := r.URL.Query().Get("leaf") == "true"
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Println("[Server/Peering] Peer upgrade error:", err)
+			return
+		}
+
+		go func() {
+			if err := meshRelay.ServePeerWS(conn, r.RemoteAddr, isLeaf); err != nil {
+				log.Printf("[Server/Peering] Peer session ended for %s: %v\n", r.RemoteAddr, err)
+			}
+		}()
+	})
+
 	authenticate := func(w http.ResponseWriter, r *http.Request) bool {
 		provided := extractBearerToken(r)
 		if !meshRelay.ValidateToken(provided) {
@@ -136,9 +177,11 @@ func main() {
 	http.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"version": "2.3.3",
-			"domain":  *domainFlag,
-			"role":    "server",
+			"version":    "2.3.3",
+			"domain":     *domainFlag,
+			"role":       "server",
+			"gateway_id": meshRelay.GatewayID(),
+			"region":     meshRelay.Region(),
 		})
 	})
 
@@ -162,6 +205,61 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(meta)
+	})
+
+	http.HandleFunc("/peers", func(w http.ResponseWriter, r *http.Request) {
+		if !authenticate(w, r) {
+			return
+		}
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(meshRelay.ListPeers())
+			return
+		}
+		if r.Method == http.MethodPost {
+			var body struct {
+				Endpoint string `json:"endpoint"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Endpoint == "" {
+				http.Error(w, "invalid request body: missing endpoint", http.StatusBadRequest)
+				return
+			}
+			if err := meshRelay.AddPeer(body.Endpoint); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "initiating connection", "endpoint": body.Endpoint})
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	})
+
+	http.HandleFunc("/peers/", func(w http.ResponseWriter, r *http.Request) {
+		if !authenticate(w, r) {
+			return
+		}
+		peerID := r.URL.Path[len("/peers/"):]
+		if r.Method == http.MethodGet {
+			info, ok := meshRelay.GetPeer(peerID)
+			if !ok {
+				http.Error(w, "Peer not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(info)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			if err := meshRelay.RemovePeer(peerID); err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"status": "removed", "gateway_id": peerID})
+			return
+		}
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	})
 
 	log.Println("Fabric Server listening on :8080")

@@ -26,21 +26,34 @@ type NodeSession struct {
 
 // Config configures the MeshRelay control-plane.
 type Config struct {
-	Domain   string
-	Token    string
-	PingFreq time.Duration
+	Domain       string
+	Token        string
+	PingFreq     time.Duration
+	GatewayID    string
+	Region       string
+	FederationCA string
+	Peers        []string
+	LeafOf       string
 }
 
 // Relay is the deep control-plane module managing mesh node registration,
 // session displacement, multiplexed stream routing, DNS wire resolution, and synchronization.
 type Relay struct {
-	domain   string
-	token    string
-	nodes    map[string]*NodeSession
-	mu       sync.RWMutex
-	closeCh  chan struct{}
-	closed   bool
-	closeMux sync.Mutex
+	domain       string
+	token        string
+	nodes        map[string]*NodeSession
+	mu           sync.RWMutex
+	closeCh      chan struct{}
+	closed       bool
+	closeMux     sync.Mutex
+
+	// Federation fields
+	gatewayID    string
+	region       string
+	federationCA string
+	peers        map[string]*GatewayPeerSession
+	remoteNodes  map[string]RemoteNodeEntry
+	peerMu       sync.RWMutex
 }
 
 // New creates and initializes a new MeshRelay instance.
@@ -50,16 +63,41 @@ func New(cfg Config) *Relay {
 		domain = "fabric.mesh"
 	}
 
+	gatewayID := cfg.GatewayID
+	if gatewayID == "" {
+		gatewayID = "gw-" + strings.ReplaceAll(domain, ".", "-")
+	}
+
+	region := cfg.Region
+	if region == "" {
+		region = "default"
+	}
+
 	r := &Relay{
-		domain:  domain,
-		token:   cfg.Token,
-		nodes:   make(map[string]*NodeSession),
-		closeCh: make(chan struct{}),
+		domain:       domain,
+		token:        cfg.Token,
+		nodes:        make(map[string]*NodeSession),
+		closeCh:      make(chan struct{}),
+		gatewayID:    gatewayID,
+		region:       region,
+		federationCA: cfg.FederationCA,
+		peers:        make(map[string]*GatewayPeerSession),
+		remoteNodes:  make(map[string]RemoteNodeEntry),
 	}
 
 	pingFreq := cfg.PingFreq
 	if pingFreq > 0 {
 		go r.pingLoop(pingFreq)
+	}
+
+	if cfg.LeafOf != "" {
+		r.ConnectLeaf(cfg.LeafOf)
+	}
+
+	for _, p := range cfg.Peers {
+		if p != "" {
+			_ = r.AddPeer(p)
+		}
 	}
 
 	return r
@@ -314,6 +352,7 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 		meta.ConnectedAt = now
 	}
 	meta.LastSeen = now
+	meta.GatewayID = r.gatewayID
 
 	r.mu.Lock()
 	if existing, exists := r.nodes[meta.Hostname]; exists {
@@ -334,6 +373,7 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 	r.mu.Unlock()
 
 	go r.BroadcastSync()
+	go r.BroadcastThreadAdvertise([]protocol.NodeMetadata{meta})
 
 	// Monitor session closure
 	if mux != nil && mux.Session != nil {
@@ -345,6 +385,7 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 			}
 			r.mu.Unlock()
 			r.BroadcastSync()
+			r.BroadcastThreadWithdraw(meta.Hostname)
 		}()
 	}
 
@@ -357,99 +398,263 @@ func (r *Relay) UnregisterNode(hostname string) {
 	delete(r.nodes, hostname)
 	r.mu.Unlock()
 	go r.BroadcastSync()
+	go r.BroadcastThreadWithdraw(hostname)
 }
 
-// GetNode returns a copy of node metadata if online.
+// GetNode returns a copy of node metadata if online (local or remote).
 func (r *Relay) GetNode(hostname string) (*protocol.NodeMetadata, bool) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
 	state, ok := r.nodes[hostname]
-	if !ok {
-		return nil, false
+	r.mu.RUnlock()
+
+	if ok {
+		metaCopy := state.Metadata
+		return &metaCopy, true
 	}
-	metaCopy := state.Metadata
-	return &metaCopy, true
+
+	// Check remote nodes
+	r.peerMu.RLock()
+	defer r.peerMu.RUnlock()
+
+	if rentry, exists := r.remoteNodes[hostname]; exists {
+		metaCopy := rentry.Node
+		return &metaCopy, true
+	}
+
+	// Check if hostname is formatted as <thread>.<gateway-id> or <thread>.<gateway-id>.<domain>
+	if idx := strings.Index(hostname, "."); idx > 0 {
+		prefix := hostname[:idx]
+		rest := hostname[idx+1:]
+		for rHost, rentry := range r.remoteNodes {
+			if rHost == prefix && (rentry.GatewayID == rest || rentry.GatewayID+"."+r.domain == rest || rentry.GatewayID+".fabric" == rest) {
+				metaCopy := rentry.Node
+				return &metaCopy, true
+			}
+		}
+	}
+
+	return nil, false
 }
 
 func (r *Relay) listNodesLocked() []protocol.NodeMetadata {
 	list := make([]protocol.NodeMetadata, 0, len(r.nodes))
 	for _, state := range r.nodes {
-		list = append(list, state.Metadata)
+		meta := state.Metadata
+		if meta.GatewayID == "" {
+			meta.GatewayID = r.gatewayID
+		}
+		list = append(list, meta)
 	}
 	return list
 }
 
-// ListNodes returns metadata for all currently connected nodes.
+// ListNodes returns metadata for all currently connected local and federated nodes.
 func (r *Relay) ListNodes() []protocol.NodeMetadata {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.listNodesLocked()
-}
-
-// RouteStream forwards an incoming stream and initial envelope to a target node.
-func (r *Relay) RouteStream(targetHostname string, envelope []byte, srcStream net.Conn) error {
-	r.mu.RLock()
-	nodeState, ok := r.nodes[targetHostname]
+	list := r.listNodesLocked()
 	r.mu.RUnlock()
 
-	if !ok {
-		srcStream.Close()
-		return fmt.Errorf("target node not found: %s", targetHostname)
+	r.peerMu.RLock()
+	for _, rentry := range r.remoteNodes {
+		list = append(list, rentry.Node)
 	}
+	r.peerMu.RUnlock()
 
-	targetStream, err := nodeState.Mux.Session.Open()
-	if err != nil {
-		srcStream.Close()
-		return fmt.Errorf("failed to open stream to target node %s: %w", targetHostname, err)
-	}
-
-	if _, err := targetStream.Write(envelope); err != nil {
-		targetStream.Close()
-		srcStream.Close()
-		return fmt.Errorf("failed to write envelope to target stream: %w", err)
-	}
-
-	go protocol.Proxy(srcStream, targetStream)
-	return nil
+	return list
 }
 
-// RouteProxyStream routes a TCP proxy request to a specified or default node.
-func (r *Relay) RouteProxyStream(targetHostname string, envelope []byte, srcStream net.Conn) error {
-	r.mu.RLock()
-	var targetNode *NodeSession
-	if targetHostname != "" {
-		targetNode = r.nodes[targetHostname]
-	} else {
-		for _, n := range r.nodes {
-			targetNode = n
-			break
+func (r *Relay) resolveTarget(targetHostname string) (isLocal bool, nodeSess *NodeSession, peerSess *GatewayPeerSession, cleanTarget string) {
+	cleanTarget = targetHostname
+	gwHint := ""
+
+	if idx := strings.Index(targetHostname, "."); idx > 0 {
+		cleanTarget = targetHostname[:idx]
+		gwHint = targetHostname[idx+1:]
+		if strings.HasSuffix(gwHint, "."+r.domain) {
+			gwHint = strings.TrimSuffix(gwHint, "."+r.domain)
+		}
+		if strings.HasSuffix(gwHint, ".fabric") {
+			gwHint = strings.TrimSuffix(gwHint, ".fabric")
 		}
 	}
-	r.mu.RUnlock()
 
-	if targetNode == nil {
-		srcStream.Close()
-		return fmt.Errorf("no target node available for proxy stream")
+	// 1. If gwHint is local gateway or empty, check local nodes
+	if gwHint == "" || gwHint == r.gatewayID {
+		r.mu.RLock()
+		sess, ok := r.nodes[cleanTarget]
+		r.mu.RUnlock()
+		if ok {
+			return true, sess, nil, cleanTarget
+		}
 	}
 
-	targetStream, err := targetNode.Mux.Session.Open()
-	if err != nil {
-		srcStream.Close()
-		return fmt.Errorf("failed to open proxy stream: %w", err)
+	// 2. Check remote nodes
+	r.peerMu.RLock()
+	defer r.peerMu.RUnlock()
+
+	if gwHint != "" {
+		for rHost, rentry := range r.remoteNodes {
+			if rHost == cleanTarget && rentry.GatewayID == gwHint {
+				return false, nil, rentry.PeerSession, cleanTarget
+			}
+		}
+		if p, ok := r.peers[gwHint]; ok {
+			return false, nil, p, cleanTarget
+		}
 	}
 
-	if _, err := targetStream.Write(envelope); err != nil {
-		targetStream.Close()
-		srcStream.Close()
-		return fmt.Errorf("failed to send proxy envelope: %w", err)
+	if rentry, ok := r.remoteNodes[cleanTarget]; ok {
+		return false, nil, rentry.PeerSession, cleanTarget
 	}
 
-	go protocol.Proxy(srcStream, targetStream)
-	return nil
+	return false, nil, nil, cleanTarget
 }
 
-// ResolveDNS resolves an RFC 1035 wire query from a node against the active node registry.
+// RouteStream forwards an incoming stream and initial envelope to a target node (local or federated).
+func (r *Relay) RouteStream(targetHostname string, envelope []byte, srcStream net.Conn) error {
+	isLocal, localNode, peerSess, cleanTarget := r.resolveTarget(targetHostname)
+
+	if isLocal && localNode != nil {
+		targetStream, err := localNode.Mux.Session.Open()
+		if err != nil {
+			srcStream.Close()
+			return fmt.Errorf("failed to open stream to target node %s: %w", cleanTarget, err)
+		}
+
+		if _, err := targetStream.Write(envelope); err != nil {
+			targetStream.Close()
+			srcStream.Close()
+			return fmt.Errorf("failed to write envelope to target stream: %w", err)
+		}
+
+		go protocol.Proxy(srcStream, targetStream)
+		return nil
+	}
+
+	if peerSess != nil && peerSess.Mux != nil && peerSess.Mux.Session != nil {
+		// Parse envelope to verify and update loop avoidance headers
+		var rawMap map[string]interface{}
+		if err := json.Unmarshal(envelope, &rawMap); err == nil {
+			pathList := []string{}
+			if p, ok := rawMap["path"].([]interface{}); ok {
+				for _, elem := range p {
+					if s, ok := elem.(string); ok {
+						if s == r.gatewayID {
+							srcStream.Close()
+							return fmt.Errorf("circular routing loop detected for target %s: path=%v", targetHostname, p)
+						}
+						pathList = append(pathList, s)
+					}
+				}
+			}
+			pathList = append(pathList, r.gatewayID)
+			rawMap["path"] = pathList
+
+			hops := 0
+			if h, ok := rawMap["hops"].(float64); ok {
+				hops = int(h)
+			}
+			rawMap["hops"] = hops + 1
+
+			// Update target_hostname to cleanTarget for next hop
+			rawMap["target_hostname"] = cleanTarget
+
+			envelope, _ = json.Marshal(rawMap)
+		}
+
+		targetStream, err := peerSess.Mux.Session.Open()
+		if err != nil {
+			srcStream.Close()
+			return fmt.Errorf("failed to open stream to peer gateway %s: %w", peerSess.GatewayID, err)
+		}
+
+		if _, err := targetStream.Write(envelope); err != nil {
+			targetStream.Close()
+			srcStream.Close()
+			return fmt.Errorf("failed to write envelope to peer stream: %w", err)
+		}
+
+		go protocol.Proxy(srcStream, targetStream)
+		return nil
+	}
+
+	srcStream.Close()
+	return fmt.Errorf("target node not found: %s", targetHostname)
+}
+
+// RouteProxyStream routes a TCP proxy request to a specified or default node (local or federated).
+func (r *Relay) RouteProxyStream(targetHostname string, envelope []byte, srcStream net.Conn) error {
+	if targetHostname == "" {
+		r.mu.RLock()
+		for _, n := range r.nodes {
+			targetHostname = n.Metadata.Hostname
+			break
+		}
+		r.mu.RUnlock()
+	}
+
+	isLocal, localNode, peerSess, cleanTarget := r.resolveTarget(targetHostname)
+
+	if isLocal && localNode != nil {
+		targetStream, err := localNode.Mux.Session.Open()
+		if err != nil {
+			srcStream.Close()
+			return fmt.Errorf("failed to open proxy stream: %w", err)
+		}
+
+		if _, err := targetStream.Write(envelope); err != nil {
+			targetStream.Close()
+			srcStream.Close()
+			return fmt.Errorf("failed to send proxy envelope: %w", err)
+		}
+
+		go protocol.Proxy(srcStream, targetStream)
+		return nil
+	}
+
+	if peerSess != nil && peerSess.Mux != nil && peerSess.Mux.Session != nil {
+		var rawMap map[string]interface{}
+		if err := json.Unmarshal(envelope, &rawMap); err == nil {
+			pathList := []string{}
+			if p, ok := rawMap["path"].([]interface{}); ok {
+				for _, elem := range p {
+					if s, ok := elem.(string); ok {
+						if s == r.gatewayID {
+							srcStream.Close()
+							return fmt.Errorf("circular routing loop detected for proxy target %s: path=%v", targetHostname, p)
+						}
+						pathList = append(pathList, s)
+					}
+				}
+			}
+			pathList = append(pathList, r.gatewayID)
+			rawMap["path"] = pathList
+			rawMap["target_hostname"] = cleanTarget
+
+			envelope, _ = json.Marshal(rawMap)
+		}
+
+		targetStream, err := peerSess.Mux.Session.Open()
+		if err != nil {
+			srcStream.Close()
+			return fmt.Errorf("failed to open proxy stream to peer gateway %s: %w", peerSess.GatewayID, err)
+		}
+
+		if _, err := targetStream.Write(envelope); err != nil {
+			targetStream.Close()
+			srcStream.Close()
+			return fmt.Errorf("failed to write proxy envelope to peer stream: %w", err)
+		}
+
+		go protocol.Proxy(srcStream, targetStream)
+		return nil
+	}
+
+	srcStream.Close()
+	return fmt.Errorf("no target node available for proxy stream: %s", targetHostname)
+}
+
+// ResolveDNS resolves an RFC 1035 wire query from a node against active local and federated registries.
 func (r *Relay) ResolveDNS(req protocol.DNSQuery, proxyIP string) protocol.DNSResponse {
 	resp := protocol.DNSResponse{
 		Type:      protocol.TypeDNSResponse,
@@ -485,10 +690,47 @@ func (r *Relay) ResolveDNS(req protocol.DNSQuery, proxyIP string) protocol.DNSRe
 		prefix := strings.TrimSuffix(name, domainSuffix)
 		parts := strings.Split(prefix, ".")
 		nodeID := parts[len(parts)-1]
+		gwID := ""
 
-		r.mu.RLock()
-		_, isOnline := r.nodes[nodeID]
-		r.mu.RUnlock()
+		if len(parts) > 1 {
+			last := parts[len(parts)-1]
+			// Check if last part is a known gateway ID
+			r.peerMu.RLock()
+			_, isPeer := r.peers[last]
+			if !isPeer {
+				for _, rn := range r.remoteNodes {
+					if rn.GatewayID == last {
+						isPeer = true
+						break
+					}
+				}
+			}
+			r.peerMu.RUnlock()
+
+			if last == r.gatewayID || isPeer {
+				gwID = last
+				nodeID = parts[len(parts)-2]
+			}
+		}
+
+		isOnline := false
+
+		if gwID == "" || gwID == r.gatewayID {
+			r.mu.RLock()
+			_, isOnline = r.nodes[nodeID]
+			r.mu.RUnlock()
+		}
+
+		if !isOnline {
+			r.peerMu.RLock()
+			for rHost, rentry := range r.remoteNodes {
+				if rHost == nodeID && (gwID == "" || rentry.GatewayID == gwID) {
+					isOnline = true
+					break
+				}
+			}
+			r.peerMu.RUnlock()
+		}
 
 		if isOnline {
 			ip := net.ParseIP(proxyIP)
@@ -578,6 +820,16 @@ func (r *Relay) Close() error {
 	}
 	r.nodes = make(map[string]*NodeSession)
 	r.mu.Unlock()
+
+	r.peerMu.Lock()
+	for _, p := range r.peers {
+		if p.Mux != nil && p.Mux.Session != nil {
+			_ = p.Mux.Session.Close()
+		}
+	}
+	r.peers = make(map[string]*GatewayPeerSession)
+	r.remoteNodes = make(map[string]RemoteNodeEntry)
+	r.peerMu.Unlock()
 
 	return nil
 }
