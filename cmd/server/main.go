@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,12 +24,21 @@ func main() {
 		defaultDomain = "fabric.mesh"
 	}
 
+	portEnv := os.Getenv("FABRIC_PORT")
+	defaultPort := 8080
+	if portEnv != "" {
+		if p, err := strconv.Atoi(portEnv); err == nil {
+			defaultPort = p
+		}
+	}
+
+	portFlag := flag.Int("port", defaultPort, "Port for HTTP / WebSocket listener")
 	domainFlag := flag.String("domain", defaultDomain, "Domain for the Fabric DNS server")
 	publicDomainFlag := flag.String("public-domain", os.Getenv("FABRIC_PUBLIC_DOMAIN"), "Public domain for ACME TLS certificates (e.g. example.com)")
 	acmeEmailFlag := flag.String("acme-email", os.Getenv("FABRIC_ACME_EMAIL"), "Email address for Let's Encrypt ACME registration")
 	acmeStagingFlag := flag.Bool("acme-staging", os.Getenv("FABRIC_ACME_STAGING") == "true", "Use Let's Encrypt staging environment")
-	tlsPortFlag := flag.Int("tls-port", 443, "Port for HTTPS/WSS TLS listener")
-	httpPortFlag := flag.Int("http-port", 80, "Port for HTTP / ACME HTTP-01 challenge listener")
+	tlsPortFlag := flag.Int("tls-port", 443, "Port for HTTPS/WSS TLS listener (0 to disable)")
+	httpPortFlag := flag.Int("http-port", 80, "Port for HTTP / ACME HTTP-01 challenge listener (0 to disable)")
 	caDirFlag := flag.String("ca-dir", "", "Directory to store internal Root CA")
 	tokenFlag := flag.String("token", os.Getenv("FABRIC_TOKEN"), "Pre-shared token for authentication")
 	gatewayIDFlag := flag.String("gateway-id", os.Getenv("FABRIC_GATEWAY_ID"), "Unique gateway identifier for federation")
@@ -86,45 +96,49 @@ func main() {
 	}
 
 	// Start Port 80 HTTP Server (ACME Challenges + 301 HTTPS Redirects)
-	go func() {
-		httpAddr := fmt.Sprintf(":%d", *httpPortFlag)
-		srv := &http.Server{
-			Addr:    httpAddr,
-			Handler: tlsEng.HTTPSRedirectHandler(*tlsPortFlag),
-		}
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("[HTTP] Port %d listener info (run with sudo for port 80): %v", *httpPortFlag, err)
-		}
-	}()
-
-	// Start Port 443 HTTPS / WSS Server (Dynamic Dual-Mode SNI)
-	go func() {
-		tlsAddr := fmt.Sprintf(":%d", *tlsPortFlag)
-		tlsLn, err := net.Listen("tcp", tlsAddr)
-		if err != nil {
-			log.Printf("[TLS] Port %d listener info (run with sudo for port 443): %v", *tlsPortFlag, err)
-			return
-		}
-		defer tlsLn.Close()
-		log.Printf("[TLS] Fabric Server TLS listening on %s (HTTPS / WSS with Dual-Mode SNI)", tlsAddr)
-
-		secureSrv := &http.Server{
-			Handler: http.DefaultServeMux,
-		}
-		tlsCfg := tlsEng.TLSConfig()
-		if *federationCAFlag != "" {
-			caPool, err := pki.LoadFederationCertPool(*federationCAFlag)
-			if err != nil {
-				log.Fatalf("Failed to load federation CA: %v", err)
+	if *httpPortFlag > 0 {
+		go func() {
+			httpAddr := fmt.Sprintf(":%d", *httpPortFlag)
+			srv := &http.Server{
+				Addr:    httpAddr,
+				Handler: tlsEng.HTTPSRedirectHandler(*tlsPortFlag),
 			}
-			tlsCfg.ClientCAs = caPool
-			tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
-		}
-		secureLn := tls.NewListener(tlsLn, tlsCfg)
-		if err := secureSrv.Serve(secureLn); err != nil && err != http.ErrServerClosed {
-			log.Printf("[TLS] Server error on %s: %v", tlsAddr, err)
-		}
-	}()
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("[HTTP] Port %d listener info: %v", *httpPortFlag, err)
+			}
+		}()
+	}
+
+	// Start HTTPS / WSS Server (Dynamic Dual-Mode SNI)
+	if *tlsPortFlag > 0 {
+		go func() {
+			tlsAddr := fmt.Sprintf(":%d", *tlsPortFlag)
+			tlsLn, err := net.Listen("tcp", tlsAddr)
+			if err != nil {
+				log.Printf("[TLS] Port %d listener info: %v", *tlsPortFlag, err)
+				return
+			}
+			defer tlsLn.Close()
+			log.Printf("[TLS] Fabric Server TLS listening on %s (HTTPS / WSS with Dual-Mode SNI)", tlsAddr)
+
+			secureSrv := &http.Server{
+				Handler: http.DefaultServeMux,
+			}
+			tlsCfg := tlsEng.TLSConfig()
+			if *federationCAFlag != "" {
+				caPool, err := pki.LoadFederationCertPool(*federationCAFlag)
+				if err != nil {
+					log.Fatalf("Failed to load federation CA: %v", err)
+				}
+				tlsCfg.ClientCAs = caPool
+				tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
+			}
+			secureLn := tls.NewListener(tlsLn, tlsCfg)
+			if err := secureSrv.Serve(secureLn); err != nil && err != http.ErrServerClosed {
+				log.Printf("[TLS] Server error on %s: %v", tlsAddr, err)
+			}
+		}()
+	}
 
 	upgrader := meshRelay.Upgrader()
 
@@ -284,6 +298,6 @@ func main() {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	})
 
-	log.Println("Fabric Server listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Printf("Fabric Server listening on :%d\n", *portFlag)
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *portFlag), nil))
 }
