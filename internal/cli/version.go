@@ -12,12 +12,12 @@ var Version = "2.3.0"
 
 var versionCmd = &cobra.Command{
 	Use:     "version",
-	Short:   "Show Fabric version information for client and server",
+	Short:   "Show Fabric version information for CLI and server",
 	GroupID: "system",
-	Example: `  # Display client version and query server version
+	Example: `  # Display CLI version and query server version
   fabric version`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Printf("Client Version: %s\n", Version)
+		fmt.Printf("CLI Version: %s\n", Version)
 
 		client := NewClient(GetConfig())
 		resp, err := client.DoHTTP("GET", "/version", nil)

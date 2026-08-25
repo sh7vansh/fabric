@@ -88,17 +88,19 @@ func TestParseRoleChoice(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"1", "client"},
-		{"client", "client"},
-		{"CLIENT", "client"},
+		{"1", "cli"},
+		{"cli", "cli"},
+		{"CLI", "cli"},
+		{"client", "cli"},
+		{"CLIENT", "cli"},
 		{"2", "server"},
 		{"server", "server"},
 		{"3", "agent"},
 		{"agent", "agent"},
 		{"4", "both"},
 		{"both", "both"},
-		{"", "client"},
-		{"invalid", "client"},
+		{"", "cli"},
+		{"invalid", "cli"},
 	}
 
 	for _, tt := range tests {

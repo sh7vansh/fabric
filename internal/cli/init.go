@@ -32,7 +32,7 @@ var initCmd = &cobra.Command{
 	Short:   "Interactive CLI and configuration onboarding wizard",
 	GroupID: "system",
 	Long: `Interactive onboarding wizard to configure the local operator workspace (~/.fabric/config.json),
-participation role (client, server, agent, or both), cluster tokens, and Root CA trust.`,
+participation role (cli, server, agent, or both), cluster tokens, and Root CA trust.`,
 	Example: `  # Launch interactive setup wizard
   fabric init
 
@@ -54,7 +54,7 @@ participation role (client, server, agent, or both), cluster tokens, and Root CA
 }
 
 func init() {
-	initCmd.Flags().StringVar(&initRoleFlag, "role", "", "Machine participation role: 'client', 'server', 'agent', or 'both'")
+	initCmd.Flags().StringVar(&initRoleFlag, "role", "", "Machine participation role: 'cli', 'server', 'agent', or 'both'")
 	initCmd.Flags().StringVarP(&initServerFlag, "server", "s", "", "Fabric server WebSocket URL (e.g. ws://192.168.1.50:8080/ws)")
 	initCmd.Flags().StringVarP(&initHostFlag, "host", "H", "", "Server URL (deprecated, use --server)")
 	initCmd.Flags().StringVar(&initTokenFlag, "token", "", "Pre-shared cluster token")
@@ -74,10 +74,10 @@ func parseRoleChoice(input string) string {
 		return "agent"
 	case "4", "both":
 		return "both"
-	case "1", "client":
-		return "client"
+	case "1", "cli", "client":
+		return "cli"
 	default:
-		return "client"
+		return "cli"
 	}
 }
 
@@ -102,12 +102,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("==================================================")
 
 	// 1. Role Selection
-	role := "client"
+	role := "cli"
 	if initRoleFlag != "" {
 		role = parseRoleChoice(initRoleFlag)
 	} else if !initNonInteract {
 		fmt.Println("How will this machine participate in the Fabric?")
-		fmt.Println("  [1] Client only  (Operator CLI / workstation — default)")
+		fmt.Println("  [1] CLI only     (Operator CLI / workstation — default)")
 		fmt.Println("  [2] Server       (Run Fabric Server & control-plane daemon)")
 		fmt.Println("  [3] Agent        (Join as a managed thread / run fabric-agent)")
 		fmt.Println("  [4] Both         (Run Fabric Server + local Agent thread)")
@@ -236,7 +236,7 @@ func formatRoleDisplay(role string) string {
 	case "both":
 		return "Server + Agent"
 	default:
-		return "Client only (Operator CLI)"
+		return "CLI only (Operator Workstation)"
 	}
 }
 
