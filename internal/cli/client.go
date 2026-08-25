@@ -313,7 +313,7 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 					ID:          "direct-" + displayHost,
 					Hostname:    displayHost,
 					RemoteIP:    entry.Address,
-					Status:      "online [MODE: inverted]",
+					Status:      "online [MODE: remote]",
 					OS:          osName,
 					Arch:        entry.Arch,
 					Tags:        entry.Tags,
@@ -394,7 +394,7 @@ func detectLocalNode() *protocol.NodeMetadata {
 				}
 			}
 			if listenAddr != "" {
-				tags = append(tags, "inverted")
+				tags = append(tags, "remote")
 			}
 
 			hostname, _ := os.Hostname()
@@ -404,7 +404,7 @@ func detectLocalNode() *protocol.NodeMetadata {
 
 			status := "online [local daemon]"
 			if listenAddr != "" {
-				status = "online [MODE: inverted (local)]"
+				status = "online [MODE: remote (local)]"
 			}
 
 			ip := listenAddr
@@ -462,7 +462,7 @@ func (c *Client) GetNode(hostname string) (*protocol.NodeMetadata, error) {
 				ID:          "direct-" + displayHost,
 				Hostname:    displayHost,
 				RemoteIP:    matchedEntry.Address,
-				Status:      "online [MODE: inverted]",
+				Status:      "online [MODE: remote]",
 				OS:          osName,
 				Arch:        matchedEntry.Arch,
 				Tags:        matchedEntry.Tags,

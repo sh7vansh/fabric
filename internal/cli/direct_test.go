@@ -167,7 +167,7 @@ func TestTransparentDirectRoutingAndNodeListing(t *testing.T) {
 		DirectNodes: map[string]DirectNodeEntry{
 			"inv-node-1": {
 				Address:      listenAddr,
-				Tags:         []string{"inverted", "gpu"},
+				Tags:         []string{"remote", "gpu"},
 				RegisteredAt: time.Now().UTC(),
 			},
 		},
@@ -209,8 +209,8 @@ func TestTransparentDirectRoutingAndNodeListing(t *testing.T) {
 	if nodes[1].Hostname != "inv-node-1" {
 		t.Errorf("expected hostname 'inv-node-1', got %s", nodes[1].Hostname)
 	}
-	if nodes[1].Status != "online [MODE: inverted]" {
-		t.Errorf("expected status 'online [MODE: inverted]', got %s", nodes[1].Status)
+	if nodes[1].Status != "online [MODE: remote]" {
+		t.Errorf("expected status 'online [MODE: remote]', got %s", nodes[1].Status)
 	}
 }
 

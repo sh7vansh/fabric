@@ -8,7 +8,7 @@ import (
 )
 
 // Version is the current semantic release version of Fabric.
-var Version = "2.3.2"
+var Version = "2.3.3"
 
 var versionCmd = &cobra.Command{
 	Use:     "version",
