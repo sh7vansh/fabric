@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -14,6 +15,7 @@ import (
 type WebSocketConn struct {
 	conn *websocket.Conn
 	r    io.Reader
+	wmu  sync.Mutex
 }
 
 // NewWebSocketConn creates a net.Conn wrapping a websocket connection.
@@ -47,10 +49,13 @@ func (w *WebSocketConn) Read(p []byte) (int, error) {
 
 // Write writes a binary message to the websocket.
 func (w *WebSocketConn) Write(p []byte) (int, error) {
-	err := w.conn.WriteMessage(websocket.BinaryMessage, p)
-	if err != nil {
+	w.wmu.Lock()
+	defer w.wmu.Unlock()
+
+	if err := w.conn.WriteMessage(websocket.BinaryMessage, p); err != nil {
 		return 0, err
 	}
+
 	return len(p), nil
 }
 
