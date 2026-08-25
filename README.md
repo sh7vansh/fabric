@@ -130,6 +130,15 @@ fabric agent uninstall    # Stop and cleanly remove background service
 * **Egress Filtering**: TCP proxy tunnels reject loopback and cloud-metadata endpoints (e.g. `169.254.169.254` and `metadata.google.internal`).
 * **Constant-Time Verification**: All cluster auth tokens use cryptographic constant-time comparison.
 
+## Dependencies
+
+Fabric relies on the following key open-source libraries:
+* [HashiCorp Yamux](https://github.com/hashicorp/yamux) — Stream multiplexing over WebSocket/TLS
+* [Gorilla WebSocket](https://github.com/gorilla/websocket) — WebSocket transport protocol
+* [miekg/dns](https://github.com/miekg/dns) — RFC 1035 DNS engine for Mesh DNS
+* [creack/pty](https://github.com/creack/pty) — Linux pseudo-terminal allocation for interactive sessions
+* [spf13/cobra](https://github.com/spf13/cobra) — Modern CLI command framework
+
 ---
 
 ## License
