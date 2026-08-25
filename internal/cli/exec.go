@@ -43,7 +43,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 	// Single target mode
 	if len(args) < 2 {
-		return fmt.Errorf("usage: fabric exec [flags] TARGET COMMAND [ARG...]")
+		return fmt.Errorf("usage: fabric exec [flags] THREAD COMMAND [ARG...]")
 	}
 	target := args[0]
 	command := strings.Join(args[1:], " ")
@@ -68,7 +68,7 @@ func printFleetSummary(fleetRes *FleetResult) {
 	fmt.Println("             Fleet Execution Summary              ")
 	fmt.Println("==================================================")
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NODE\tSTATUS\tEXIT CODE\tDURATION")
+	fmt.Fprintln(w, "THREAD\tSTATUS\tEXIT CODE\tDURATION")
 	for _, r := range fleetRes.Results {
 		status := "SUCCESS"
 		if !r.Success {

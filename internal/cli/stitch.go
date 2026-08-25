@@ -16,78 +16,70 @@ import (
 )
 
 var (
+	stitchServerURL      string
+	stitchSocketURL      string
 	stitchIdentityFlag   string
 	stitchPortFlag       string
-	stitchSocketURL      string
+	stitchUserFlag       string
 	stitchTokenFlag      string
 	stitchDomainFlag     string
 	stitchTagsFlag       string
 	stitchNoWait         bool
 	stitchModeFlag       string
+	stitchRemoteFlag     bool
 	stitchInvertedFlag   bool
 	stitchListenPortFlag string
 	stitchNoFallback     bool
 
-	// Discover flags
-	discoverPortFlag        string
-	discoverUserFlag        string
-	discoverIdentityFlag    string
-	discoverConcurrencyFlag int
-	discoverTimeoutFlag     time.Duration
-	discoverQuietFlag       bool
-	discoverFormatFlag      string
-	discoverAutoStitchFlag  bool
-	discoverNoWaitFlag      bool
-	discoverSocketURL       string
-	discoverTokenFlag       string
-	discoverDomainFlag      string
-	discoverTagsFlag        string
-	discoverModeFlag        string
-	discoverInvertedFlag    bool
-	discoverListenPortFlag  string
-	discoverNoFallback      bool
+	// Discovery / batch flags
+	stitchConcurrencyFlag int
+	stitchTimeoutFlag     time.Duration
+	stitchQuietFlag       bool
+	stitchFormatFlag      string
+	stitchBatchFlag       bool
 )
 
 var stitchCmd = &cobra.Command{
-	Use:     "stitch [flags] [user@]hostname[:port]",
-	Short:   "Bootstrap and stitch a remote host into the Fabric mesh over SSH",
-	GroupID: "network",
+	Use:          "stitch [flags] [TARGET | CIDR]",
+	Short:        "Bootstrap host over SSH or scan subnet into Fabric",
+	GroupID:      "network",
 	SilenceUsage: true,
-	Long: `Automate provisioning of remote machines into the Fabric mesh over SSH.
+	Long: `Automate provisioning of remote machines into the Fabric over SSH or scan a subnet.
 
-The command connects via SSH, installs the fabric-node binary, creates systemd units,
-configures environment variables with cluster tokens, and verifies active mesh connection.`,
-	Example: `  # Stitch a remote machine with default SSH credentials
+Passing a single target (e.g. user@192.168.1.50) connects via SSH, installs the Fabric agent,
+and joins the machine as a thread. Passing a CIDR (e.g. 192.168.1.0/24) scans the subnet
+for SSH hosts and prompts for interactive or batch onboarding.`,
+	Example: `  # Stitch a single remote machine as a thread
   fabric stitch root@192.168.1.50
 
-  # Stitch using explicit inverted mode (node listens directly with mTLS)
-  fabric stitch --mode inverted --listen-port 8443 ubuntu@10.0.0.12
+  # Scan subnet and interactively select machines to stitch
+  fabric stitch 192.168.1.0/24
 
-  # Stitch with custom tags and disabled fallback
-  fabric stitch -i ~/.ssh/id_ed25519 -p 2222 --tags web,prod --no-fallback ubuntu@10.0.0.12
+  # Scan and auto-stitch all discovered subnet hosts
+  fabric stitch --batch --user ubuntu 10.0.0.0/24
 
-  # Scan network and batch stitch discovered machines
-  fabric stitch discover 192.168.1.0/24`,
-	Args: cobra.ExactArgs(1),
+  # Auto-detect local subnet and discover machines
+  fabric stitch
+
+  # Stitch with direct remote mTLS listening mode
+  fabric stitch --remote --listen-port 8443 ubuntu@10.0.0.12`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runStitch,
 }
 
 var stitchDiscoverCmd = &cobra.Command{
-	Use:   "discover [flags] [CIDR]",
-	Short: "Scan local or specified network for SSH endpoints and batch stitch into the mesh",
+	Use:          "discover [flags] [CIDR]",
+	Short:        "Scan local or specified network for SSH endpoints (deprecated, use 'fabric stitch [CIDR]')",
 	SilenceUsage: true,
-	Long: `Scan a CIDR block for open SSH ports, prompt for host selection, and automatically
-stitch the selected machines into the Fabric mesh.`,
-	Example: `  # Scan default local interface subnet
-  fabric stitch discover
-
-  # Scan specific CIDR block in inverted mode
-  fabric stitch discover --inverted --listen-port 8443 192.168.1.0/24
-
-  # Scan with custom SSH port and default user
-  fabric stitch discover -p 22,2222 -u ubuntu --tags worker 10.0.0.0/24`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runStitchDiscover,
+	Args:         cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		WarnDeprecated("fabric stitch discover", "fabric stitch")
+		rawCIDR := ""
+		if len(args) > 0 {
+			rawCIDR = args[0]
+		}
+		return runStitchScan(cmd, rawCIDR)
+	},
 }
 
 func init() {
@@ -95,36 +87,51 @@ func init() {
 	stitchCmd.AddCommand(stitchDiscoverCmd)
 
 	stitchCmd.Flags().StringVarP(&stitchIdentityFlag, "identity", "i", "", "SSH identity key file")
-	stitchCmd.Flags().StringVarP(&stitchPortFlag, "port", "p", "22", "SSH port on target host")
-	stitchCmd.Flags().StringVar(&stitchSocketURL, "socket-url", "", "Socket URL override (e.g. ws://192.168.1.50:8080/ws)")
+	stitchCmd.Flags().StringVarP(&stitchPortFlag, "port", "p", "22", "SSH port on target host (or ports to scan, e.g. 22,2222)")
+	stitchCmd.Flags().StringVarP(&stitchUserFlag, "user", "u", "", "Default SSH user for discovered hosts")
+	stitchCmd.Flags().StringVarP(&stitchServerURL, "server", "s", "", "Fabric server URL override")
+	stitchCmd.Flags().StringVar(&stitchSocketURL, "socket-url", "", "Server URL override (deprecated, use --server)")
 	stitchCmd.Flags().StringVar(&stitchTokenFlag, "token", "", "Cluster token override")
-	stitchCmd.Flags().StringVar(&stitchDomainFlag, "domain", "fabric.mesh", "Domain to register on the mesh")
-	stitchCmd.Flags().StringVar(&stitchTagsFlag, "tags", "", "Comma-separated metadata tags to assign to the node (e.g. web,prod)")
+	stitchCmd.Flags().StringVar(&stitchDomainFlag, "domain", "fabric.mesh", "Domain to register on the Fabric")
+	stitchCmd.Flags().StringVar(&stitchTagsFlag, "tags", "", "Comma-separated metadata tags (e.g. web,prod)")
 	stitchCmd.Flags().BoolVar(&stitchNoWait, "no-wait", false, "Do not wait for mesh connection verification")
-	stitchCmd.Flags().StringVar(&stitchModeFlag, "mode", "", "Connection mode topology: 'normal' or 'inverted'")
-	stitchCmd.Flags().BoolVar(&stitchInvertedFlag, "inverted", false, "Shorthand for --mode inverted")
-	stitchCmd.Flags().StringVar(&stitchListenPortFlag, "listen-port", "8443", "Port for inverted mode node to listen on")
-	stitchCmd.Flags().BoolVar(&stitchNoFallback, "no-fallback", false, "Disable automatic fallback to inverted mode if normal verification times out")
+	stitchCmd.Flags().StringVar(&stitchModeFlag, "mode", "", "Connection mode topology: 'normal' or 'remote'")
+	stitchCmd.Flags().BoolVar(&stitchRemoteFlag, "remote", false, "Direct remote mode (thread listens with mTLS)")
+	stitchCmd.Flags().BoolVar(&stitchInvertedFlag, "inverted", false, "Alias for --remote")
+	stitchCmd.Flags().StringVar(&stitchListenPortFlag, "listen-port", "8443", "Port for remote mode thread to listen on")
+	stitchCmd.Flags().BoolVar(&stitchNoFallback, "no-fallback", false, "Disable automatic fallback to remote mode if normal verification times out")
 
-	// Discover command flags
-	stitchDiscoverCmd.Flags().StringVarP(&discoverPortFlag, "port", "p", "22", "Port(s) to scan (comma-separated, e.g. 22,2222)")
-	stitchDiscoverCmd.Flags().StringVarP(&discoverUserFlag, "user", "u", "", "Default SSH user for discovered hosts")
-	stitchDiscoverCmd.Flags().StringVarP(&discoverIdentityFlag, "identity", "i", "", "SSH identity key file")
-	stitchDiscoverCmd.Flags().IntVarP(&discoverConcurrencyFlag, "concurrency", "c", 128, "Concurrent probe workers")
-	stitchDiscoverCmd.Flags().DurationVarP(&discoverTimeoutFlag, "timeout", "t", 1000*time.Millisecond, "Connection timeout per probe")
-	stitchDiscoverCmd.Flags().BoolVarP(&discoverQuietFlag, "quiet", "q", false, "Only output discovered host endpoints")
-	stitchDiscoverCmd.Flags().StringVar(&discoverFormatFlag, "format", "", "Output format ('json' or raw)")
-	stitchDiscoverCmd.Flags().BoolVarP(&discoverAutoStitchFlag, "all", "a", false, "Automatically stitch all discovered hosts without prompt")
-	stitchDiscoverCmd.Flags().BoolVar(&discoverAutoStitchFlag, "auto-stitch", false, "Alias for --all")
-	stitchDiscoverCmd.Flags().BoolVar(&discoverNoWaitFlag, "no-wait", false, "Do not wait for mesh connection verification")
-	stitchDiscoverCmd.Flags().StringVar(&discoverSocketURL, "socket-url", "", "Socket URL override")
-	stitchDiscoverCmd.Flags().StringVar(&discoverTokenFlag, "token", "", "Cluster token override")
-	stitchDiscoverCmd.Flags().StringVar(&discoverDomainFlag, "domain", "fabric.mesh", "Domain to register on the mesh")
-	stitchDiscoverCmd.Flags().StringVar(&discoverTagsFlag, "tags", "", "Comma-separated metadata tags to assign to discovered nodes")
-	stitchDiscoverCmd.Flags().StringVar(&discoverModeFlag, "mode", "", "Connection mode topology: 'normal' or 'inverted'")
-	stitchDiscoverCmd.Flags().BoolVar(&discoverInvertedFlag, "inverted", false, "Shorthand for --mode inverted")
-	stitchDiscoverCmd.Flags().StringVar(&discoverListenPortFlag, "listen-port", "8443", "Port for inverted mode nodes to listen on")
-	stitchDiscoverCmd.Flags().BoolVar(&discoverNoFallback, "no-fallback", false, "Disable automatic fallback to inverted mode")
+	// Discovery flags on stitchCmd
+	stitchCmd.Flags().IntVarP(&stitchConcurrencyFlag, "concurrency", "c", 128, "Concurrent probe workers")
+	stitchCmd.Flags().DurationVarP(&stitchTimeoutFlag, "timeout", "t", 1000*time.Millisecond, "Connection timeout per probe")
+	stitchCmd.Flags().BoolVarP(&stitchQuietFlag, "quiet", "q", false, "Only output discovered host endpoints")
+	stitchCmd.Flags().StringVar(&stitchFormatFlag, "format", "", "Output format ('json' or raw)")
+	stitchCmd.Flags().BoolVarP(&stitchBatchFlag, "all", "a", false, "Automatically stitch all discovered hosts without prompt")
+	stitchCmd.Flags().BoolVar(&stitchBatchFlag, "batch", false, "Alias for --all")
+	stitchCmd.Flags().BoolVar(&stitchBatchFlag, "auto-stitch", false, "Alias for --all")
+
+	// Discover command flags for backward compatibility
+	stitchDiscoverCmd.Flags().StringVarP(&stitchPortFlag, "port", "p", "22", "Port(s) to scan (comma-separated, e.g. 22,2222)")
+	stitchDiscoverCmd.Flags().StringVarP(&stitchUserFlag, "user", "u", "", "Default SSH user for discovered hosts")
+	stitchDiscoverCmd.Flags().StringVarP(&stitchIdentityFlag, "identity", "i", "", "SSH identity key file")
+	stitchDiscoverCmd.Flags().IntVarP(&stitchConcurrencyFlag, "concurrency", "c", 128, "Concurrent probe workers")
+	stitchDiscoverCmd.Flags().DurationVarP(&stitchTimeoutFlag, "timeout", "t", 1000*time.Millisecond, "Connection timeout per probe")
+	stitchDiscoverCmd.Flags().BoolVarP(&stitchQuietFlag, "quiet", "q", false, "Only output discovered host endpoints")
+	stitchDiscoverCmd.Flags().StringVar(&stitchFormatFlag, "format", "", "Output format ('json' or raw)")
+	stitchDiscoverCmd.Flags().BoolVarP(&stitchBatchFlag, "all", "a", false, "Automatically stitch all discovered hosts without prompt")
+	stitchDiscoverCmd.Flags().BoolVar(&stitchBatchFlag, "batch", false, "Alias for --all")
+	stitchDiscoverCmd.Flags().BoolVar(&stitchBatchFlag, "auto-stitch", false, "Alias for --all")
+	stitchDiscoverCmd.Flags().BoolVar(&stitchNoWait, "no-wait", false, "Do not wait for mesh connection verification")
+	stitchDiscoverCmd.Flags().StringVarP(&stitchServerURL, "server", "s", "", "Fabric server URL override")
+	stitchDiscoverCmd.Flags().StringVar(&stitchSocketURL, "socket-url", "", "Server URL override")
+	stitchDiscoverCmd.Flags().StringVar(&stitchTokenFlag, "token", "", "Cluster token override")
+	stitchDiscoverCmd.Flags().StringVar(&stitchDomainFlag, "domain", "fabric.mesh", "Domain to register on the mesh")
+	stitchDiscoverCmd.Flags().StringVar(&stitchTagsFlag, "tags", "", "Comma-separated metadata tags to assign to discovered nodes")
+	stitchDiscoverCmd.Flags().StringVar(&stitchModeFlag, "mode", "", "Connection mode topology: 'normal' or 'remote'")
+	stitchDiscoverCmd.Flags().BoolVar(&stitchRemoteFlag, "remote", false, "Direct remote mode")
+	stitchDiscoverCmd.Flags().BoolVar(&stitchInvertedFlag, "inverted", false, "Alias for --remote")
+	stitchDiscoverCmd.Flags().StringVar(&stitchListenPortFlag, "listen-port", "8443", "Port for remote mode nodes to listen on")
+	stitchDiscoverCmd.Flags().BoolVar(&stitchNoFallback, "no-fallback", false, "Disable automatic fallback to remote mode")
 }
 
 func nodeVerifier(socketURL, token string) ([]protocol.NodeMetadata, error) {
@@ -160,14 +167,14 @@ func promptTopology(isBatch bool) string {
 	} else {
 		fmt.Println("\nSelect connection topology:")
 	}
-	fmt.Println("  [1] Normal (Outbound WebSocket to relay — default)")
-	fmt.Println("  [2] Inverted (Node listens with mTLS for direct CLI access)")
+	fmt.Println("  [1] Normal (Outbound WebSocket to Fabric server — default)")
+	fmt.Println("  [2] Remote (Thread listens with mTLS for direct CLI access)")
 	fmt.Print("Choice [1]: ")
 
 	reader := bufio.NewReader(os.Stdin)
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(input)
-	if input == "2" || strings.ToLower(input) == "inverted" {
+	if input == "2" || strings.ToLower(input) == "remote" || strings.ToLower(input) == "inverted" {
 		return "inverted"
 	}
 	return "normal"
@@ -177,9 +184,9 @@ func registerInvertedIfApplicable(target, listenPort string, node *protocol.Node
 	if node == nil {
 		return
 	}
-	isInverted := strings.Contains(node.Status, "inverted")
+	isInverted := strings.Contains(node.Status, "inverted") || strings.Contains(node.Status, "remote")
 	for _, t := range node.Tags {
-		if t == "inverted" {
+		if t == "inverted" || t == "remote" {
 			isInverted = true
 			break
 		}
@@ -228,7 +235,17 @@ func interactiveKeyPrompt(target string, keys []string) (string, error) {
 }
 
 func runStitch(cmd *cobra.Command, args []string) error {
-	rawTarget := args[0]
+	if len(args) == 0 {
+		return runStitchScan(cmd, "")
+	}
+	raw := args[0]
+	if _, _, err := net.ParseCIDR(raw); err == nil {
+		return runStitchScan(cmd, raw)
+	}
+	return runStitchSingle(cmd, raw)
+}
+
+func runStitchSingle(cmd *cobra.Command, rawTarget string) error {
 	cfg := GetConfig()
 
 	sshPort := stitchPortFlag
@@ -242,11 +259,14 @@ func runStitch(cmd *cobra.Command, args []string) error {
 	}
 
 	mode := stitchModeFlag
-	if stitchInvertedFlag {
+	if stitchRemoteFlag || stitchInvertedFlag {
 		mode = "inverted"
 	}
-	if mode != "" && mode != "normal" && mode != "inverted" {
-		return fmt.Errorf("invalid mode %q: must be 'normal' or 'inverted'", mode)
+	if mode != "" && mode != "normal" && mode != "inverted" && mode != "remote" {
+		return fmt.Errorf("invalid mode %q: must be 'normal' or 'remote'", mode)
+	}
+	if mode == "remote" {
+		mode = "inverted"
 	}
 	if mode == "" {
 		if isTerminalInput() {
@@ -261,25 +281,31 @@ func runStitch(cmd *cobra.Command, args []string) error {
 		listenPort = "8443"
 	}
 
+	serverURL := stitchServerURL
+	if serverURL == "" {
+		serverURL = stitchSocketURL
+	}
+	if serverURL == "" {
+		serverURL = cfg.Host
+	}
+
+	token := stitchTokenFlag
+	if token == "" {
+		token = cfg.Token
+	}
+
 	opts := provision.StitchHostOptions{
 		Target:      target,
 		SSHPort:     sshPort,
 		IdentityKey: stitchIdentityFlag,
-		SocketURL:   stitchSocketURL,
-		Token:       stitchTokenFlag,
+		SocketURL:   serverURL,
+		Token:       token,
 		Domain:      stitchDomainFlag,
 		Tags:        parseTags(stitchTagsFlag),
 		NoWait:      stitchNoWait,
 		Mode:        mode,
 		ListenPort:  listenPort,
 		NoFallback:  stitchNoFallback,
-	}
-
-	if opts.SocketURL == "" {
-		opts.SocketURL = cfg.Host
-	}
-	if opts.Token == "" {
-		opts.Token = cfg.Token
 	}
 
 	provisioner := provision.NewProvisioner(nil, nodeVerifier).
@@ -294,7 +320,7 @@ func runStitch(cmd *cobra.Command, args []string) error {
 		registerInvertedIfApplicable(target, listenPort, node)
 
 		fmt.Println("\n==================================================")
-		fmt.Println("         Node Stitched Successfully!              ")
+		fmt.Println("        Thread Stitched Successfully!             ")
 		fmt.Println("==================================================")
 		fmt.Printf("Hostname:  %s\n", node.Hostname)
 		fmt.Printf("Remote IP: %s\n", node.RemoteIP)
@@ -308,12 +334,7 @@ func runStitch(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runStitchDiscover(cmd *cobra.Command, args []string) error {
-	rawCIDR := ""
-	if len(args) > 0 {
-		rawCIDR = args[0]
-	}
-
+func runStitchScan(cmd *cobra.Command, rawCIDR string) error {
 	defaultCIDR := ""
 	if rawCIDR == "" {
 		var err error
@@ -329,7 +350,7 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 	}
 
 	var ports []int
-	for _, pStr := range strings.Split(discoverPortFlag, ",") {
+	for _, pStr := range strings.Split(stitchPortFlag, ",") {
 		pStr = strings.TrimSpace(pStr)
 		if p, err := strconv.Atoi(pStr); err == nil && p > 0 && p <= 65535 {
 			ports = append(ports, p)
@@ -341,11 +362,11 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 
 	scanOpts := provision.ScanOptions{
 		Ports:       ports,
-		Concurrency: discoverConcurrencyFlag,
-		Timeout:     discoverTimeoutFlag,
+		Concurrency: stitchConcurrencyFlag,
+		Timeout:     stitchTimeoutFlag,
 	}
 
-	if !discoverQuietFlag && discoverFormatFlag != "json" {
+	if !stitchQuietFlag && stitchFormatFlag != "json" {
 		targetDesc := rawCIDR
 		if targetDesc == "" {
 			targetDesc = fmt.Sprintf("auto-detected subnet (%d hosts)", len(targets))
@@ -358,8 +379,8 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("scan failed: %w", err)
 	}
 
-	if discoverQuietFlag || discoverFormatFlag == "json" {
-		return FormatDiscoveredOutput(os.Stdout, discovered, discoverQuietFlag, discoverFormatFlag)
+	if stitchQuietFlag || stitchFormatFlag == "json" {
+		return FormatDiscoveredOutput(os.Stdout, discovered, stitchQuietFlag, stitchFormatFlag)
 	}
 
 	if len(discovered) == 0 {
@@ -373,13 +394,13 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 
 	var selectedTargets []StitchTarget
 
-	if discoverAutoStitchFlag {
-		fmt.Println("[+] --auto-stitch enabled. Stitching all discovered hosts...")
+	if stitchBatchFlag {
+		fmt.Println("[+] --batch enabled. Stitching all discovered hosts...")
 		for _, h := range discovered {
 			selectedTargets = append(selectedTargets, StitchTarget{
 				Host:   h.IP,
 				Port:   strconv.Itoa(h.Port),
-				User:   discoverUserFlag,
+				User:   stitchUserFlag,
 				Banner: h.CleanBanner,
 			})
 		}
@@ -389,7 +410,7 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 		input, _ := reader.ReadString('\n')
 		input = strings.TrimSpace(input)
 
-		selectedTargets, err = ParseSelectionInput(input, discovered, discoverUserFlag)
+		selectedTargets, err = ParseSelectionInput(input, discovered, stitchUserFlag)
 		if err != nil {
 			return fmt.Errorf("selection error: %w", err)
 		}
@@ -400,32 +421,39 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	mode := discoverModeFlag
-	if discoverInvertedFlag {
+	mode := stitchModeFlag
+	if stitchRemoteFlag || stitchInvertedFlag {
 		mode = "inverted"
 	}
-	if mode != "" && mode != "normal" && mode != "inverted" {
-		return fmt.Errorf("invalid mode %q: must be 'normal' or 'inverted'", mode)
+	if mode != "" && mode != "normal" && mode != "inverted" && mode != "remote" {
+		return fmt.Errorf("invalid mode %q: must be 'normal' or 'remote'", mode)
+	}
+	if mode == "remote" {
+		mode = "inverted"
 	}
 	if mode == "" {
-		if isTerminalInput() && !discoverAutoStitchFlag {
+		if isTerminalInput() && !stitchBatchFlag {
 			mode = promptTopology(true)
 		} else {
 			mode = "normal"
 		}
 	}
 
-	listenPort := discoverListenPortFlag
+	listenPort := stitchListenPortFlag
 	if listenPort == "" {
 		listenPort = "8443"
 	}
 
 	cfg := GetConfig()
-	socketURL := discoverSocketURL
-	if socketURL == "" {
-		socketURL = cfg.Host
+	serverURL := stitchServerURL
+	if serverURL == "" {
+		serverURL = stitchSocketURL
 	}
-	token := discoverTokenFlag
+	if serverURL == "" {
+		serverURL = cfg.Host
+	}
+
+	token := stitchTokenFlag
 	if token == "" {
 		token = cfg.Token
 	}
@@ -437,15 +465,15 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 		opts := provision.StitchHostOptions{
 			Target:      st.Host,
 			SSHPort:     st.Port,
-			IdentityKey: discoverIdentityFlag,
-			SocketURL:   socketURL,
+			IdentityKey: stitchIdentityFlag,
+			SocketURL:   serverURL,
 			Token:       token,
-			Domain:      discoverDomainFlag,
-			Tags:        parseTags(discoverTagsFlag),
-			NoWait:      discoverNoWaitFlag,
+			Domain:      stitchDomainFlag,
+			Tags:        parseTags(stitchTagsFlag),
+			NoWait:      stitchNoWait,
 			Mode:        mode,
 			ListenPort:  listenPort,
-			NoFallback:  discoverNoFallback,
+			NoFallback:  stitchNoFallback,
 		}
 		if st.User != "" {
 			opts.Target = st.User + "@" + st.Host
@@ -456,7 +484,7 @@ func runStitchDiscover(cmd *cobra.Command, args []string) error {
 	provisioner := provision.NewProvisioner(nil, nodeVerifier).
 		WithKeyPrompt(interactiveKeyPrompt).
 		WithProgress(func(current, total int, target, msg string) {
-			if !discoverQuietFlag {
+			if !stitchQuietFlag {
 				fmt.Printf("[%d/%d] %s: %s\n", current, total, target, msg)
 			}
 		})

@@ -29,9 +29,9 @@ func main() {
 		defaultDomain = "fabric.mesh"
 	}
 
-	serverURL := flag.String("url", defaultURL, "Socket URL (ws:// or wss://)")
-	listenFlag := flag.String("listen", os.Getenv("FABRIC_LISTEN"), "Local address to listen on for inverted connection mode (e.g. :8443)")
-	domainFlag := flag.String("domain", defaultDomain, "Domain to register with the mesh")
+	serverURL := flag.String("url", defaultURL, "Fabric Server WebSocket URL (ws:// or wss://)")
+	listenFlag := flag.String("listen", os.Getenv("FABRIC_LISTEN"), "Local address to listen on for direct remote connection mode (e.g. :8443)")
+	domainFlag := flag.String("domain", defaultDomain, "Domain to register with the Fabric")
 	caCertFlag := flag.String("ca-cert", os.Getenv("FABRIC_CA_CERT"), "Path to custom Root CA certificate")
 	tokenFlag := flag.String("token", os.Getenv("FABRIC_TOKEN"), "Pre-shared token for authentication")
 	tagsFlag := flag.String("tags", os.Getenv("FABRIC_TAGS"), "Comma-separated metadata tags (e.g. web,prod)")

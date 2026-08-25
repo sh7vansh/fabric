@@ -3,7 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"text/tabwriter"
 	"text/template"
@@ -20,19 +19,69 @@ var (
 	tagFilterFlag string
 )
 
-func registerNodeListingFlags(cmd *cobra.Command) {
-	cmd.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "Only display numeric IDs")
-	cmd.Flags().StringVar(&formatFlag, "format", "", "Pretty-print nodes using a Go template or json")
-	cmd.Flags().StringVarP(&tagFilterFlag, "tag", "l", "", "Filter nodes by tag")
-	cmd.RunE = runNodeLs
+var threadCmd = &cobra.Command{
+	Use:     "thread",
+	Short:   "Manage Fabric threads",
+	GroupID: "threads",
+	Example: `  # List all connected threads
+  fabric thread ls
+
+  # Output threads in JSON format
+  fabric thread ls --format json
+
+  # Filter threads by tag
+  fabric thread ls -l web
+
+  # Inspect a specific thread
+  fabric thread inspect worker-1`,
+}
+
+var threadLsCmd = &cobra.Command{
+	Use:   "ls [flags]",
+	Short: "List all connected threads",
+	Example: `  # Table view of active threads
+  fabric thread ls
+
+  # Output in JSON format
+  fabric thread ls --format json
+
+  # Display only thread names
+  fabric thread ls -q
+
+  # Filter by tag
+  fabric thread ls -l prod`,
+}
+
+func registerThreadListingFlags(cmd *cobra.Command) {
+	cmd.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "Only display thread names")
+	cmd.Flags().StringVar(&formatFlag, "format", "", "Pretty-print threads using a Go template or json")
+	cmd.Flags().StringVarP(&tagFilterFlag, "tag", "l", "", "Filter threads by tag")
 }
 
 func init() {
-	registerNodeListingFlags(nodeLsCmd)
-	registerNodeListingFlags(psCmd)
+	registerThreadListingFlags(threadLsCmd)
+	registerThreadListingFlags(psCmd)
+	registerThreadListingFlags(nodeLsCmd)
+
+	threadLsCmd.RunE = runThreadLs
+	psCmd.RunE = runThreadLs
+
+	nodeLsCmd.RunE = func(cmd *cobra.Command, args []string) error {
+		WarnDeprecated("fabric node ls", "fabric thread ls")
+		return runThreadLs(cmd, args)
+	}
+
+	threadCmd.AddCommand(threadLsCmd)
+	threadCmd.AddCommand(threadInspectCmd)
 }
 
-func runNodeLs(cmd *cobra.Command, args []string) error {
+func runThreadLs(cmd *cobra.Command, args []string) error {
+	defer func() {
+		quietFlag = false
+		formatFlag = ""
+		tagFilterFlag = ""
+	}()
+
 	client := NewClient(GetConfig())
 	nodes, err := client.ListNodes()
 	if err != nil {
@@ -52,9 +101,11 @@ func runNodeLs(cmd *cobra.Command, args []string) error {
 		nodes = filtered
 	}
 
+	out := cmd.OutOrStdout()
+
 	if formatFlag == "json" {
 		b, _ := json.MarshalIndent(nodes, "", "  ")
-		fmt.Println(string(b))
+		fmt.Fprintln(out, string(b))
 		return nil
 	}
 
@@ -64,21 +115,25 @@ func runNodeLs(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		for _, n := range nodes {
-			tmpl.Execute(os.Stdout, n)
-			fmt.Println()
+			tmpl.Execute(out, n)
+			fmt.Fprintln(out)
 		}
 		return nil
 	}
 
 	if quietFlag {
 		for _, n := range nodes {
-			fmt.Println(n.ID)
+			name := n.Hostname
+			if name == "" {
+				name = n.ID
+			}
+			fmt.Fprintln(out, name)
 		}
 		return nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NODE ID\tHOSTNAME\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
+	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "THREAD\tHOSTNAME\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
 	for _, n := range nodes {
 		uptime := ""
 		if t, err := time.Parse(time.RFC3339, n.ConnectedAt); err == nil {
@@ -95,7 +150,11 @@ func runNodeLs(cmd *cobra.Command, args []string) error {
 		if n.Hostname != "" && !strings.Contains(n.Hostname, ".") && !strings.HasPrefix(domainStr, n.Hostname+".") {
 			domainStr = n.Hostname + "." + domainStr
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", n.ID, n.Hostname, n.Status, tagsStr, n.RemoteIP, domainStr, uptime)
+		displayName := n.Hostname
+		if displayName == "" {
+			displayName = n.ID
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayName, n.Hostname, n.Status, tagsStr, n.RemoteIP, domainStr, uptime)
 	}
 	w.Flush()
 	return nil

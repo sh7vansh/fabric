@@ -22,9 +22,10 @@ func TestHelpCommandOutput(t *testing.T) {
 	// Verify command groups exist in help output
 	expectedGroups := []string{
 		"Core Execution Commands:",
+		"Thread Management Commands:",
 		"Mesh & Networking Commands:",
-		"Node & Cluster Management Commands:",
-		"System & Service Commands:",
+		"System & Lifecycle Commands:",
+		"Cluster & Node Commands (Deprecated):",
 		"Help Topics & Guides:",
 	}
 
@@ -35,7 +36,7 @@ func TestHelpCommandOutput(t *testing.T) {
 	}
 
 	// Verify topics are present
-	expectedTopics := []string{"architecture", "networking", "security", "workflows"}
+	expectedTopics := []string{"architecture", "networking", "security", "workflows", "threads", "stitch-guide"}
 	for _, topic := range expectedTopics {
 		if !strings.Contains(output, topic) {
 			t.Errorf("Expected help output to contain topic %q, but got:\n%s", topic, output)
@@ -43,13 +44,13 @@ func TestHelpCommandOutput(t *testing.T) {
 	}
 
 	// Verify global flags are listed
-	if !strings.Contains(output, "--host") || !strings.Contains(output, "--token") {
-		t.Errorf("Expected help output to contain global persistent flags (--host, --token)")
+	if !strings.Contains(output, "--server") || !strings.Contains(output, "--token") {
+		t.Errorf("Expected help output to contain global persistent flags (--server, --token)")
 	}
 }
 
 func TestHelpTopicsExecution(t *testing.T) {
-	topics := []string{"architecture", "networking", "security", "workflows"}
+	topics := []string{"architecture", "networking", "security", "workflows", "threads", "stitch-guide"}
 
 	for _, topic := range topics {
 		t.Run(topic, func(t *testing.T) {

@@ -355,7 +355,7 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 			res = append(res, *localNode)
 			return res, nil
 		}
-		return nil, fmt.Errorf("%w\n  👉 Tip: If you are logged into a managed node, inspect local daemon status with 'fabric service status node'. To query the mesh, run 'fabric ps' from your workstation or pass --host.", socketErr)
+		return nil, fmt.Errorf("%w\n  👉 Tip: If you are logged into a managed thread, inspect local daemon status with 'fabric agent status'. To query the Fabric, run 'fabric ps' from your workstation or pass --server.", socketErr)
 	}
 
 	if socketNode != nil {
@@ -487,10 +487,10 @@ func (c *Client) GetNode(hostname string) (*protocol.NodeMetadata, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("node not found: %s", hostname)
+		return nil, fmt.Errorf("thread '%s' not found", hostname)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get node %s: HTTP %s", hostname, resp.Status)
+		return nil, fmt.Errorf("failed to get thread %s: HTTP %s", hostname, resp.Status)
 	}
 
 	var meta protocol.NodeMetadata
@@ -546,7 +546,7 @@ func (c *Client) Execute(opts ExecOptions, in io.Reader, out, errOut io.Writer) 
 func (c *Client) executeFleet(opts ExecOptions, out, errOut io.Writer) (*FleetResult, error) {
 	allNodes, err := c.ListNodes()
 	if err != nil {
-		return nil, fmt.Errorf("failed to query active mesh nodes: %w", err)
+		return nil, fmt.Errorf("failed to query active Fabric threads: %w", err)
 	}
 
 	var targets []protocol.NodeMetadata
@@ -567,9 +567,9 @@ func (c *Client) executeFleet(opts ExecOptions, out, errOut io.Writer) (*FleetRe
 	}
 	if len(targets) == 0 {
 		if opts.Tag != "" {
-			return nil, fmt.Errorf("no active nodes found with tag %q", opts.Tag)
+			return nil, fmt.Errorf("no active threads found with tag %q", opts.Tag)
 		}
-		return nil, fmt.Errorf("no active nodes connected to mesh")
+		return nil, fmt.Errorf("no active threads connected to Fabric")
 	}
 
 	concurrency := opts.Concurrency
@@ -648,7 +648,7 @@ func (c *Client) executeFleet(opts ExecOptions, out, errOut io.Writer) (*FleetRe
 	}
 
 	if fleetRes.HasFailure {
-		return fleetRes, fmt.Errorf("fleet execution failed on 1 or more nodes")
+		return fleetRes, fmt.Errorf("fleet execution failed on 1 or more threads")
 	}
 
 	return fleetRes, nil

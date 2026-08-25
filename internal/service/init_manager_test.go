@@ -19,6 +19,14 @@ func TestGenerateSystemdSystemUnit(t *testing.T) {
 	if !strings.Contains(unit, "ExecStopPost=-/usr/bin/resolvectl revert lo") {
 		t.Errorf("missing ExecStopPost in node system unit: %s", unit)
 	}
+
+	agentUnit := mgr.GenerateSystemdSystemUnit("agent", "/usr/local/bin/fabric-agent")
+	if !strings.Contains(agentUnit, "Description=Fabric Mesh Network Agent") {
+		t.Errorf("missing description in agent unit: %s", agentUnit)
+	}
+	if !strings.Contains(agentUnit, "ExecStart=/usr/local/bin/fabric-agent") {
+		t.Errorf("missing ExecStart in agent unit: %s", agentUnit)
+	}
 }
 
 func TestGenerateSystemdUserUnit(t *testing.T) {

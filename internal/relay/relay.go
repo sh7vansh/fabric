@@ -336,15 +336,17 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 	go r.BroadcastSync()
 
 	// Monitor session closure
-	go func() {
-		<-mux.Session.CloseChan()
-		r.mu.Lock()
-		if curr, ok := r.nodes[meta.Hostname]; ok && curr.Mux == mux {
-			delete(r.nodes, meta.Hostname)
-		}
-		r.mu.Unlock()
-		r.BroadcastSync()
-	}()
+	if mux != nil && mux.Session != nil {
+		go func() {
+			<-mux.Session.CloseChan()
+			r.mu.Lock()
+			if curr, ok := r.nodes[meta.Hostname]; ok && curr.Mux == mux {
+				delete(r.nodes, meta.Hostname)
+			}
+			r.mu.Unlock()
+			r.BroadcastSync()
+		}()
+	}
 
 	return sess, nil
 }

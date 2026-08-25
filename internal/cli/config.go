@@ -54,6 +54,7 @@ type Config struct {
 	CACert        string
 	DirectAddress string
 	DirectNodes   map[string]DirectNodeEntry
+	ThreadName    string
 }
 
 type FileConfig struct {
@@ -109,20 +110,30 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 
 	// Fallback to local daemon environment files if present
 	envCandidates := []string{
+		"/etc/fabric/agent.env",
 		"/etc/fabric/node.env",
+		"/etc/fabric/server.env",
 		"/etc/fabric/socket.env",
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		envCandidates = append(envCandidates,
+			filepath.Join(home, ".config", "fabric", "agent.env"),
 			filepath.Join(home, ".config", "fabric", "node.env"),
+			filepath.Join(home, ".config", "fabric", "server.env"),
+			filepath.Join(home, ".config", "fabric", "socket.env"),
+			filepath.Join(home, ".fabric", "agent.env"),
 			filepath.Join(home, ".fabric", "node.env"),
+			filepath.Join(home, ".fabric", "server.env"),
+			filepath.Join(home, ".fabric", "socket.env"),
 		)
 	}
 	for _, p := range envCandidates {
 		envVars := parseEnvFile(p)
 		if len(envVars) > 0 {
 			if cfg.Host == "ws://localhost:8080/ws" {
-				if sURL, ok := envVars["FABRIC_SOCKET_URL"]; ok && sURL != "" {
+				if sURL, ok := envVars["FABRIC_SERVER_URL"]; ok && sURL != "" {
+					cfg.Host = sURL
+				} else if sURL, ok := envVars["FABRIC_SOCKET_URL"]; ok && sURL != "" {
 					cfg.Host = sURL
 				} else if hURL, ok := envVars["FABRIC_HOST"]; ok && hURL != "" {
 					cfg.Host = hURL
@@ -138,13 +149,35 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 					cfg.CACert = ca
 				}
 			}
+			if cfg.ThreadName == "" {
+				if tn, ok := envVars["FABRIC_THREAD_NAME"]; ok && tn != "" {
+					cfg.ThreadName = tn
+				} else if nn, ok := envVars["FABRIC_NODE_NAME"]; ok && nn != "" {
+					cfg.ThreadName = nn
+				} else if ni, ok := envVars["FABRIC_NODE_ID"]; ok && ni != "" {
+					cfg.ThreadName = ni
+				}
+			}
 			break
 		}
 	}
 
-	if envHost := os.Getenv("FABRIC_HOST"); envHost != "" {
+	if envServer := os.Getenv("FABRIC_SERVER_URL"); envServer != "" {
+		cfg.Host = envServer
+	} else if envSocket := os.Getenv("FABRIC_SOCKET_URL"); envSocket != "" {
+		cfg.Host = envSocket
+	} else if envHost := os.Getenv("FABRIC_HOST"); envHost != "" {
 		cfg.Host = envHost
 	}
+
+	if envThread := os.Getenv("FABRIC_THREAD_NAME"); envThread != "" {
+		cfg.ThreadName = envThread
+	} else if envNode := os.Getenv("FABRIC_NODE_NAME"); envNode != "" {
+		cfg.ThreadName = envNode
+	} else if envNodeID := os.Getenv("FABRIC_NODE_ID"); envNodeID != "" {
+		cfg.ThreadName = envNodeID
+	}
+
 	if envToken := os.Getenv("FABRIC_TOKEN"); envToken != "" {
 		cfg.Token = envToken
 	}

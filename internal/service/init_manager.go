@@ -84,9 +84,13 @@ func (m *InitManager) IsPrivileged() bool {
 
 // GenerateSystemdSystemUnit renders the systemd system service unit file content.
 func (m *InitManager) GenerateSystemdSystemUnit(role, binPath string) string {
-	roleDisplay := "Socket"
-	if role == "node" {
+	roleDisplay := "Server"
+	if role == "agent" {
+		roleDisplay = "Agent"
+	} else if role == "node" {
 		roleDisplay = "Node"
+	} else if role == "socket" {
+		roleDisplay = "Socket"
 	}
 	home, _ := os.UserHomeDir()
 	userEnvPath := ""
@@ -94,7 +98,7 @@ func (m *InitManager) GenerateSystemdSystemUnit(role, binPath string) string {
 		userEnvPath = fmt.Sprintf("EnvironmentFile=-%s\n", filepath.Join(home, ".fabric", role+".env"))
 	}
 	execStopPost := ""
-	if role == "node" {
+	if role == "agent" || role == "node" {
 		execStopPost = "ExecStopPost=-/usr/bin/resolvectl revert lo\n"
 	}
 
@@ -118,9 +122,13 @@ WantedBy=multi-user.target
 
 // GenerateSystemdUserUnit renders the systemd user service unit file content.
 func (m *InitManager) GenerateSystemdUserUnit(role, userBinPath, userEnvPath string) string {
-	roleDisplay := "Socket"
-	if role == "node" {
+	roleDisplay := "Server"
+	if role == "agent" {
+		roleDisplay = "Agent"
+	} else if role == "node" {
 		roleDisplay = "Node"
+	} else if role == "socket" {
+		roleDisplay = "Socket"
 	}
 
 	return fmt.Sprintf(`[Unit]
@@ -173,6 +181,20 @@ func (m *InitManager) GetStandalonePaths(role string) (runDir, pidFile, supervis
 	supervisorScript = filepath.Join(runDir, fmt.Sprintf("fabric-%s-supervisor.sh", role))
 
 	binaryName := "fabric-" + role
+	if role == "agent" {
+		if _, err := exec.LookPath("fabric-agent"); err != nil {
+			if _, err2 := exec.LookPath("fabric-node"); err2 == nil {
+				binaryName = "fabric-node"
+			}
+		}
+	} else if role == "server" {
+		if _, err := exec.LookPath("fabric-server"); err != nil {
+			if _, err2 := exec.LookPath("fabric-socket"); err2 == nil {
+				binaryName = "fabric-socket"
+			}
+		}
+	}
+
 	var err error
 	binPath, err = exec.LookPath(binaryName)
 	if err != nil {
@@ -187,13 +209,26 @@ func (m *InitManager) GetStandalonePaths(role string) (runDir, pidFile, supervis
 
 // InstallService installs and starts the service according to the detected host init tier.
 func (m *InitManager) InstallService(role string) error {
-	if role != "socket" && role != "node" {
-		return fmt.Errorf("invalid role: %s (must be 'socket' or 'node')", role)
+	if role != "agent" && role != "node" && role != "server" && role != "socket" {
+		return fmt.Errorf("invalid role: %s (must be 'agent', 'server', 'node', or 'socket')", role)
 	}
 
 	tier := m.DetectTier()
 	serviceName := "fabric-" + role
 	binaryName := "fabric-" + role
+	if role == "agent" {
+		if _, err := exec.LookPath("fabric-agent"); err != nil {
+			if _, err2 := exec.LookPath("fabric-node"); err2 == nil {
+				binaryName = "fabric-node"
+			}
+		}
+	} else if role == "server" {
+		if _, err := exec.LookPath("fabric-server"); err != nil {
+			if _, err2 := exec.LookPath("fabric-socket"); err2 == nil {
+				binaryName = "fabric-socket"
+			}
+		}
+	}
 
 	binPath, err := exec.LookPath(binaryName)
 	if err != nil {
@@ -277,21 +312,32 @@ func (m *InitManager) InstallService(role string) error {
 
 // HandleAction performs start, stop, restart, or status on the service.
 func (m *InitManager) HandleAction(action, role string) error {
-	serviceName := "fabric-" + role
-	home, _ := os.UserHomeDir()
-
-	userUnit := filepath.Join(home, ".config", "systemd", "user", serviceName+".service")
-	systemUnit := filepath.Join("/etc/systemd/system", serviceName+".service")
-
-	if _, err := os.Stat(userUnit); err == nil {
-		cmd := exec.Command("systemctl", "--user", action, serviceName)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+	serviceNames := []string{"fabric-" + role}
+	if role == "agent" {
+		serviceNames = append(serviceNames, "fabric-node")
+	} else if role == "node" {
+		serviceNames = append(serviceNames, "fabric-agent")
+	} else if role == "server" {
+		serviceNames = append(serviceNames, "fabric-socket")
+	} else if role == "socket" {
+		serviceNames = append(serviceNames, "fabric-server")
 	}
 
-	if _, err := os.Stat(systemUnit); err == nil {
-		return m.RunPrivileged("systemctl", action, serviceName)
+	home, _ := os.UserHomeDir()
+
+	for _, sName := range serviceNames {
+		userUnit := filepath.Join(home, ".config", "systemd", "user", sName+".service")
+		if _, err := os.Stat(userUnit); err == nil {
+			cmd := exec.Command("systemctl", "--user", action, sName)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			return cmd.Run()
+		}
+
+		systemUnit := filepath.Join("/etc/systemd/system", sName+".service")
+		if _, err := os.Stat(systemUnit); err == nil {
+			return m.RunPrivileged("systemctl", action, sName)
+		}
 	}
 
 	// Standalone daemon handling
@@ -309,7 +355,7 @@ func (m *InitManager) HandleAction(action, role string) error {
 		return m.CheckStandaloneStatus(role)
 	default:
 		if m.IsSystemdAvailable() {
-			return m.RunPrivileged("systemctl", action, serviceName)
+			return m.RunPrivileged("systemctl", action, "fabric-"+role)
 		}
 		return fmt.Errorf("unknown action %s", action)
 	}
@@ -317,36 +363,48 @@ func (m *InitManager) HandleAction(action, role string) error {
 
 // UninstallService removes system, user, or standalone services for the given role.
 func (m *InitManager) UninstallService(role string) error {
-	serviceName := "fabric-" + role
+	serviceNames := []string{"fabric-" + role}
+	if role == "agent" {
+		serviceNames = append(serviceNames, "fabric-node")
+	} else if role == "node" {
+		serviceNames = append(serviceNames, "fabric-agent")
+	} else if role == "server" {
+		serviceNames = append(serviceNames, "fabric-socket")
+	} else if role == "socket" {
+		serviceNames = append(serviceNames, "fabric-server")
+	}
+
 	home, _ := os.UserHomeDir()
 
-	// 1. Check user unit
-	userUnit := filepath.Join(home, ".config", "systemd", "user", serviceName+".service")
-	if _, err := os.Stat(userUnit); err == nil {
-		_ = exec.Command("systemctl", "--user", "stop", serviceName).Run()
-		_ = exec.Command("systemctl", "--user", "disable", serviceName).Run()
-		_ = os.Remove(userUnit)
-		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
-		fmt.Printf("[+] Uninstalled user service %s\n", serviceName)
+	for _, sName := range serviceNames {
+		// 1. Check user unit
+		userUnit := filepath.Join(home, ".config", "systemd", "user", sName+".service")
+		if _, err := os.Stat(userUnit); err == nil {
+			_ = exec.Command("systemctl", "--user", "stop", sName).Run()
+			_ = exec.Command("systemctl", "--user", "disable", sName).Run()
+			_ = os.Remove(userUnit)
+			_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
+			fmt.Printf("[+] Uninstalled user service %s\n", sName)
+		}
+
+		// 2. Check system unit
+		systemUnit := filepath.Join("/etc/systemd/system", sName+".service")
+		if _, err := os.Stat(systemUnit); err == nil {
+			_ = m.RunPrivileged("systemctl", "stop", sName)
+			_ = m.RunPrivileged("systemctl", "disable", sName)
+			_ = m.RunPrivileged("rm", "-f", systemUnit)
+			_ = m.RunPrivileged("systemctl", "daemon-reload")
+			fmt.Printf("[+] Uninstalled system service %s\n", sName)
+		}
+
+		// 3. Standalone cleanup
+		m.StopStandalone(role)
+		runDir, _, supervisorScript, _ := m.GetStandalonePaths(role)
+		_ = os.Remove(supervisorScript)
+		_ = os.Remove(filepath.Join(runDir, role+".env"))
 	}
 
-	// 2. Check system unit
-	systemUnit := filepath.Join("/etc/systemd/system", serviceName+".service")
-	if _, err := os.Stat(systemUnit); err == nil {
-		_ = m.RunPrivileged("systemctl", "stop", serviceName)
-		_ = m.RunPrivileged("systemctl", "disable", serviceName)
-		_ = m.RunPrivileged("rm", "-f", systemUnit)
-		_ = m.RunPrivileged("systemctl", "daemon-reload")
-		fmt.Printf("[+] Uninstalled system service %s\n", serviceName)
-	}
-
-	// 3. Standalone cleanup
-	m.StopStandalone(role)
-	runDir, _, supervisorScript, _ := m.GetStandalonePaths(role)
-	_ = os.Remove(supervisorScript)
-	_ = os.Remove(filepath.Join(runDir, role+".env"))
-
-	fmt.Printf("[+] Uninstalled service %s\n", serviceName)
+	fmt.Printf("[+] Uninstalled service fabric-%s\n", role)
 	return nil
 }
 

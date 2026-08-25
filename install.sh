@@ -82,6 +82,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo ""
 if [ -n "$REPO_DIR" ] && [ -f "$REPO_DIR/go.mod" ] && command -v go >/dev/null 2>&1; then
     echo "[+] Building Fabric binaries from source..."
     (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric" ./cmd/cli)
+    (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric-server" ./cmd/server)
+    (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric-agent" ./cmd/agent)
     (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric-socket" ./cmd/socket)
     (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric-node" ./cmd/node)
 else
@@ -96,6 +98,8 @@ else
     echo "[+] Attempting to download Fabric ($RELEASE_TAG) for linux/$FABRIC_ARCH..."
     if command -v curl >/dev/null 2>&1; then
         curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric" 2>/dev/null || true
+        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-server-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-server" 2>/dev/null || true
+        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-agent-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-agent" 2>/dev/null || true
         curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-socket-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-socket" 2>/dev/null || true
         curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-node-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-node" 2>/dev/null || true
     fi
@@ -104,6 +108,8 @@ else
     if [ ! -f "$TMP_DIR/fabric" ] && command -v go >/dev/null 2>&1; then
         echo "[+] Building Fabric binaries using Go toolchain..."
         GOBIN="$TMP_DIR" go install fabric/cmd/cli@latest 2>/dev/null || true
+        GOBIN="$TMP_DIR" go install fabric/cmd/server@latest 2>/dev/null || true
+        GOBIN="$TMP_DIR" go install fabric/cmd/agent@latest 2>/dev/null || true
         GOBIN="$TMP_DIR" go install fabric/cmd/socket@latest 2>/dev/null || true
         GOBIN="$TMP_DIR" go install fabric/cmd/node@latest 2>/dev/null || true
     fi
@@ -113,6 +119,12 @@ fi
 if [ -f "$TMP_DIR/fabric" ]; then
     echo "[+] Installing binaries into $INSTALL_DIR..."
     $SUDO install -m 0755 "$TMP_DIR/fabric" "$INSTALL_DIR/fabric"
+    if [ -f "$TMP_DIR/fabric-server" ]; then
+        $SUDO install -m 0755 "$TMP_DIR/fabric-server" "$INSTALL_DIR/fabric-server"
+    fi
+    if [ -f "$TMP_DIR/fabric-agent" ]; then
+        $SUDO install -m 0755 "$TMP_DIR/fabric-agent" "$INSTALL_DIR/fabric-agent"
+    fi
     if [ -f "$TMP_DIR/fabric-socket" ]; then
         $SUDO install -m 0755 "$TMP_DIR/fabric-socket" "$INSTALL_DIR/fabric-socket"
     fi
@@ -132,15 +144,15 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo "    Add it by running: export PATH=\"\$PATH:$INSTALL_DIR\""
 fi
 
-# 6. Handover to Setup
+# 6. Handover to Init
 if [ "$NO_SETUP" -eq 0 ]; then
     if [ -t 0 ] && command -v "$INSTALL_DIR/fabric" >/dev/null 2>&1; then
         echo ""
-        echo "[+] Launching Fabric setup wizard..."
-        "$INSTALL_DIR/fabric" setup || true
+        echo "[+] Launching Fabric onboarding wizard..."
+        "$INSTALL_DIR/fabric" init || true
     else
         echo ""
-        echo "[+] Installation complete! Run 'fabric setup' to configure this machine."
+        echo "[+] Installation complete! Run 'fabric init' to configure this machine."
     fi
 else
     echo "[+] Installation complete (setup skipped via --no-setup)."

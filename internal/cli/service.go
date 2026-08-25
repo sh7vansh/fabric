@@ -9,52 +9,68 @@ import (
 )
 
 var serviceCmd = &cobra.Command{
-	Use:     "service",
-	Short:   "Manage background service units for Fabric Socket and Node",
-	GroupID: "system",
-	Long: `Manage the lifecycle of background service units for fabric-socket and fabric-node.
+	Use:        "service",
+	Short:      "Manage background service units (deprecated, use 'fabric agent')",
+	GroupID:    "system",
+	Deprecated: "use 'fabric agent' instead.",
+	Long: `Manage the lifecycle of background service units (deprecated).
 
-Supports multi-tier init environments: system systemd, user systemd (--user), and standalone supervisors.`,
-	Example: `  # Install and start fabric-node as a background service
-  fabric service install node
+Please use 'fabric agent' instead.`,
+	Example: `  # Install and start fabric-agent as a background service
+  fabric agent install
 
-  # Check the status of the local socket service
-  fabric service status socket
-
-  # Restart the agent daemon
-  fabric service restart node
-
-  # Uninstall and remove service
-  fabric service uninstall node`,
+  # Check the status of the local agent service
+  fabric agent status`,
 }
 
 var serviceInstallCmd = &cobra.Command{
-	Use:   "install [socket|node]",
-	Short: "Install and enable a service for fabric-socket or fabric-node",
-	Args:  cobra.ExactArgs(1),
+	Use:   "install [role]",
+	Short: "Install and enable service (deprecated, use 'fabric agent install')",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		role := strings.ToLower(args[0])
+		WarnDeprecated("fabric service", "fabric agent")
+		role := "agent"
+		if len(args) > 0 {
+			role = strings.ToLower(args[0])
+		}
+		if role == "node" {
+			role = "agent"
+		}
 		return InstallService(role)
 	},
 }
 
 var serviceUninstallCmd = &cobra.Command{
-	Use:   "uninstall [socket|node]",
-	Short: "Stop, disable, and remove the service",
-	Args:  cobra.ExactArgs(1),
+	Use:   "uninstall [role]",
+	Short: "Stop, disable, and remove service (deprecated, use 'fabric agent uninstall')",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		role := strings.ToLower(args[0])
+		WarnDeprecated("fabric service", "fabric agent")
+		role := "agent"
+		if len(args) > 0 {
+			role = strings.ToLower(args[0])
+		}
+		if role == "node" {
+			role = "agent"
+		}
 		return UninstallService(role)
 	},
 }
 
 func newServiceActionCmd(action, desc string) *cobra.Command {
 	return &cobra.Command{
-		Use:   action + " [socket|node]",
-		Short: desc,
-		Args:  cobra.ExactArgs(1),
+		Use:   action + " [role]",
+		Short: desc + " (deprecated, use 'fabric agent " + action + "')",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			role := strings.ToLower(args[0])
+			WarnDeprecated("fabric service", "fabric agent")
+			role := "agent"
+			if len(args) > 0 {
+				role = strings.ToLower(args[0])
+			}
+			if role == "node" {
+				role = "agent"
+			}
 			return HandleServiceAction(action, role)
 		},
 	}
@@ -63,10 +79,10 @@ func newServiceActionCmd(action, desc string) *cobra.Command {
 func init() {
 	rootCmd.AddCommand(serviceCmd)
 	serviceCmd.AddCommand(serviceInstallCmd)
-	serviceCmd.AddCommand(newServiceActionCmd("start", "Start the fabric service"))
-	serviceCmd.AddCommand(newServiceActionCmd("stop", "Stop the fabric service"))
-	serviceCmd.AddCommand(newServiceActionCmd("restart", "Restart the fabric service"))
-	serviceCmd.AddCommand(newServiceActionCmd("status", "Check the status of the fabric service"))
+	serviceCmd.AddCommand(newServiceActionCmd("start", "Start the service"))
+	serviceCmd.AddCommand(newServiceActionCmd("stop", "Stop the service"))
+	serviceCmd.AddCommand(newServiceActionCmd("restart", "Restart the service"))
+	serviceCmd.AddCommand(newServiceActionCmd("status", "Check the status of the service"))
 	serviceCmd.AddCommand(serviceUninstallCmd)
 }
 

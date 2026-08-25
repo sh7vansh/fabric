@@ -59,6 +59,36 @@ func TestLoadConfig(t *testing.T) {
 		t.Errorf("expected env ca_cert, got %s", cfg.CACert)
 	}
 
+	// Test modern FABRIC_SERVER_URL precedence over FABRIC_SOCKET_URL and FABRIC_HOST
+	os.Setenv("FABRIC_SOCKET_URL", "ws://socket-url:8080/ws")
+	defer os.Unsetenv("FABRIC_SOCKET_URL")
+	cfg = LoadConfig("", "", "")
+	if cfg.Host != "ws://socket-url:8080/ws" {
+		t.Errorf("expected FABRIC_SOCKET_URL over FABRIC_HOST, got %s", cfg.Host)
+	}
+
+	os.Setenv("FABRIC_SERVER_URL", "ws://server-url:8080/ws")
+	defer os.Unsetenv("FABRIC_SERVER_URL")
+	cfg = LoadConfig("", "", "")
+	if cfg.Host != "ws://server-url:8080/ws" {
+		t.Errorf("expected FABRIC_SERVER_URL precedence, got %s", cfg.Host)
+	}
+
+	// Test modern FABRIC_THREAD_NAME precedence over FABRIC_NODE_NAME
+	os.Setenv("FABRIC_NODE_NAME", "legacy-node")
+	defer os.Unsetenv("FABRIC_NODE_NAME")
+	cfg = LoadConfig("", "", "")
+	if cfg.ThreadName != "legacy-node" {
+		t.Errorf("expected fallback to FABRIC_NODE_NAME, got %s", cfg.ThreadName)
+	}
+
+	os.Setenv("FABRIC_THREAD_NAME", "modern-thread")
+	defer os.Unsetenv("FABRIC_THREAD_NAME")
+	cfg = LoadConfig("", "", "")
+	if cfg.ThreadName != "modern-thread" {
+		t.Errorf("expected FABRIC_THREAD_NAME precedence, got %s", cfg.ThreadName)
+	}
+
 	// 4. Test Flags
 	cfg = LoadConfig("ws://flag:8080/ws", "flag-secret", "", "/flag/ca.crt")
 	if cfg.Host != "ws://flag:8080/ws" {
