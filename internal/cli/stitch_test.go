@@ -35,10 +35,58 @@ func TestStitchDeprecationWarning(t *testing.T) {
 	SetDeprecationWriter(&stderrBuf)
 	defer SetDeprecationWriter(nil)
 
-	// Test stitch discover deprecation warning
+	// Test stitch discover with CIDR deprecation warning
 	stitchDiscoverCmd.RunE(stitchDiscoverCmd, []string{"127.0.0.1/32"})
 
-	if !strings.Contains(stderrBuf.String(), "Warning: 'fabric stitch discover' is deprecated. Use 'fabric stitch' instead.") {
-		t.Errorf("expected stitch discover deprecation warning, got %q", stderrBuf.String())
+	expectedMsg := "Warning: 'fabric stitch discover 127.0.0.1/32' is deprecated. Use 'fabric stitch 127.0.0.1/32' instead.\n"
+	if !strings.Contains(stderrBuf.String(), expectedMsg) {
+		t.Errorf("expected %q, got %q", expectedMsg, stderrBuf.String())
+	}
+}
+
+func TestResolveStitchMode(t *testing.T) {
+	var stderrBuf bytes.Buffer
+	SetDeprecationWriter(&stderrBuf)
+	defer SetDeprecationWriter(nil)
+
+	// Valid modes
+	tests := []struct {
+		modeFlag string
+		remote   bool
+		inverted bool
+		expected string
+		wantErr  bool
+	}{
+		{modeFlag: "local", expected: "normal"},
+		{modeFlag: "remote", expected: "inverted"},
+		{modeFlag: "normal", expected: "normal"},
+		{modeFlag: "inverted", expected: "inverted"},
+		{remote: true, expected: "inverted"},
+		{inverted: true, expected: "inverted"},
+		{modeFlag: "unknown", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		stderrBuf.Reset()
+		mode, err := resolveStitchMode(tt.modeFlag, tt.remote, tt.inverted)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("resolveStitchMode(%q, %v, %v) expected error, got nil", tt.modeFlag, tt.remote, tt.inverted)
+			} else if !strings.Contains(err.Error(), "must be 'local' or 'remote'") {
+				t.Errorf("resolveStitchMode error message %q should contain 'must be \\'local\\' or \\'remote\\''", err.Error())
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("resolveStitchMode(%q, %v, %v) unexpected error: %v", tt.modeFlag, tt.remote, tt.inverted, err)
+		}
+		if mode != tt.expected {
+			t.Errorf("resolveStitchMode(%q, %v, %v) = %q, want %q", tt.modeFlag, tt.remote, tt.inverted, mode, tt.expected)
+		}
+		if tt.inverted {
+			if !strings.Contains(stderrBuf.String(), "Warning: '--inverted' is deprecated. Use '--remote' instead.") {
+				t.Errorf("expected '--inverted' deprecation warning, got %q", stderrBuf.String())
+			}
+		}
 	}
 }

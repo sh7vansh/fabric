@@ -123,11 +123,13 @@ func Execute() {
 
 func GetConfig() *Config {
 	srv := serverFlag
-	if srv == "" {
+	if srv == "" && hostFlag != "" {
+		WarnDeprecated("--host / -H", "--server / -s")
 		srv = hostFlag
 	}
 	rem := remoteFlag
-	if rem == "" {
+	if rem == "" && directFlag != "" {
+		WarnDeprecated("--direct", "--remote")
 		rem = directFlag
 	}
 	return LoadConfig(srv, tokenFlag, rem, caCertFlag)

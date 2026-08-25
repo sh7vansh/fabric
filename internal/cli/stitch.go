@@ -73,10 +73,12 @@ var stitchDiscoverCmd = &cobra.Command{
 	SilenceUsage: true,
 	Args:         cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		WarnDeprecated("fabric stitch discover", "fabric stitch")
 		rawCIDR := ""
 		if len(args) > 0 {
 			rawCIDR = args[0]
+			WarnDeprecated("fabric stitch discover "+rawCIDR, "fabric stitch "+rawCIDR)
+		} else {
+			WarnDeprecated("fabric stitch discover", "fabric stitch")
 		}
 		return runStitchScan(cmd, rawCIDR)
 	},
@@ -95,9 +97,9 @@ func init() {
 	stitchCmd.Flags().StringVar(&stitchDomainFlag, "domain", "fabric.mesh", "Domain to register on the Fabric")
 	stitchCmd.Flags().StringVar(&stitchTagsFlag, "tags", "", "Comma-separated metadata tags (e.g. web,prod)")
 	stitchCmd.Flags().BoolVar(&stitchNoWait, "no-wait", false, "Do not wait for mesh connection verification")
-	stitchCmd.Flags().StringVar(&stitchModeFlag, "mode", "", "Connection mode topology: 'normal' or 'remote'")
+	stitchCmd.Flags().StringVar(&stitchModeFlag, "mode", "", "Connection mode topology: 'local' or 'remote'")
 	stitchCmd.Flags().BoolVar(&stitchRemoteFlag, "remote", false, "Direct remote mode (thread listens with mTLS)")
-	stitchCmd.Flags().BoolVar(&stitchInvertedFlag, "inverted", false, "Alias for --remote")
+	stitchCmd.Flags().BoolVar(&stitchInvertedFlag, "inverted", false, "Alias for --remote (deprecated, use --remote)")
 	stitchCmd.Flags().StringVar(&stitchListenPortFlag, "listen-port", "8443", "Port for remote mode thread to listen on")
 	stitchCmd.Flags().BoolVar(&stitchNoFallback, "no-fallback", false, "Disable automatic fallback to remote mode if normal verification times out")
 
@@ -123,14 +125,14 @@ func init() {
 	stitchDiscoverCmd.Flags().BoolVar(&stitchBatchFlag, "auto-stitch", false, "Alias for --all")
 	stitchDiscoverCmd.Flags().BoolVar(&stitchNoWait, "no-wait", false, "Do not wait for mesh connection verification")
 	stitchDiscoverCmd.Flags().StringVarP(&stitchServerURL, "server", "s", "", "Fabric server URL override")
-	stitchDiscoverCmd.Flags().StringVar(&stitchSocketURL, "socket-url", "", "Server URL override")
+	stitchDiscoverCmd.Flags().StringVar(&stitchSocketURL, "socket-url", "", "Server URL override (deprecated, use --server)")
 	stitchDiscoverCmd.Flags().StringVar(&stitchTokenFlag, "token", "", "Cluster token override")
 	stitchDiscoverCmd.Flags().StringVar(&stitchDomainFlag, "domain", "fabric.mesh", "Domain to register on the mesh")
-	stitchDiscoverCmd.Flags().StringVar(&stitchTagsFlag, "tags", "", "Comma-separated metadata tags to assign to discovered nodes")
-	stitchDiscoverCmd.Flags().StringVar(&stitchModeFlag, "mode", "", "Connection mode topology: 'normal' or 'remote'")
+	stitchDiscoverCmd.Flags().StringVar(&stitchTagsFlag, "tags", "", "Comma-separated metadata tags to assign to discovered threads")
+	stitchDiscoverCmd.Flags().StringVar(&stitchModeFlag, "mode", "", "Connection mode topology: 'local' or 'remote'")
 	stitchDiscoverCmd.Flags().BoolVar(&stitchRemoteFlag, "remote", false, "Direct remote mode")
-	stitchDiscoverCmd.Flags().BoolVar(&stitchInvertedFlag, "inverted", false, "Alias for --remote")
-	stitchDiscoverCmd.Flags().StringVar(&stitchListenPortFlag, "listen-port", "8443", "Port for remote mode nodes to listen on")
+	stitchDiscoverCmd.Flags().BoolVar(&stitchInvertedFlag, "inverted", false, "Alias for --remote (deprecated, use --remote)")
+	stitchDiscoverCmd.Flags().StringVar(&stitchListenPortFlag, "listen-port", "8443", "Port for remote mode threads to listen on")
 	stitchDiscoverCmd.Flags().BoolVar(&stitchNoFallback, "no-fallback", false, "Disable automatic fallback to remote mode")
 }
 
@@ -167,17 +169,37 @@ func promptTopology(isBatch bool) string {
 	} else {
 		fmt.Println("\nSelect connection topology:")
 	}
-	fmt.Println("  [1] Normal (Outbound WebSocket to Fabric server — default)")
+	fmt.Println("  [1] Local (Outbound WebSocket to Fabric server — default)")
 	fmt.Println("  [2] Remote (Thread listens with mTLS for direct CLI access)")
 	fmt.Print("Choice [1]: ")
 
 	reader := bufio.NewReader(os.Stdin)
 	input, _ := reader.ReadString('\n')
-	input = strings.TrimSpace(input)
-	if input == "2" || strings.ToLower(input) == "remote" || strings.ToLower(input) == "inverted" {
+	input = strings.TrimSpace(strings.ToLower(input))
+	if input == "2" || input == "remote" || input == "inverted" {
 		return "inverted"
 	}
 	return "normal"
+}
+
+func resolveStitchMode(modeFlag string, remoteFlag, invertedFlag bool) (string, error) {
+	if invertedFlag {
+		WarnDeprecated("--inverted", "--remote")
+	}
+	mode := strings.ToLower(strings.TrimSpace(modeFlag))
+	if remoteFlag || invertedFlag {
+		mode = "remote"
+	}
+	if mode != "" && mode != "local" && mode != "remote" && mode != "normal" && mode != "inverted" {
+		return "", fmt.Errorf("invalid mode %q: must be 'local' or 'remote'", modeFlag)
+	}
+	if mode == "remote" || mode == "inverted" {
+		return "inverted", nil
+	}
+	if mode == "local" || mode == "normal" {
+		return "normal", nil
+	}
+	return "", nil
 }
 
 func registerInvertedIfApplicable(target, listenPort string, node *protocol.NodeMetadata) {
@@ -258,15 +280,9 @@ func runStitchSingle(cmd *cobra.Command, rawTarget string) error {
 		}
 	}
 
-	mode := stitchModeFlag
-	if stitchRemoteFlag || stitchInvertedFlag {
-		mode = "inverted"
-	}
-	if mode != "" && mode != "normal" && mode != "inverted" && mode != "remote" {
-		return fmt.Errorf("invalid mode %q: must be 'normal' or 'remote'", mode)
-	}
-	if mode == "remote" {
-		mode = "inverted"
+	mode, err := resolveStitchMode(stitchModeFlag, stitchRemoteFlag, stitchInvertedFlag)
+	if err != nil {
+		return err
 	}
 	if mode == "" {
 		if isTerminalInput() {
@@ -282,7 +298,8 @@ func runStitchSingle(cmd *cobra.Command, rawTarget string) error {
 	}
 
 	serverURL := stitchServerURL
-	if serverURL == "" {
+	if serverURL == "" && stitchSocketURL != "" {
+		WarnDeprecated("--socket-url", "--server / -s")
 		serverURL = stitchSocketURL
 	}
 	if serverURL == "" {
@@ -421,15 +438,9 @@ func runStitchScan(cmd *cobra.Command, rawCIDR string) error {
 		}
 	}
 
-	mode := stitchModeFlag
-	if stitchRemoteFlag || stitchInvertedFlag {
-		mode = "inverted"
-	}
-	if mode != "" && mode != "normal" && mode != "inverted" && mode != "remote" {
-		return fmt.Errorf("invalid mode %q: must be 'normal' or 'remote'", mode)
-	}
-	if mode == "remote" {
-		mode = "inverted"
+	mode, err := resolveStitchMode(stitchModeFlag, stitchRemoteFlag, stitchInvertedFlag)
+	if err != nil {
+		return err
 	}
 	if mode == "" {
 		if isTerminalInput() && !stitchBatchFlag {
@@ -446,7 +457,8 @@ func runStitchScan(cmd *cobra.Command, rawCIDR string) error {
 
 	cfg := GetConfig()
 	serverURL := stitchServerURL
-	if serverURL == "" {
+	if serverURL == "" && stitchSocketURL != "" {
+		WarnDeprecated("--socket-url", "--server / -s")
 		serverURL = stitchSocketURL
 	}
 	if serverURL == "" {

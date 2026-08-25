@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -199,12 +198,4 @@ func init() {
 	rootCmd.AddCommand(topicWorkflowsCmd)
 	rootCmd.AddCommand(topicThreadsCmd)
 	rootCmd.AddCommand(topicStitchGuideCmd)
-}
-
-func formatExamples(examples []string) string {
-	var sb strings.Builder
-	for _, ex := range examples {
-		sb.WriteString("  " + ex + "\n")
-	}
-	return sb.String()
 }

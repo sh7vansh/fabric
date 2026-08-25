@@ -37,3 +37,37 @@ func TestStderrDeprecationDoesNotCorruptStdout(t *testing.T) {
 		t.Errorf("expected clean stdout, got %q", stdoutBuf.String())
 	}
 }
+
+func TestGetConfigDeprecationWarnings(t *testing.T) {
+	var stderrBuf bytes.Buffer
+	SetDeprecationWriter(&stderrBuf)
+	defer SetDeprecationWriter(nil)
+
+	// Reset flags
+	serverFlag = ""
+	hostFlag = "ws://legacy-host:8080/ws"
+	remoteFlag = ""
+	directFlag = "192.168.1.10:8443"
+	defer func() {
+		serverFlag = ""
+		hostFlag = ""
+		remoteFlag = ""
+		directFlag = ""
+	}()
+
+	cfg := GetConfig()
+	if cfg.Host != "ws://legacy-host:8080/ws" {
+		t.Errorf("expected Host %q, got %q", "ws://legacy-host:8080/ws", cfg.Host)
+	}
+	if cfg.DirectAddress != "192.168.1.10:8443" {
+		t.Errorf("expected DirectAddress %q, got %q", "192.168.1.10:8443", cfg.DirectAddress)
+	}
+
+	errOut := stderrBuf.String()
+	if !strings.Contains(errOut, "Warning: '--host / -H' is deprecated. Use '--server / -s' instead.") {
+		t.Errorf("expected --host deprecation warning, got %q", errOut)
+	}
+	if !strings.Contains(errOut, "Warning: '--direct' is deprecated. Use '--remote' instead.") {
+		t.Errorf("expected --direct deprecation warning, got %q", errOut)
+	}
+}

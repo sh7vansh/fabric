@@ -12,27 +12,26 @@ var Version = "2.2.2"
 
 var versionCmd = &cobra.Command{
 	Use:     "version",
-	Short:   "Show Fabric version information for client and socket",
+	Short:   "Show Fabric version information for client and server",
 	GroupID: "system",
-	Example: `  # Display client version and query socket version
+	Example: `  # Display client version and query server version
   fabric version`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Client Version: %s\n", Version)
 
-
 		client := NewClient(GetConfig())
 		resp, err := client.DoHTTP("GET", "/version", nil)
 		if err != nil {
-			fmt.Printf("Socket Version: <unreachable: %v>\n", err)
+			fmt.Printf("Server Version: <unreachable: %v>\n", err)
 			return nil
 		}
 		defer resp.Body.Close()
 
 		if resp.StatusCode != 200 {
 			if len(client.Config.DirectNodes) > 0 {
-				fmt.Printf("Socket Version: <not configured: direct mTLS mode>\n")
+				fmt.Printf("Server Version: <not configured: direct mTLS mode>\n")
 			} else {
-				fmt.Printf("Socket Version: <offline>\n")
+				fmt.Printf("Server Version: <offline>\n")
 			}
 			return nil
 		}
@@ -41,10 +40,10 @@ var versionCmd = &cobra.Command{
 			Version string `json:"version"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&ver); err != nil {
-			fmt.Printf("Socket Version: <invalid response>\n")
+			fmt.Printf("Server Version: <invalid response>\n")
 			return nil
 		}
-		fmt.Printf("Socket Version: %s\n", ver.Version)
+		fmt.Printf("Server Version: %s\n", ver.Version)
 		return nil
 	},
 }

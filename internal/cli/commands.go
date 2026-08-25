@@ -102,9 +102,9 @@ func init() {
 	execCmd.Flags().BoolVarP(&execPty, "tty", "t", false, "Allocate a pseudo-TTY")
 	execCmd.Flags().BoolVarP(&execDetached, "detach", "d", false, "Run command in background")
 	execCmd.Flags().StringArrayVarP(&execEnv, "env", "e", []string{}, "Set environment variables")
-	execCmd.Flags().StringVarP(&execWorkdir, "workdir", "w", "", "Working directory inside the node")
+	execCmd.Flags().StringVarP(&execWorkdir, "workdir", "w", "", "Working directory inside the thread")
 	execCmd.Flags().StringVarP(&execUser, "user", "u", "", "Username or UID")
-	execCmd.Flags().BoolVarP(&execAll, "all", "a", false, "Execute across all connected nodes in parallel")
-	execCmd.Flags().StringVarP(&execTag, "tag", "l", "", "Filter target nodes by tag")
+	execCmd.Flags().BoolVarP(&execAll, "all", "a", false, "Execute across all connected threads in parallel")
+	execCmd.Flags().StringVarP(&execTag, "tag", "l", "", "Filter target threads by tag")
 	execCmd.Flags().IntVarP(&execConcurrency, "concurrency", "c", 10, "Maximum concurrent execution worker pool limit")
 }

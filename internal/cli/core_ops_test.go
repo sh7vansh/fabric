@@ -73,4 +73,26 @@ func TestCoreOperationsThreadTerminology(t *testing.T) {
 			t.Errorf("expected port inspection output for worker-1, got: %s", out)
 		}
 	}
+
+	// 4. Test exec flags terminology
+	{
+		workdirFlag := execCmd.Flags().Lookup("workdir")
+		if workdirFlag == nil || strings.Contains(workdirFlag.Usage, "node") {
+			t.Errorf("expected exec workdir flag to use thread terminology, got usage: %q", workdirFlag.Usage)
+		}
+		allFlag := execCmd.Flags().Lookup("all")
+		if allFlag == nil || strings.Contains(allFlag.Usage, "node") {
+			t.Errorf("expected exec all flag to use thread terminology, got usage: %q", allFlag.Usage)
+		}
+		tagFlag := execCmd.Flags().Lookup("tag")
+		if tagFlag == nil || strings.Contains(tagFlag.Usage, "node") {
+			t.Errorf("expected exec tag flag to use thread terminology, got usage: %q", tagFlag.Usage)
+		}
+	}
+}
+
+func TestVersionOutputTerminology(t *testing.T) {
+	if strings.Contains(versionCmd.Short, "socket") {
+		t.Errorf("versionCmd.Short should not contain 'socket': %s", versionCmd.Short)
+	}
 }
