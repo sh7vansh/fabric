@@ -16,6 +16,7 @@ import (
 )
 
 var (
+	initRoleFlag    string
 	initServerFlag  string
 	initHostFlag    string
 	initTokenFlag   string
@@ -31,9 +32,15 @@ var initCmd = &cobra.Command{
 	Short:   "Interactive CLI and configuration onboarding wizard",
 	GroupID: "system",
 	Long: `Interactive onboarding wizard to configure the local operator workspace (~/.fabric/config.json),
-Fabric server WebSocket URL, cluster tokens, and Root CA trust.`,
+participation role (client, server, agent, or both), cluster tokens, and Root CA trust.`,
 	Example: `  # Launch interactive setup wizard
   fabric init
+
+  # Set up as a dedicated Fabric Server
+  fabric init --role server
+
+  # Set up as a managed Agent thread
+  fabric init --role agent --server ws://gateway:8080/ws --token secret-token
 
   # Non-interactive CLI setup for scripts
   fabric init -y --server ws://gateway:8080/ws --token secret-token
@@ -47,6 +54,7 @@ Fabric server WebSocket URL, cluster tokens, and Root CA trust.`,
 }
 
 func init() {
+	initCmd.Flags().StringVar(&initRoleFlag, "role", "", "Machine participation role: 'client', 'server', 'agent', or 'both'")
 	initCmd.Flags().StringVarP(&initServerFlag, "server", "s", "", "Fabric server WebSocket URL (e.g. ws://192.168.1.50:8080/ws)")
 	initCmd.Flags().StringVarP(&initHostFlag, "host", "H", "", "Server URL (deprecated, use --server)")
 	initCmd.Flags().StringVar(&initTokenFlag, "token", "", "Pre-shared cluster token")
@@ -55,6 +63,22 @@ func init() {
 	initCmd.Flags().BoolVarP(&initNonInteract, "yes", "y", false, "Accept all defaults non-interactively")
 	initCmd.Flags().BoolVar(&initTrustCA, "trust-ca", false, "Install Fabric Root CA into system trust store")
 	initCmd.Flags().BoolVar(&initUntrustCA, "untrust-ca", false, "Remove Fabric Root CA from system trust store")
+}
+
+func parseRoleChoice(input string) string {
+	val := strings.ToLower(strings.TrimSpace(input))
+	switch val {
+	case "2", "server":
+		return "server"
+	case "3", "agent":
+		return "agent"
+	case "4", "both":
+		return "both"
+	case "1", "client":
+		return "client"
+	default:
+		return "client"
+	}
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
@@ -77,40 +101,62 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("         Fabric Onboarding & Setup                ")
 	fmt.Println("==================================================")
 
+	// 1. Role Selection
+	role := "client"
+	if initRoleFlag != "" {
+		role = parseRoleChoice(initRoleFlag)
+	} else if !initNonInteract {
+		fmt.Println("How will this machine participate in the Fabric?")
+		fmt.Println("  [1] Client only  (Operator CLI / workstation — default)")
+		fmt.Println("  [2] Server       (Run Fabric Server & control-plane daemon)")
+		fmt.Println("  [3] Agent        (Join as a managed thread / run fabric-agent)")
+		fmt.Println("  [4] Both         (Run Fabric Server + local Agent thread)")
+		roleChoice := prompt(reader, "Choice", "1")
+		role = parseRoleChoice(roleChoice)
+	}
+
+	// 2. Server URL
 	serverURL := initServerFlag
 	if serverURL == "" {
 		serverURL = initHostFlag
 	}
 	if serverURL == "" {
+		defaultSrv := "ws://localhost:8080/ws"
 		if initNonInteract {
-			serverURL = "ws://localhost:8080/ws"
+			serverURL = defaultSrv
+		} else if role == "server" || role == "both" {
+			serverURL = prompt(reader, "Fabric Server listen URL", defaultSrv)
 		} else {
-			serverURL = prompt(reader, "Fabric Server WebSocket URL (e.g. ws://192.168.1.50:8080/ws)", "ws://localhost:8080/ws")
+			serverURL = prompt(reader, "Fabric Server WebSocket URL (e.g. ws://192.168.1.50:8080/ws)", defaultSrv)
 		}
 	}
 
+	// 3. Cluster Token
 	token := initTokenFlag
 	if token == "" {
 		if initAutoToken {
 			token = generateSecureToken()
 		} else if initNonInteract {
 			token = "default-secret"
-		} else {
+		} else if role == "server" || role == "both" {
 			auto := prompt(reader, "Auto-generate secure cluster token? (Y/n)", "Y")
-			if strings.ToLower(auto) == "y" || strings.ToLower(auto) == "yes" {
+			if strings.ToLower(auto) == "y" || strings.ToLower(auto) == "yes" || auto == "" {
 				token = generateSecureToken()
 			} else {
 				token = prompt(reader, "Enter cluster token", "default-secret")
 			}
+		} else {
+			token = prompt(reader, "Enter cluster token", "default-secret")
 		}
 	}
 
+	// 4. Fabric Domain
 	domain := initDomainFlag
 	if !initNonInteract && domain == "fabric.mesh" {
 		domain = prompt(reader, "Fabric Domain", "fabric.mesh")
 	}
 
-	// 1. Initialize local Root CA if present or requested
+	// 5. CA Trust Store Setup
 	home, _ := os.UserHomeDir()
 	caDir := filepath.Join(home, ".fabric", "ca")
 	caCertPath := filepath.Join(caDir, "ca.crt")
@@ -123,7 +169,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// 2. Save CLI config
+	// 6. Save CLI Config
 	cliCfg := &Config{
 		Host:  serverURL,
 		Token: token,
@@ -134,18 +180,91 @@ func runInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("[+] CLI configuration saved to ~/.fabric/config.json")
 	}
 
+	// 7. Write Service Environment Files and Start Services
+	var startedServices []string
+	if role == "server" || role == "both" {
+		if err := writeRoleEnv("server", serverURL, token, domain); err == nil {
+			fmt.Println("[+] Configured server environment (~/.fabric/server.env)")
+		}
+		if !initNonInteract {
+			if err := InstallService("server"); err == nil {
+				startedServices = append(startedServices, "fabric-server")
+			}
+		}
+	}
+
+	if role == "agent" || role == "both" {
+		if err := writeRoleEnv("agent", serverURL, token, domain); err == nil {
+			fmt.Println("[+] Configured agent environment (~/.fabric/agent.env)")
+		}
+		if !initNonInteract {
+			if err := InstallService("agent"); err == nil {
+				startedServices = append(startedServices, "fabric-agent")
+			}
+		}
+	}
+
+	// 8. Completion Summary
 	fmt.Println("\n==================================================")
 	fmt.Println("         Fabric Initialization Complete!          ")
 	fmt.Println("==================================================")
+	fmt.Printf("Role:          %s\n", formatRoleDisplay(role))
 	fmt.Printf("Server URL:    %s\n", serverURL)
 	fmt.Printf("Cluster Token: %s\n", token)
 	fmt.Printf("Domain:        %s\n", domain)
-	fmt.Println("\nTo stitch a remote machine via SSH, run:")
-	fmt.Printf("  fabric stitch user@<remote-ip>\n\n")
-	fmt.Println("To inspect threads:")
+	if len(startedServices) > 0 {
+		fmt.Printf("Services:      %s [active]\n", strings.Join(startedServices, ", "))
+	}
+
+	if role == "server" || role == "both" {
+		fmt.Println("\nTo stitch remote machines via SSH, run:")
+		fmt.Println("  fabric stitch user@<remote-ip>")
+	}
+	fmt.Println("\nTo inspect threads:")
 	fmt.Println("  fabric ps")
 	fmt.Println("==================================================")
 
+	return nil
+}
+
+func formatRoleDisplay(role string) string {
+	switch role {
+	case "server":
+		return "Server (Control Plane)"
+	case "agent":
+		return "Agent (Thread)"
+	case "both":
+		return "Server + Agent"
+	default:
+		return "Client only (Operator CLI)"
+	}
+}
+
+func writeRoleEnv(role, serverURL, token, domain string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	fabricDir := filepath.Join(home, ".fabric")
+	_ = os.MkdirAll(fabricDir, 0755)
+	configDir := filepath.Join(home, ".config", "fabric")
+	_ = os.MkdirAll(configDir, 0755)
+
+	var sb strings.Builder
+	if role == "server" {
+		sb.WriteString(fmt.Sprintf("FABRIC_TOKEN=%s\n", token))
+		sb.WriteString(fmt.Sprintf("FABRIC_DOMAIN=%s\n", domain))
+		sb.WriteString("FABRIC_HTTP_PORT=8080\n")
+	} else if role == "agent" {
+		sb.WriteString(fmt.Sprintf("FABRIC_SERVER_URL=%s\n", serverURL))
+		sb.WriteString(fmt.Sprintf("FABRIC_TOKEN=%s\n", token))
+		sb.WriteString(fmt.Sprintf("FABRIC_DOMAIN=%s\n", domain))
+	}
+
+	content := []byte(sb.String())
+	_ = os.WriteFile(filepath.Join(fabricDir, role+".env"), content, 0600)
+	_ = os.WriteFile(filepath.Join(configDir, role+".env"), content, 0600)
 	return nil
 }
 

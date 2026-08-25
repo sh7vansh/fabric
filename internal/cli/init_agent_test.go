@@ -82,3 +82,65 @@ func TestInitAndAgentCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRoleChoice(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"1", "client"},
+		{"client", "client"},
+		{"CLIENT", "client"},
+		{"2", "server"},
+		{"server", "server"},
+		{"3", "agent"},
+		{"agent", "agent"},
+		{"4", "both"},
+		{"both", "both"},
+		{"", "client"},
+		{"invalid", "client"},
+	}
+
+	for _, tt := range tests {
+		got := parseRoleChoice(tt.input)
+		if got != tt.expected {
+			t.Errorf("parseRoleChoice(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestInitRoleEnvGeneration(t *testing.T) {
+	tempHome := t.TempDir()
+	os.Setenv("HOME", tempHome)
+	defer os.Unsetenv("HOME")
+
+	// Test init with --role=both non-interactively
+	var stdoutBuf bytes.Buffer
+	rootCmd.SetOut(&stdoutBuf)
+	rootCmd.SetArgs([]string{"init", "-y", "--role", "both", "--server", "ws://localhost:8080/ws", "--token", "both-secret", "--domain", "fabric.mesh"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("fabric init with --role both failed: %v", err)
+	}
+
+	serverEnv := filepath.Join(tempHome, ".fabric", "server.env")
+	if data, err := os.ReadFile(serverEnv); err != nil {
+		t.Errorf("expected server.env at %s, error: %v", serverEnv, err)
+	} else {
+		content := string(data)
+		if !strings.Contains(content, "FABRIC_TOKEN=both-secret") || !strings.Contains(content, "FABRIC_DOMAIN=fabric.mesh") {
+			t.Errorf("unexpected server.env content: %s", content)
+		}
+	}
+
+	agentEnv := filepath.Join(tempHome, ".fabric", "agent.env")
+	if data, err := os.ReadFile(agentEnv); err != nil {
+		t.Errorf("expected agent.env at %s, error: %v", agentEnv, err)
+	} else {
+		content := string(data)
+		if !strings.Contains(content, "FABRIC_SERVER_URL=ws://localhost:8080/ws") || !strings.Contains(content, "FABRIC_TOKEN=both-secret") {
+			t.Errorf("unexpected agent.env content: %s", content)
+		}
+	}
+}
