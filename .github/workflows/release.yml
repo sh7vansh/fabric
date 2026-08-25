@@ -29,6 +29,8 @@ jobs:
           for ARCH in "${ARCHS[@]}"; do
             echo "Building for linux/$ARCH..."
             GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-linux-$ARCH" ./cmd/cli
+            GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-server-linux-$ARCH" ./cmd/server
+            GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-agent-linux-$ARCH" ./cmd/agent
             GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-socket-linux-$ARCH" ./cmd/socket
             GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-node-linux-$ARCH" ./cmd/node
           done

@@ -199,7 +199,7 @@ func main() {
 	http.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"version":    "2.3.3",
+			"version":    "2.4.0",
 			"domain":     *domainFlag,
 			"role":       "server",
 			"gateway_id": meshRelay.GatewayID(),
