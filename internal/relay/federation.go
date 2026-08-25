@@ -66,6 +66,13 @@ func (r *Relay) Region() string {
 	return r.region
 }
 
+// FederationCA returns the local server's configured federation CA certificate path.
+func (r *Relay) FederationCA() string {
+	r.peerMu.RLock()
+	defer r.peerMu.RUnlock()
+	return r.federationCA
+}
+
 // RegisterPeer registers an active gateway peer session, handling deduplication.
 func (r *Relay) RegisterPeer(peer *GatewayPeerSession) error {
 	if peer == nil || peer.GatewayID == "" {
@@ -86,8 +93,22 @@ func (r *Relay) RegisterPeer(peer *GatewayPeerSession) error {
 
 	r.peerMu.Lock()
 	if existing, exists := r.peers[peer.GatewayID]; exists {
-		// Tie-breaker: Lexicographical comparison
-		log.Printf("[Relay/Peering] Duplicate peer connection for %q detected; applying tie-breaker", peer.GatewayID)
+		// Tie-breaker: Lexicographical comparison in symmetric core peering
+		// When both servers dial each other simultaneously, keep the connection initiated
+		// by the gateway with the lexicographically smaller GatewayID.
+		if peer.Topology == "core" && existing.Topology == "core" && existing.IsOutbound != peer.IsOutbound {
+			preferOutbound := r.gatewayID < peer.GatewayID
+			if peer.IsOutbound != preferOutbound {
+				r.peerMu.Unlock()
+				log.Printf("[Relay/Peering] Duplicate peer connection for %q dropped by tie-breaker (prefer outbound=%v, new is outbound=%v)", peer.GatewayID, preferOutbound, peer.IsOutbound)
+				if peer.Mux != nil && peer.Mux.Session != nil {
+					go peer.Mux.Session.Close()
+				}
+				return fmt.Errorf("duplicate peer connection for %q dropped by tie-breaker", peer.GatewayID)
+			}
+		}
+
+		log.Printf("[Relay/Peering] Duplicate peer connection for %q detected; replacing existing session", peer.GatewayID)
 		if existing.Mux != nil && existing.Mux.Session != nil {
 			go existing.Mux.Session.Close()
 		}

@@ -174,7 +174,14 @@ func (m *SystemDNSManager) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	q := req.Question[0]
 	name := strings.ToLower(q.Name)
 
-	if !strings.HasSuffix(name, "."+m.domain+".") {
+	suffixMatched := false
+	for _, s := range []string{"." + m.domain + ".", ".fabric.", ".mesh."} {
+		if strings.HasSuffix(name, s) {
+			suffixMatched = true
+			break
+		}
+	}
+	if !suffixMatched {
 		dns.HandleFailed(w, req)
 		return
 	}

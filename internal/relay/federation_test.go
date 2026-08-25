@@ -359,3 +359,147 @@ func TestFederatedDNSResolution(t *testing.T) {
 		t.Errorf("expected proxy IP %s, got %s", proxyIP, aRec.A.String())
 	}
 }
+
+func TestSymmetricPeeringLexicographicalTieBreaker(t *testing.T) {
+	serverA := New(Config{GatewayID: "gw-a"})
+	defer serverA.Close()
+
+	serverB := New(Config{GatewayID: "gw-b"})
+	defer serverB.Close()
+
+	// Connections between A and B
+	// C_AtoB: Outbound on A, Inbound on B
+	// C_BtoA: Inbound on A, Outbound on B
+
+	// Test on serverA (gw-a < gw-b => prefer Outbound):
+	// Case 1: Inbound arrives first, then Outbound arrives -> Outbound replaces Inbound
+	sessA_inbound := &GatewayPeerSession{GatewayID: "gw-b", Topology: "core", IsOutbound: false}
+	sessA_outbound := &GatewayPeerSession{GatewayID: "gw-b", Topology: "core", IsOutbound: true}
+
+	if err := serverA.RegisterPeer(sessA_inbound); err != nil {
+		t.Fatalf("failed to register first peer session: %v", err)
+	}
+	if err := serverA.RegisterPeer(sessA_outbound); err != nil {
+		t.Fatalf("expected outbound session to replace inbound on lower gateway ID: %v", err)
+	}
+	serverA.peerMu.RLock()
+	activePeerA := serverA.peers["gw-b"]
+	serverA.peerMu.RUnlock()
+	if activePeerA != sessA_outbound {
+		t.Errorf("expected serverA to keep outbound session, got: %+v", activePeerA)
+	}
+
+	// Case 2: Outbound exists, then Inbound arrives -> Inbound is rejected by tie-breaker
+	sessA_inbound2 := &GatewayPeerSession{GatewayID: "gw-b", Topology: "core", IsOutbound: false}
+	err := serverA.RegisterPeer(sessA_inbound2)
+	if err == nil || !strings.Contains(err.Error(), "tie-breaker") {
+		t.Errorf("expected inbound session to be rejected by tie-breaker on serverA, got err: %v", err)
+	}
+	serverA.peerMu.RLock()
+	activePeerA = serverA.peers["gw-b"]
+	serverA.peerMu.RUnlock()
+	if activePeerA != sessA_outbound {
+		t.Errorf("expected serverA to retain outbound session, got: %+v", activePeerA)
+	}
+
+	// Test on serverB (gw-b > gw-a => prefer Inbound):
+	// Case 3: Outbound arrives first, then Inbound arrives -> Inbound replaces Outbound
+	sessB_outbound := &GatewayPeerSession{GatewayID: "gw-a", Topology: "core", IsOutbound: true}
+	sessB_inbound := &GatewayPeerSession{GatewayID: "gw-a", Topology: "core", IsOutbound: false}
+
+	if err := serverB.RegisterPeer(sessB_outbound); err != nil {
+		t.Fatalf("failed to register first peer session on serverB: %v", err)
+	}
+	if err := serverB.RegisterPeer(sessB_inbound); err != nil {
+		t.Fatalf("expected inbound session to replace outbound on higher gateway ID: %v", err)
+	}
+	serverB.peerMu.RLock()
+	activePeerB := serverB.peers["gw-a"]
+	serverB.peerMu.RUnlock()
+	if activePeerB != sessB_inbound {
+		t.Errorf("expected serverB to keep inbound session, got: %+v", activePeerB)
+	}
+
+	// Case 4: Inbound exists, then Outbound arrives -> Outbound is rejected by tie-breaker
+	sessB_outbound2 := &GatewayPeerSession{GatewayID: "gw-a", Topology: "core", IsOutbound: true}
+	err = serverB.RegisterPeer(sessB_outbound2)
+	if err == nil || !strings.Contains(err.Error(), "tie-breaker") {
+		t.Errorf("expected outbound session to be rejected by tie-breaker on serverB, got err: %v", err)
+	}
+	serverB.peerMu.RLock()
+	activePeerB = serverB.peers["gw-a"]
+	serverB.peerMu.RUnlock()
+	if activePeerB != sessB_inbound {
+		t.Errorf("expected serverB to retain inbound session, got: %+v", activePeerB)
+	}
+}
+
+func TestFederatedDNSResolution_FQTNDotFabric(t *testing.T) {
+	serverA := New(Config{
+		Domain:    "fabric.mesh",
+		GatewayID: "gw-us-east",
+	})
+	defer serverA.Close()
+
+	// Register remote node db-1 hosted on gw-eu-west
+	serverA.RegisterRemoteNode(protocol.NodeMetadata{
+		Hostname:  "db-1",
+		GatewayID: "gw-eu-west",
+	}, "gw-eu-west")
+
+	// Register local node web-1
+	sMux, cMux := createMockMultiplexers(t)
+	defer sMux.Session.Close()
+	defer cMux.Session.Close()
+	serverA.RegisterNode(protocol.NodeMetadata{
+		Hostname: "web-1",
+	}, sMux)
+
+	proxyIP := "10.200.0.1"
+
+	tests := []struct {
+		name     string
+		qname    string
+		expected string
+	}{
+		{"Federated FQTN .fabric", "db-1.gw-eu-west.fabric.", proxyIP},
+		{"Federated FQTN .fabric.mesh", "db-1.gw-eu-west.fabric.mesh.", proxyIP},
+		{"Local node .fabric", "web-1.fabric.", proxyIP},
+		{"Local node .fabric.mesh", "web-1.fabric.mesh.", proxyIP},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := new(dns.Msg)
+			m.SetQuestion(tc.qname, dns.TypeA)
+			wire, _ := m.Pack()
+
+			q := protocol.DNSQuery{
+				Type:      protocol.TypeDNSQuery,
+				SessionID: "sess-test",
+				Data:      base64.StdEncoding.EncodeToString(wire),
+			}
+
+			resp := serverA.ResolveDNS(q, proxyIP)
+			if resp.RCode != dns.RcodeSuccess {
+				t.Fatalf("expected RcodeSuccess for query %s, got RCode %d", tc.qname, resp.RCode)
+			}
+
+			respWire, _ := base64.StdEncoding.DecodeString(resp.Data)
+			mResp := new(dns.Msg)
+			_ = mResp.Unpack(respWire)
+			if len(mResp.Answer) != 1 {
+				t.Fatalf("expected 1 answer for query %s, got %d", tc.qname, len(mResp.Answer))
+			}
+			aRec, ok := mResp.Answer[0].(*dns.A)
+			if !ok {
+				t.Fatalf("expected *dns.A record, got %T", mResp.Answer[0])
+			}
+			if aRec.A.String() != tc.expected {
+				t.Errorf("expected %s, got %s", tc.expected, aRec.A.String())
+			}
+		})
+	}
+}
+
+

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"fabric/internal/pki"
 	"fabric/internal/relay"
 	"fabric/internal/tlsengine"
 )
@@ -110,7 +111,16 @@ func main() {
 		secureSrv := &http.Server{
 			Handler: http.DefaultServeMux,
 		}
-		secureLn := tls.NewListener(tlsLn, tlsEng.TLSConfig())
+		tlsCfg := tlsEng.TLSConfig()
+		if *federationCAFlag != "" {
+			caPool, err := pki.LoadFederationCertPool(*federationCAFlag)
+			if err != nil {
+				log.Fatalf("Failed to load federation CA: %v", err)
+			}
+			tlsCfg.ClientCAs = caPool
+			tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
+		}
+		secureLn := tls.NewListener(tlsLn, tlsCfg)
 		if err := secureSrv.Serve(secureLn); err != nil && err != http.ErrServerClosed {
 			log.Printf("[TLS] Server error on %s: %v", tlsAddr, err)
 		}
@@ -145,10 +155,22 @@ func main() {
 
 	// /gateway/v1/peer WebSocket endpoint for inter-server Yamux peering
 	http.HandleFunc("/gateway/v1/peer", func(w http.ResponseWriter, r *http.Request) {
-		provided := extractBearerToken(r)
-		if provided != "" && !meshRelay.ValidateToken(provided) {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
+		if meshRelay.FederationCA() != "" {
+			if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+				http.Error(w, "Unauthorized: mTLS Federation Certificate Required", http.StatusUnauthorized)
+				return
+			}
+			_, err := pki.ExtractGatewayID(r.TLS.PeerCertificates[0])
+			if err != nil {
+				http.Error(w, "Unauthorized: Invalid Federation Certificate: "+err.Error(), http.StatusUnauthorized)
+				return
+			}
+		} else {
+			provided := extractBearerToken(r)
+			if provided != "" && !meshRelay.ValidateToken(provided) {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
 		}
 
 		isLeaf := r.URL.Query().Get("leaf") == "true"

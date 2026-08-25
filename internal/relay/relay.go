@@ -677,17 +677,24 @@ func (r *Relay) ResolveDNS(req protocol.DNSQuery, proxyIP string) protocol.DNSRe
 	reply.SetReply(m)
 	reply.Authoritative = true
 
-	domainSuffix := "." + r.domain + "."
-
 	for _, q := range m.Question {
 		name := strings.ToLower(q.Name)
 
-		if !strings.HasSuffix(name, domainSuffix) {
+		prefix := ""
+		matched := false
+		for _, s := range []string{"." + r.domain + ".", ".fabric.", ".mesh."} {
+			if strings.HasSuffix(name, s) {
+				prefix = strings.TrimSuffix(name, s)
+				matched = true
+				break
+			}
+		}
+
+		if !matched {
 			reply.Rcode = dns.RcodeNameError
 			continue
 		}
 
-		prefix := strings.TrimSuffix(name, domainSuffix)
 		parts := strings.Split(prefix, ".")
 		nodeID := parts[len(parts)-1]
 		gwID := ""
