@@ -17,7 +17,7 @@ func main() {
 	if defaultURL == "" {
 		defaultURL = os.Getenv("FABRIC_HOST")
 	}
-	if defaultURL == "" {
+	if defaultURL == "" && os.Getenv("FABRIC_LISTEN") == "" {
 		defaultURL = "ws://localhost:8080/ws"
 	}
 
