@@ -41,7 +41,7 @@ func TestThreadLsMultiClusterAndPeerFiltering(t *testing.T) {
 		}
 		if r.URL.Path == "/version" {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{"version": "2.4.0", "domain": "fabric.mesh"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"version": "2.4.1", "domain": "fabric.mesh"})
 			return
 		}
 		http.NotFound(w, r)
