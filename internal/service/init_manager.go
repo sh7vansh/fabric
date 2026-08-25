@@ -238,7 +238,36 @@ func (m *InitManager) InstallService(role string) error {
 
 	switch tier {
 	case TierSystemdSystem:
-		unitContent := m.GenerateSystemdSystemUnit(role, binPath)
+		systemBinPath := "/usr/local/bin/" + binaryName
+		if _, err := os.Stat(systemBinPath); err != nil {
+			if _, err2 := os.Stat("/usr/bin/" + binaryName); err2 == nil {
+				systemBinPath = "/usr/bin/" + binaryName
+			} else if binPath != "" {
+				_ = m.RunPrivileged("cp", binPath, systemBinPath)
+				_ = m.RunPrivileged("chmod", "755", systemBinPath)
+			}
+		}
+
+		_ = m.RunPrivileged("mkdir", "-p", "/etc/fabric")
+		userEnvCandidates := []string{
+			filepath.Join(home, ".fabric", role+".env"),
+			filepath.Join(home, ".config", "fabric", role+".env"),
+		}
+		for _, uEnv := range userEnvCandidates {
+			if data, err := os.ReadFile(uEnv); err == nil && len(data) > 0 {
+				tmpEnv, tmpErr := os.CreateTemp("", role+"-*.env")
+				if tmpErr == nil {
+					_, _ = tmpEnv.Write(data)
+					tmpEnv.Close()
+					_ = m.RunPrivileged("cp", tmpEnv.Name(), filepath.Join("/etc/fabric", role+".env"))
+					_ = m.RunPrivileged("chmod", "600", filepath.Join("/etc/fabric", role+".env"))
+					_ = os.Remove(tmpEnv.Name())
+					break
+				}
+			}
+		}
+
+		unitContent := m.GenerateSystemdSystemUnit(role, systemBinPath)
 		unitPath := filepath.Join("/etc/systemd/system", serviceName+".service")
 
 		tmpFile, err := os.CreateTemp("", serviceName+"-*.service")
