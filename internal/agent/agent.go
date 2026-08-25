@@ -58,7 +58,7 @@ func New(cfg Config) *Agent {
 		cfg.Domain = "fabric.mesh"
 	}
 	if cfg.Version == "" {
-		cfg.Version = "2.2.2"
+		cfg.Version = "2.3.0"
 	}
 	if cfg.Hostname == "" {
 		h, _ := os.Hostname()
