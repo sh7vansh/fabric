@@ -26,21 +26,29 @@ import (
 // MaxCachedLeafCerts is the default capacity for the in-memory leaf certificate cache.
 const MaxCachedLeafCerts = 512
 
+// ActiveThreads is a callback function returning currently authorized thread names.
+type ActiveThreads func() []string
+
+// ActiveNodes is a deprecated alias for ActiveThreads.
+//
+// Deprecated: Use ActiveThreads instead.
+type ActiveNodes = ActiveThreads
+
 // CA manages an in-process Certificate Authority and mints leaf certificates.
 type CA struct {
-	mu           sync.RWMutex
-	dir          string
-	domain       string
-	rootCert     *x509.Certificate
-	rootKey      crypto.Signer
-	certPEM      []byte
-	keyPEM       []byte
-	certPool     *x509.CertPool
-	leafCache    map[string]*list.Element
-	lruList      *list.List
-	maxCache     int
-	activeNodes  func() []string
-	allowedHosts []string
+	mu            sync.RWMutex
+	dir           string
+	domain        string
+	rootCert      *x509.Certificate
+	rootKey       crypto.Signer
+	certPEM       []byte
+	keyPEM        []byte
+	certPool      *x509.CertPool
+	leafCache     map[string]*list.Element
+	lruList       *list.List
+	maxCache      int
+	activeThreads ActiveThreads
+	allowedHosts  []string
 }
 
 type cachedCert struct {
@@ -53,11 +61,11 @@ type cachedCert struct {
 type Option func(*caOptions)
 
 type caOptions struct {
-	rootValidity time.Duration
-	leafValidity time.Duration
-	maxCache     int
-	activeNodes  func() []string
-	allowedHosts []string
+	rootValidity  time.Duration
+	leafValidity  time.Duration
+	maxCache      int
+	activeThreads ActiveThreads
+	allowedHosts  []string
 }
 
 func defaultOptions() *caOptions {
@@ -89,11 +97,18 @@ func WithMaxCache(maxEntries int) Option {
 	}
 }
 
-// WithActiveNodes provides a dynamic node validator callback for SNI checks.
-func WithActiveNodes(fn func() []string) Option {
+// WithActiveThreads provides a dynamic thread validator callback for SNI checks.
+func WithActiveThreads(fn func() []string) Option {
 	return func(o *caOptions) {
-		o.activeNodes = fn
+		o.activeThreads = fn
 	}
+}
+
+// WithActiveNodes provides a dynamic thread validator callback for SNI checks.
+//
+// Deprecated: Use WithActiveThreads instead.
+func WithActiveNodes(fn func() []string) Option {
+	return WithActiveThreads(fn)
 }
 
 // WithAllowedHosts configures statically authorized SNI hostnames.
@@ -118,13 +133,13 @@ func LoadOrInitCA(dir, domain string, opts ...Option) (*CA, error) {
 	keyPath := filepath.Join(dir, "ca.key")
 
 	ca := &CA{
-		dir:          dir,
-		domain:       domain,
-		leafCache:    make(map[string]*list.Element),
-		lruList:      list.New(),
-		maxCache:     options.maxCache,
-		activeNodes:  options.activeNodes,
-		allowedHosts: options.allowedHosts,
+		dir:           dir,
+		domain:        domain,
+		leafCache:     make(map[string]*list.Element),
+		lruList:       list.New(),
+		maxCache:      options.maxCache,
+		activeThreads: options.activeThreads,
+		allowedHosts:  options.allowedHosts,
 	}
 
 	if fileExists(certPath) && fileExists(keyPath) {
@@ -173,7 +188,8 @@ func LoadOrInitCA(dir, domain string, opts ...Option) (*CA, error) {
 }
 
 // ResolveCADir resolves the target directory for CA operations based on custom path,
-// environment variables (FABRIC_CA_DIR), existing /etc/fabric/ca paths, or the user's home directory.
+// environment variables (FABRIC_CA_DIR), user home directory (~/.fabric/ca), system directory (/etc/fabric/ca),
+// or fallback directory (/tmp/fabric-ca).
 func ResolveCADir(customDir string) string {
 	if customDir != "" {
 		return customDir
@@ -181,8 +197,20 @@ func ResolveCADir(customDir string) string {
 	if envCADir := os.Getenv("FABRIC_CA_DIR"); envCADir != "" {
 		return envCADir
 	}
+	if home, err := os.UserHomeDir(); err == nil {
+		userCADir := filepath.Join(home, ".fabric", "ca")
+		if _, err := os.Stat(filepath.Join(userCADir, "ca.crt")); err == nil {
+			return userCADir
+		}
+		if _, err := os.Stat(filepath.Join(home, ".fabric", "ca.crt")); err == nil {
+			return filepath.Join(home, ".fabric")
+		}
+	}
 	if _, err := os.Stat("/etc/fabric/ca/ca.crt"); err == nil {
 		return "/etc/fabric/ca"
+	}
+	if _, err := os.Stat("/etc/fabric/ca.crt"); err == nil {
+		return "/etc/fabric"
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".fabric", "ca")
@@ -424,7 +452,7 @@ func (c *CA) MintCertificate(hosts []string, validity time.Duration) (*tls.Certi
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			CommonName:   hosts[0],
-			Organization: []string{"Fabric Mesh Node"},
+			Organization: []string{"Fabric Mesh Thread"},
 		},
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
@@ -549,9 +577,9 @@ func (c *CA) isAllowedSNI(serverName string) bool {
 			}
 		}
 	}
-	if c.activeNodes != nil {
-		for _, n := range c.activeNodes() {
-			if strings.EqualFold(n, serverName) || (c.domain != "" && strings.EqualFold(n+"."+c.domain, serverName)) {
+	if c.activeThreads != nil {
+		for _, t := range c.activeThreads() {
+			if strings.EqualFold(t, serverName) || (c.domain != "" && strings.EqualFold(t+"."+c.domain, serverName)) {
 				return true
 			}
 		}

@@ -53,7 +53,7 @@ func main() {
 		PublicDomain: *publicDomainFlag,
 		ACMEEmail:    *acmeEmailFlag,
 		ACMEStaging:  *acmeStagingFlag,
-		ActiveNodes: func() []string {
+		ActiveThreads: func() []string {
 			nodes := meshRelay.ListNodes()
 			list := make([]string, len(nodes))
 			for i, n := range nodes {

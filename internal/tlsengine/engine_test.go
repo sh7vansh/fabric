@@ -24,7 +24,7 @@ func TestEngineInternalCARouting(t *testing.T) {
 		CADir:        tmpDir,
 		MeshDomain:   "fabric.mesh",
 		PublicDomain: "example.com",
-		ActiveNodes: func() []string {
+		ActiveThreads: func() []string {
 			return []string{"worker-1", "worker-2"}
 		},
 	})
@@ -167,5 +167,25 @@ func TestEngineACMEPolicyAndCustomMeshDomain(t *testing.T) {
 	cert, err := engine.GetCertificate(&tls.ClientHelloInfo{ServerName: "node-1.custom.internal"})
 	if err != nil || cert == nil {
 		t.Fatalf("GetCertificate failed for internal custom mesh domain: %v", err)
+	}
+}
+
+func TestEngineLegacyActiveNodesCompatibility(t *testing.T) {
+	tmpDir := t.TempDir()
+	engine, err := tlsengine.New(tlsengine.Config{
+		CADir:        tmpDir,
+		MeshDomain:   "fabric.mesh",
+		PublicDomain: "example.com",
+		ActiveNodes: func() []string {
+			return []string{"legacy-worker"}
+		},
+	})
+	if err != nil {
+		t.Fatalf("tlsengine.New with ActiveNodes failed: %v", err)
+	}
+
+	cert, err := engine.GetCertificate(&tls.ClientHelloInfo{ServerName: "legacy-worker.fabric.mesh"})
+	if err != nil || cert == nil {
+		t.Fatalf("GetCertificate failed for legacy ActiveNodes configuration: %v", err)
 	}
 }

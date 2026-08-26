@@ -205,7 +205,7 @@ func (d *NFTablesDriver) GetOpenCommands(port int, proto, comment string) []stri
 }
 
 func (d *NFTablesDriver) GetCloseCommands(port int, proto, comment string) []string {
-	return []string{fmt.Sprintf("nft delete rule inet filter input $(nft -a list chain inet filter input 2>/dev/null | grep -E 'dport %d' | awk '{print \"handle\", $NF}')", port)}
+	return []string{fmt.Sprintf("nft delete rule inet filter input $(nft -a list chain inet filter input 2>/dev/null | grep -E '\\bdport\\s+%d\\b' | awk '{print \"handle\", $NF}')", port)}
 }
 
 func (d *NFTablesDriver) Open(runner CommandRunner, port int, proto, comment string) error {
@@ -220,11 +220,15 @@ func (d *NFTablesDriver) Open(runner CommandRunner, port int, proto, comment str
 		return &PermissionError{
 			Backend: BackendNFTables,
 			Command: "nft " + strings.Join(args, " "),
-			Output:  string(out),
+			Output:  string(delOutOrOut(out)),
 			Err:     err,
 		}
 	}
 	return nil
+}
+
+func delOutOrOut(out []byte) string {
+	return string(out)
 }
 
 var handleRegex = regexp.MustCompile(`handle\s+(\d+)`)
@@ -234,10 +238,10 @@ func (d *NFTablesDriver) Close(runner CommandRunner, port int, proto, comment st
 	out, err := runner.Run("nft", "-a", "list", "chain", "inet", "filter", "input")
 	if err == nil {
 		scanner := bufio.NewScanner(strings.NewReader(string(out)))
-		portMatch := fmt.Sprintf("dport %d", port)
+		portRegex := regexp.MustCompile(fmt.Sprintf(`\bdport\s+%d\b`, port))
 		for scanner.Scan() {
 			line := scanner.Text()
-			if strings.Contains(line, portMatch) {
+			if portRegex.MatchString(line) {
 				matches := handleRegex.FindStringSubmatch(line)
 				if len(matches) > 1 {
 					handleID := matches[1]

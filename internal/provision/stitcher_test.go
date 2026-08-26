@@ -317,6 +317,65 @@ func TestExecuteStitchHost_ExplicitInvertedMode(t *testing.T) {
 	}
 }
 
+func TestGenerateStitchScript_HonorsEnvCADir(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("FABRIC_CA_DIR", tmpDir)
+
+	opts := StitchHostOptions{
+		Target:     "node-env-ca",
+		SocketURL:  "wss://10.0.0.1:8443/ws",
+		Token:      "tok-env-ca",
+		Domain:     "fabric.test",
+		Mode:       "remote",
+		BinaryData: []byte("mock-bin"),
+	}
+
+	script := GenerateStitchScript(opts, opts.SocketURL)
+	if !strings.Contains(script, "Unpacking Root CA certificate") {
+		t.Errorf("expected CA certificate to be unpacked when FABRIC_CA_DIR is set")
+	}
+
+	// Verify CA was created in tmpDir
+	if _, err := os.Stat(filepath.Join(tmpDir, "ca.crt")); err != nil {
+		t.Errorf("expected ca.crt in FABRIC_CA_DIR %s: %v", tmpDir, err)
+	}
+}
+
+func TestExecuteStitchHost_ResolvesCAViaCentralPKI(t *testing.T) {
+	tmpDir := t.TempDir()
+	caCertPath := filepath.Join(tmpDir, "ca.crt")
+	if err := os.WriteFile(caCertPath, []byte("-----BEGIN CERTIFICATE-----\nmock\n-----END CERTIFICATE-----\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FABRIC_CA_CERT", caCertPath)
+
+	mockExec := &mockExecutor{}
+	opts := StitchHostOptions{
+		Target:     "192.168.1.99",
+		Mode:       "remote",
+		ListenPort: "8443",
+		Token:      "tok-central-pki",
+		BinaryData: []byte("mock-bin"),
+	}
+
+	probedCAPath := ""
+	mockProber := func(targetAddr, caPath string, timeout time.Duration) error {
+		probedCAPath = caPath
+		return nil
+	}
+
+	node, err := ExecuteStitchHost(opts, mockExec, nil, mockProber)
+	if err != nil {
+		t.Fatalf("ExecuteStitchHost failed: %v", err)
+	}
+	if node == nil {
+		t.Fatal("expected non-nil node")
+	}
+	if probedCAPath != caCertPath {
+		t.Errorf("expected prober to receive resolved CA path %s, got %s", caCertPath, probedCAPath)
+	}
+}
+
 func TestExecuteStitchHost_AutoFallbackOnTimeout(t *testing.T) {
 	tmpDir := t.TempDir()
 	mockExec := &mockExecutor{}

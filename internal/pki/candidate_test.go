@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"fabric/internal/pki"
 )
@@ -96,6 +97,56 @@ func TestResolveCADir(t *testing.T) {
 	t.Setenv("FABRIC_CA_DIR", envDir)
 	if dir := pki.ResolveCADir(""); dir != envDir {
 		t.Errorf("ResolveCADir(\"\") with env = %q, expected %q", dir, envDir)
+	}
+	t.Setenv("FABRIC_CA_DIR", "")
+
+	// 3. User home precedence when CA files exist
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	userCADir := filepath.Join(tempHome, ".fabric", "ca")
+	if err := os.MkdirAll(userCADir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(userCADir, "ca.crt"), []byte("mock-ca"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if dir := pki.ResolveCADir(""); dir != userCADir {
+		t.Errorf("ResolveCADir(\"\") with user ca = %q, expected %q", dir, userCADir)
+	}
+}
+
+func TestOptionActiveThreadsAndDeprecatedAlias(t *testing.T) {
+	tmpDir := t.TempDir()
+	ca, err := pki.LoadOrInitCA(tmpDir, "fabric.mesh",
+		pki.WithActiveThreads(func() []string {
+			return []string{"thread-canonical"}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("LoadOrInitCA with WithActiveThreads failed: %v", err)
+	}
+
+	// Ensure thread-canonical SNI is permitted
+	cert, err := ca.MintCertificate([]string{"thread-canonical.fabric.mesh"}, 1*time.Hour)
+	if err != nil || cert == nil {
+		t.Fatalf("MintCertificate failed: %v", err)
+	}
+
+	// Test deprecated WithActiveNodes alias
+	tmpDir2 := t.TempDir()
+	ca2, err := pki.LoadOrInitCA(tmpDir2, "fabric.mesh",
+		pki.WithActiveNodes(func() []string {
+			return []string{"thread-legacy-node"}
+		}),
+	)
+	if err != nil {
+		t.Fatalf("LoadOrInitCA with WithActiveNodes failed: %v", err)
+	}
+	cert2, err := ca2.MintCertificate([]string{"thread-legacy-node.fabric.mesh"}, 1*time.Hour)
+	if err != nil || cert2 == nil {
+		t.Fatalf("MintCertificate on legacy option failed: %v", err)
 	}
 }
 

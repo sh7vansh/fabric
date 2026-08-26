@@ -212,7 +212,7 @@ func (sm *StreamManager) transferUni(
 	// Propagate half-close write on dst if supported
 	if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()
-	} else if rErrOut != nil || wErrOut != nil {
+	} else {
 		once.Do(closeBoth)
 	}
 

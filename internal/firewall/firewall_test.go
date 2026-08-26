@@ -298,6 +298,48 @@ func TestOpenAndClosePortExecution(t *testing.T) {
 		}
 	})
 
+	t.Run("NFTables exact port token matching isolates adjacent prefix ports", func(t *testing.T) {
+		runner := newMockRunner()
+		runner.lookPathMap["nft"] = "/usr/sbin/nft"
+		runner.runOutputs["nft list tables"] = mockRunResult{output: []byte("table inet filter\n"), err: nil}
+
+		nftTableOutput := `table inet filter {
+	chain input {
+		type filter hook input priority filter; policy accept;
+		tcp dport 8080 accept # handle 10
+		tcp dport 8000 accept # handle 11
+		tcp dport 8088 accept # handle 12
+		tcp dport 80 accept # handle 13
+		tcp dport 8443 accept # handle 14
+	}
+}`
+		runner.runOutputs["nft -a list chain inet filter input"] = mockRunResult{
+			output: []byte(nftTableOutput),
+			err:    nil,
+		}
+
+		mgr := firewall.NewManagerWithRunner(runner)
+		if err := mgr.ClosePort(80, "tcp"); err != nil {
+			t.Fatalf("unexpected ClosePort error: %v", err)
+		}
+
+		// Ensure that the delete command executed targeted handle 13 specifically
+		foundTargetHandle := false
+		for _, execCmd := range runner.executed {
+			cmdStr := strings.Join(execCmd, " ")
+			if strings.HasPrefix(cmdStr, "nft delete rule inet filter input handle") {
+				if cmdStr == "nft delete rule inet filter input handle 13" {
+					foundTargetHandle = true
+				} else {
+					t.Fatalf("unexpected handle deletion: %s (should have matched only handle 13 for port 80)", cmdStr)
+				}
+			}
+		}
+		if !foundTargetHandle {
+			t.Fatalf("expected handle 13 to be deleted for port 80, but was not executed: %v", runner.executed)
+		}
+	})
+
 	t.Run("successfully opens and closes port on IPTables", func(t *testing.T) {
 		runner := newMockRunner()
 		runner.lookPathMap["iptables"] = "/sbin/iptables"

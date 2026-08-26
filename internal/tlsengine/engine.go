@@ -20,25 +20,26 @@ import (
 
 // Config configures the Dual-Mode TLS Engine.
 type Config struct {
-	CADir          string
-	MeshDomain     string
-	PublicDomain   string
-	ACMEEmail      string
-	ACMECacheDir   string
-	ACMEStaging    bool
-	AllowedHosts   []string
-	ActiveNodes    func() []string
+	CADir         string
+	MeshDomain    string
+	PublicDomain  string
+	ACMEEmail     string
+	ACMECacheDir  string
+	ACMEStaging   bool
+	AllowedHosts  []string
+	ActiveThreads func() []string
+	ActiveNodes   func() []string // Deprecated: Use ActiveThreads instead.
 }
 
 // Engine unifies in-process Root CA certificate minting with Let's Encrypt ACME autocert.
 type Engine struct {
-	mu           sync.RWMutex
-	ca           *pki.CA
-	acmeManager  *autocert.Manager
-	meshDomain   string
-	publicDomain string
-	activeNodes  func() []string
-	allowedHosts map[string]struct{}
+	mu            sync.RWMutex
+	ca            *pki.CA
+	acmeManager   *autocert.Manager
+	meshDomain    string
+	publicDomain  string
+	activeThreads func() []string
+	allowedHosts  map[string]struct{}
 }
 
 // New creates and initializes a new dual-mode TLS engine.
@@ -49,8 +50,13 @@ func New(cfg Config) (*Engine, error) {
 
 	caDir := pki.ResolveCADir(cfg.CADir)
 
+	activeThreads := cfg.ActiveThreads
+	if activeThreads == nil && cfg.ActiveNodes != nil {
+		activeThreads = cfg.ActiveNodes
+	}
+
 	ca, err := pki.LoadOrInitCA(caDir, cfg.MeshDomain,
-		pki.WithActiveNodes(cfg.ActiveNodes),
+		pki.WithActiveThreads(activeThreads),
 		pki.WithAllowedHosts(cfg.AllowedHosts),
 	)
 	if err != nil {
@@ -58,11 +64,11 @@ func New(cfg Config) (*Engine, error) {
 	}
 
 	engine := &Engine{
-		ca:           ca,
-		meshDomain:   strings.ToLower(strings.TrimSpace(cfg.MeshDomain)),
-		publicDomain: strings.ToLower(strings.TrimSpace(cfg.PublicDomain)),
-		activeNodes:  cfg.ActiveNodes,
-		allowedHosts: make(map[string]struct{}),
+		ca:            ca,
+		meshDomain:    strings.ToLower(strings.TrimSpace(cfg.MeshDomain)),
+		publicDomain:  strings.ToLower(strings.TrimSpace(cfg.PublicDomain)),
+		activeThreads: activeThreads,
+		allowedHosts:  make(map[string]struct{}),
 	}
 
 	for _, h := range cfg.AllowedHosts {
@@ -147,9 +153,9 @@ func (e *Engine) acmeHostPolicy(ctx context.Context, host string) error {
 
 		// Validate subdomains
 		sub := strings.TrimSuffix(host, "."+e.publicDomain)
-		if e.activeNodes != nil {
-			for _, n := range e.activeNodes() {
-				if strings.EqualFold(n, sub) {
+		if e.activeThreads != nil {
+			for _, t := range e.activeThreads() {
+				if strings.EqualFold(t, sub) {
 					return nil
 				}
 			}

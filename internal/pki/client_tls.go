@@ -105,7 +105,7 @@ func BuildMTLSConfig(customCAPath string) (*tls.Config, error) {
 		MinVersion: tls.VersionTLS12,
 	}
 
-	// 3. Opportunistically load client/node certificate for mTLS if it exists
+	// 3. Opportunistically load client/thread certificate for mTLS if it exists
 	var candidateDirs []string
 	if customCAPath != "" {
 		candidateDirs = append(candidateDirs, filepath.Dir(customCAPath))
@@ -267,7 +267,7 @@ func FormatTLSError(err error) error {
 	return err
 }
 
-// ProbeDirectMTLS performs a direct mTLS WebSocket probe to verify an inverted node listener.
+// ProbeDirectMTLS performs a direct mTLS WebSocket probe to verify an inverted thread listener.
 func ProbeDirectMTLS(targetAddr, customCAPath string, timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = 5 * time.Second

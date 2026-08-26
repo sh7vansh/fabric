@@ -305,3 +305,59 @@ func TestStreamManager_HalfClose_Propagation(t *testing.T) {
 	<-done
 }
 
+func TestStreamManager_NonHalfClose_CleanEOF_ImmediateTeardown(t *testing.T) {
+	// Set an idle deadline of 10 seconds to ensure that any hang would trigger test failure
+	sm := protocol.NewStreamManager(protocol.StreamManagerConfig{
+		BufferSize:   32 * 1024,
+		IdleDeadline: 10 * time.Second,
+	})
+
+	// net.Pipe returns synchronous memory pipes that DO NOT implement CloseWrite
+	a1, a2 := net.Pipe()
+	b1, b2 := net.Pipe()
+
+	done := make(chan struct{})
+	var bridgeTelem *protocol.StreamTelemetry
+	var bridgeErr error
+
+	go func() {
+		defer close(done)
+		bridgeTelem, bridgeErr = sm.Bridge(a2, b1)
+	}()
+
+	msg := []byte("payload to be sent and closed")
+
+	// a1 writes message and then closes (sending io.EOF to a2)
+	go func() {
+		_, _ = a1.Write(msg)
+		_ = a1.Close()
+	}()
+
+	// b2 reads until EOF
+	received, err := io.ReadAll(b2)
+	if err != nil {
+		t.Fatalf("failed reading on b2: %v", err)
+	}
+	if !bytes.Equal(received, msg) {
+		t.Fatalf("expected %q, got %q", msg, received)
+	}
+
+	// The bridge must terminate immediately (within milliseconds), rather than waiting for 10s idle deadline
+	select {
+	case <-done:
+		// Bridge finished promptly
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("bridge stalled on EOF over non-half-close transport without immediate teardown")
+	}
+
+	if bridgeErr != nil {
+		t.Fatalf("unexpected bridge error: %v", bridgeErr)
+	}
+	if bridgeTelem == nil {
+		t.Fatalf("expected telemetry from bridge")
+	}
+	if bridgeTelem.BytesFromAToB != int64(len(msg)) {
+		t.Errorf("expected %d bytes, got %d", len(msg), bridgeTelem.BytesFromAToB)
+	}
+}
+

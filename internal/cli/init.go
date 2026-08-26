@@ -207,9 +207,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// 6. CA Initialization and Trust Setup
 	caPath := ""
 	if role == "server" || role == "both" {
-		if _, path, err := pki.BootstrapCA("", domain); err == nil {
-			caPath = path
+		_, path, err := pki.BootstrapCA("", domain)
+		if err != nil {
+			return fmt.Errorf("failed to bootstrap Certificate Authority: %w", err)
 		}
+		caPath = path
 	}
 
 	if !initNonInteract {

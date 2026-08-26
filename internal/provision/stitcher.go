@@ -416,29 +416,7 @@ func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
 	}
 
 	// Locate and load CA to mint leaf certificate
-	caDir := opts.CADir
-	if caDir == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			cand := filepath.Join(home, ".fabric", "ca")
-			if _, err := os.Stat(filepath.Join(cand, "ca.crt")); err == nil {
-				caDir = cand
-			} else if _, err := os.Stat(filepath.Join(home, ".fabric", "ca.crt")); err == nil {
-				caDir = filepath.Join(home, ".fabric")
-			}
-		}
-		if caDir == "" {
-			if _, err := os.Stat("/etc/fabric/ca.crt"); err == nil {
-				caDir = "/etc/fabric"
-			}
-		}
-		if caDir == "" {
-			if home, err := os.UserHomeDir(); err == nil {
-				caDir = filepath.Join(home, ".fabric", "ca")
-			} else {
-				caDir = "/etc/fabric"
-			}
-		}
-	}
+	caDir := pki.ResolveCADir(opts.CADir)
 
 	targetHostOnly := opts.Target
 	if atIdx := strings.LastIndex(opts.Target, "@"); atIdx != -1 {
@@ -789,13 +767,8 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 	caCertPath := ""
 	if opts.CADir != "" {
 		caCertPath = filepath.Join(opts.CADir, "ca.crt")
-	} else if home, err := os.UserHomeDir(); err == nil {
-		cand := filepath.Join(home, ".fabric", "ca", "ca.crt")
-		if _, err := os.Stat(cand); err == nil {
-			caCertPath = cand
-		} else if _, err := os.Stat(filepath.Join(home, ".fabric", "ca.crt")); err == nil {
-			caCertPath = filepath.Join(home, ".fabric", "ca.crt")
-		}
+	} else if path, _, err := pki.FindCACert(""); err == nil {
+		caCertPath = path
 	}
 
 	// 1. Explicit Remote Mode Verification

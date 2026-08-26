@@ -214,3 +214,45 @@ func TestInitRoleAgentDeprecation(t *testing.T) {
 		t.Errorf("expected thread.env at %s, error: %v", threadEnv, err)
 	}
 }
+
+func TestInitServerCABootstrapFailure(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	// Point CA dir to an invalid path that cannot be created
+	t.Setenv("FABRIC_CA_DIR", "/dev/null/cannot_create_dir")
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	rootCmd.SetOut(&stdoutBuf)
+	rootCmd.SetErr(&stderrBuf)
+	rootCmd.SetArgs([]string{"init", "-y", "--role", "server", "--token", "test-token"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected fabric init to fail when CA bootstrapping fails, got nil error")
+	}
+	if !strings.Contains(err.Error(), "failed to bootstrap Certificate Authority") {
+		t.Errorf("expected clear CA bootstrapping error message, got: %v", err)
+	}
+}
+
+func TestInitServerCABootstrapSuccess(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	rootCmd.SetOut(&stdoutBuf)
+	rootCmd.SetErr(&stderrBuf)
+	rootCmd.SetArgs([]string{"init", "-y", "--role", "server", "--token", "test-token", "--domain", "test.mesh"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("fabric init server failed: %v", err)
+	}
+
+	caCert := filepath.Join(tempHome, ".fabric", "ca", "ca.crt")
+	if _, err := os.Stat(caCert); err != nil {
+		t.Errorf("expected ca.crt to be created at %s, got err: %v", caCert, err)
+	}
+}

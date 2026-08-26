@@ -83,7 +83,7 @@ func New(cfg Config) (*Server, error) {
 		PublicDomain: cfg.PublicDomain,
 		ACMEEmail:    cfg.ACMEEmail,
 		ACMEStaging:  cfg.ACMEStaging,
-		ActiveNodes: func() []string {
+		ActiveThreads: func() []string {
 			nodes := meshRelay.ListNodes()
 			list := make([]string, len(nodes))
 			for i, n := range nodes {
