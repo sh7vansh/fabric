@@ -3,6 +3,7 @@ package provision
 import (
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -77,6 +78,15 @@ func TestProbeSSH(t *testing.T) {
 	_, err = ProbeSSH("127.0.0.1", httpPort, 500*time.Millisecond)
 	if err == nil {
 		t.Errorf("ProbeSSH on HTTP port should have failed")
+	}
+
+	// Unreachable port test
+	_, err = ProbeSSH("127.0.0.1", 1, 50*time.Millisecond)
+	if err == nil {
+		t.Fatalf("expected connection error for closed port, got nil")
+	}
+	if !strings.Contains(err.Error(), "firewall") || !strings.Contains(err.Error(), "port 1/TCP") {
+		t.Errorf("expected firewall diagnostic in error, got: %v", err)
 	}
 }
 

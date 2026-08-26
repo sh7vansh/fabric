@@ -10,24 +10,39 @@ import (
 	"strings"
 	"time"
 
+	"fabric/internal/firewall"
 	"fabric/internal/pki"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	initRoleFlag    string
-	initModeFlag    string
-	initRemoteFlag  bool
-	initServerFlag  string
-	initHostFlag    string
-	initTokenFlag   string
-	initDomainFlag  string
-	initAutoToken   bool
-	initNonInteract bool
-	initTrustCA     bool
-	initUntrustCA   bool
+	initRoleFlag     string
+	initModeFlag     string
+	initRemoteFlag   bool
+	initServerFlag   string
+	initHostFlag     string
+	initTokenFlag    string
+	initDomainFlag   string
+	initAutoToken    bool
+	initNonInteract  bool
+	initOpenFirewall bool
+	initTrustCA      bool
+	initUntrustCA    bool
+
+	defaultFirewallManager *firewall.Manager
 )
+
+func getFirewallManager() *firewall.Manager {
+	if defaultFirewallManager != nil {
+		return defaultFirewallManager
+	}
+	return firewall.NewManager()
+}
+
+func SetDefaultFirewallManager(mgr *firewall.Manager) {
+	defaultFirewallManager = mgr
+}
 
 var initCmd = &cobra.Command{
 	Use:     "init [flags]",
@@ -50,6 +65,9 @@ participation role (thread, server, or both), operating mode (local or remote), 
   # Non-interactive setup for scripts
   fabric init -y --server wss://gateway:8443/ws --token secret-token
 
+  # Non-interactive setup with automatic firewall port configuration
+  fabric init --role server --open-firewall -y
+
   # Install local Fabric Root CA into the OS trust store
   fabric init --trust-ca
 
@@ -68,6 +86,7 @@ func init() {
 	initCmd.Flags().StringVar(&initDomainFlag, "domain", "fabric.mesh", "Domain for Fabric DNS")
 	initCmd.Flags().BoolVar(&initAutoToken, "auto-token", false, "Auto-generate a secure random token")
 	initCmd.Flags().BoolVarP(&initNonInteract, "yes", "y", false, "Accept all defaults non-interactively")
+	initCmd.Flags().BoolVar(&initOpenFirewall, "open-firewall", false, "Automatically configure local firewall rules")
 	initCmd.Flags().BoolVar(&initTrustCA, "trust-ca", false, "Install Fabric Root CA into system trust store")
 	initCmd.Flags().BoolVar(&initUntrustCA, "untrust-ca", false, "Remove Fabric Root CA from system trust store")
 }
@@ -250,7 +269,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// 9. Completion Summary
+	// 9. Firewall Configuration
+	configureInitFirewall(reader, role, mode, initNonInteract, initOpenFirewall)
+
+	// 10. Completion Summary
 	fmt.Println("\n==================================================")
 	fmt.Println("         Fabric Initialization Complete!          ")
 	fmt.Println("==================================================")
@@ -372,3 +394,62 @@ func generateSecureToken() string {
 	}
 	return hex.EncodeToString(b)
 }
+
+func configureInitFirewall(reader *bufio.Reader, role, mode string, nonInteract, autoOpen bool) {
+	if role == "thread" && (mode == "local" || mode == "") {
+		fmt.Println("[+] Operating in local mode: outbound-only connectivity (zero inbound ports required).")
+		return
+	}
+
+	fwMgr := getFirewallManager()
+	backend := fwMgr.DetectBackend()
+	if backend == firewall.BackendNone {
+		return
+	}
+
+	port := 8443
+	comment := "Fabric Server Control Plane"
+	purpose := "Server"
+	if role == "thread" && mode == "remote" {
+		comment = "Fabric Remote Thread Listener"
+		purpose = "Remote Thread"
+	} else if role == "both" {
+		purpose = "Server + Thread"
+	}
+
+	if autoOpen || nonInteract {
+		err := fwMgr.OpenPortWithBackend(backend, port, "tcp", comment)
+		if err == nil {
+			fmt.Printf("[+] Configured %s firewall rule (opened %d/tcp for %s)\n", backend, port, purpose)
+		} else {
+			fmt.Printf("[!] Warning: Could not automatically configure %s firewall: %v\n", backend, err)
+			manual := fwMgr.GetOpenPortManualInstructions(backend, port, "tcp", comment)
+			if manual != "" {
+				fmt.Printf("    Manual firewall command: %s\n", manual)
+			}
+		}
+		return
+	}
+
+	promptMsg := fmt.Sprintf("Open port %d/tcp in %s? (Y/n)", port, backend)
+	choice := prompt(reader, promptMsg, "Y")
+	if strings.ToLower(choice) == "y" || strings.ToLower(choice) == "yes" || choice == "" {
+		err := fwMgr.OpenPortWithBackend(backend, port, "tcp", comment)
+		if err == nil {
+			fmt.Printf("[+] Configured %s firewall rule (opened %d/tcp for %s)\n", backend, port, purpose)
+		} else {
+			fmt.Printf("[!] Warning: Could not configure %s firewall: %v\n", backend, err)
+			manual := fwMgr.GetOpenPortManualInstructions(backend, port, "tcp", comment)
+			if manual != "" {
+				fmt.Printf("    Manual firewall command: %s\n", manual)
+			}
+		}
+	} else {
+		fmt.Println("[*] Skipped firewall configuration.")
+		manual := fwMgr.GetOpenPortManualInstructions(backend, port, "tcp", comment)
+		if manual != "" {
+			fmt.Printf("    To open manually: %s\n", manual)
+		}
+	}
+}
+

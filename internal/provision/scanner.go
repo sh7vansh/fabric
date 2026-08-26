@@ -222,7 +222,7 @@ func ProbeSSH(ip string, port int, timeout time.Duration) (*DiscoveredHost, erro
 
 	conn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("connection to %s (port %d) failed (%w): port %d/TCP may be closed, unreachable, or blocked by a firewall", ip, port, err, port)
 	}
 	defer conn.Close()
 

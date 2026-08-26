@@ -57,6 +57,27 @@ type SSHExecutor struct {
 	Silent      bool
 }
 
+// FormatSSHError formats SSH execution and connection errors with actionable diagnostic hints.
+func FormatSSHError(target, port string, err error, output string) error {
+	if port == "" {
+		port = "22"
+	}
+	combined := strings.ToLower(err.Error())
+	if output != "" {
+		combined += " " + strings.ToLower(output)
+	}
+	if strings.Contains(combined, "exit status 255") ||
+		strings.Contains(combined, "connection refused") ||
+		strings.Contains(combined, "timed out") ||
+		strings.Contains(combined, "timeout") ||
+		strings.Contains(combined, "no route to host") ||
+		strings.Contains(combined, "network is unreachable") ||
+		strings.Contains(combined, "host is down") {
+		return fmt.Errorf("SSH connection to %s (port %s) failed: %w (port %s/TCP may be closed, blocked by a firewall, or SSH service is not running)", target, port, err, port)
+	}
+	return fmt.Errorf("SSH execution on %s (port %s) failed: %w", target, port, err)
+}
+
 func (e *SSHExecutor) QuerySystemInfo() (string, string, string, error) {
 	var sshArgs []string
 	if e.Port != "" && e.Port != "22" {
@@ -69,7 +90,7 @@ func (e *SSHExecutor) QuerySystemInfo() (string, string, string, error) {
 
 	out, err := exec.Command("ssh", sshArgs...).Output()
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", FormatSSHError(e.Target, e.Port, err, string(out))
 	}
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	osName := ""
@@ -112,7 +133,11 @@ func (e *SSHExecutor) Run(script string) error {
 		sshCmd.Stderr = os.Stderr
 	}
 
-	return sshCmd.Run()
+	err := sshCmd.Run()
+	if err != nil {
+		return FormatSSHError(e.Target, e.Port, err, "")
+	}
+	return nil
 }
 
 // FindLocalBinary locates the fabric-thread (or fallback fabric-node) binary on the local machine.
@@ -736,6 +761,14 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 	bootstrapScript := GenerateStitchScript(opts, socketURL)
 
 	if err := exec.Run(bootstrapScript); err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "exit status 255") || strings.Contains(errStr, "Connection refused") || strings.Contains(errStr, "timed out") || strings.Contains(errStr, "No route to host") || strings.Contains(errStr, "blocked by a firewall") {
+			sshPort := opts.SSHPort
+			if sshPort == "" {
+				sshPort = "22"
+			}
+			return nil, fmt.Errorf("remote SSH bootstrap failed: %w (verify target host is reachable and firewall allows SSH port %s/TCP)", err, sshPort)
+		}
 		return nil, fmt.Errorf("remote SSH bootstrap failed: %w", err)
 	}
 

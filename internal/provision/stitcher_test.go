@@ -452,4 +452,63 @@ func TestProgressReader(t *testing.T) {
 	}
 }
 
+func TestFormatSSHError(t *testing.T) {
+	t.Run("formats connection timeout with firewall diagnostic", func(t *testing.T) {
+		err := fmt.Errorf("dial tcp 192.168.1.50:22: i/o timeout")
+		formatted := FormatSSHError("192.168.1.50", "22", err, "")
+		if !strings.Contains(formatted.Error(), "firewall") || !strings.Contains(formatted.Error(), "port 22/TCP") {
+			t.Errorf("expected firewall diagnostic in error, got: %v", formatted)
+		}
+	})
+
+	t.Run("formats connection refused with firewall diagnostic", func(t *testing.T) {
+		err := fmt.Errorf("ssh: connect to host 10.0.0.5 port 22: Connection refused")
+		formatted := FormatSSHError("10.0.0.5", "22", err, "")
+		if !strings.Contains(formatted.Error(), "port 22/TCP may be closed, blocked by a firewall") {
+			t.Errorf("expected firewall diagnostic, got: %v", formatted)
+		}
+	})
+
+	t.Run("formats exit status 255 with firewall diagnostic", func(t *testing.T) {
+		err := fmt.Errorf("exit status 255")
+		formatted := FormatSSHError("10.0.0.5", "2222", err, "")
+		if !strings.Contains(formatted.Error(), "port 2222/TCP may be closed, blocked by a firewall") {
+			t.Errorf("expected firewall diagnostic with custom port, got: %v", formatted)
+		}
+	})
+}
+
+func TestGenerateStitchScript_RemoteModeFirewallRules(t *testing.T) {
+	opts := StitchHostOptions{
+		Target:     "node-remote",
+		Mode:       "remote",
+		ListenPort: "8443",
+		BinaryData: []byte("mock-data"),
+	}
+
+	script := GenerateStitchScript(opts, "wss://server:8443/ws")
+
+	if !strings.Contains(script, `if [ "remote" = "remote" ]; then`) {
+		t.Errorf("expected remote mode conditional in script: %s", script)
+	}
+	if !strings.Contains(script, "ufw allow") || !strings.Contains(script, "firewall-cmd --permanent --add-port=") ||
+		!strings.Contains(script, "nft add rule") || !strings.Contains(script, "iptables -I INPUT") {
+		t.Errorf("expected multi-backend firewall configuration commands in remote mode script: %s", script)
+	}
+}
+
+func TestGenerateStitchScript_LocalModeOutboundOnly(t *testing.T) {
+	opts := StitchHostOptions{
+		Target:     "node-local",
+		Mode:       "local",
+		BinaryData: []byte("mock-data"),
+	}
+
+	script := GenerateStitchScript(opts, "wss://server:8443/ws")
+
+	if !strings.Contains(script, `if [ "local" = "remote" ]; then`) {
+		t.Errorf("expected local mode to not execute remote firewall commands: %s", script)
+	}
+}
+
 

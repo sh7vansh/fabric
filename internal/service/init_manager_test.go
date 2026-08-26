@@ -211,4 +211,45 @@ func TestRenderBootstrapScript_AtomicBinaryUnpack(t *testing.T) {
 	}
 }
 
+func TestRenderBootstrapScript_FirewallConfiguration(t *testing.T) {
+	mgr := NewInitManager()
+
+	t.Run("remote mode generates multi-backend firewall configuration", func(t *testing.T) {
+		opts := BootstrapScriptOptions{
+			Mode:       "remote",
+			ListenAddr: ":8443",
+		}
+		script := mgr.RenderBootstrapScript(opts)
+
+		if !strings.Contains(script, `if [ "remote" = "remote" ]; then`) {
+			t.Errorf("expected remote mode firewall block, got: %s", script)
+		}
+		if !strings.Contains(script, "ufw allow") || !strings.Contains(script, "firewall-cmd --permanent --add-port=") ||
+			!strings.Contains(script, "nft add rule") || !strings.Contains(script, "iptables -I INPUT") {
+			t.Errorf("expected multi-backend firewall commands in remote mode script: %s", script)
+		}
+	})
+
+	t.Run("local mode does not trigger firewall configuration", func(t *testing.T) {
+		opts := BootstrapScriptOptions{
+			Mode: "local",
+		}
+		script := mgr.RenderBootstrapScript(opts)
+
+		if !strings.Contains(script, `if [ "local" = "remote" ]; then`) {
+			t.Errorf("expected local mode to not match remote check: %s", script)
+		}
+	})
+}
+
+func TestRenderInvertedSwitchScript_FirewallConfiguration(t *testing.T) {
+	mgr := NewInitManager()
+	script := mgr.RenderInvertedSwitchScript("8443")
+
+	if !strings.Contains(script, "ufw allow") || !strings.Contains(script, "firewall-cmd --permanent --add-port=") ||
+		!strings.Contains(script, "nft add rule") || !strings.Contains(script, "iptables -I INPUT") {
+		t.Errorf("expected multi-backend firewall commands in inverted switch script: %s", script)
+	}
+}
+
 

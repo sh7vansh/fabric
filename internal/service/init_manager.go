@@ -838,13 +838,38 @@ else
     echo $! > "$RUN_DIR/fabric-thread-supervisor.pid"
     echo "[+] Supervised background daemon started (PID file: $PIDFILE)."
 fi
-`, opts.NodePayload, opts.CliPayload, opts.CAPayload, opts.CertPayload, opts.KeyPayload, envB64)
+
+# 8. Firewall Configuration (Remote Listening Mode)
+if [ "%s" = "remote" ]; then
+    PORT_NUM="%s"
+    PORT_NUM="${PORT_NUM#:}"
+    [ -z "$PORT_NUM" ] && PORT_NUM="8443"
+    echo "[+] Configuring firewall for remote listening port ($PORT_NUM/tcp)..."
+    if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qi "status: active"; then
+        $SUDO ufw allow "$PORT_NUM/tcp" comment "Fabric Remote Thread Listener" 2>/dev/null || $SUDO ufw allow "$PORT_NUM/tcp" || true
+        echo "[+] Configured ufw rule for port $PORT_NUM/tcp"
+    elif command -v firewall-cmd >/dev/null 2>&1 && $SUDO firewall-cmd --state 2>/dev/null | grep -qi "running"; then
+        $SUDO firewall-cmd --permanent --add-port="$PORT_NUM/tcp" 2>/dev/null && $SUDO firewall-cmd --reload 2>/dev/null || true
+        echo "[+] Configured firewalld rule for port $PORT_NUM/tcp"
+    elif command -v nft >/dev/null 2>&1; then
+        $SUDO nft add rule inet filter input tcp dport "$PORT_NUM" accept comment "Fabric Remote Thread Listener" 2>/dev/null || $SUDO nft add rule inet filter input tcp dport "$PORT_NUM" accept 2>/dev/null || true
+        echo "[+] Configured nftables rule for port $PORT_NUM/tcp"
+    elif command -v iptables >/dev/null 2>&1; then
+        $SUDO iptables -I INPUT -p tcp --dport "$PORT_NUM" -m comment --comment "Fabric Remote Thread Listener" -j ACCEPT 2>/dev/null || $SUDO iptables -I INPUT -p tcp --dport "$PORT_NUM" -j ACCEPT 2>/dev/null || true
+        echo "[+] Configured iptables rule for port $PORT_NUM/tcp"
+    fi
+fi
+`, opts.NodePayload, opts.CliPayload, opts.CAPayload, opts.CertPayload, opts.KeyPayload, envB64, mode, opts.ListenAddr)
 }
 
 // RenderInvertedSwitchScript renders a lightweight SSH command to switch an existing thread to remote mode.
 func (m *InitManager) RenderInvertedSwitchScript(listenPort string) string {
 	if !strings.HasPrefix(listenPort, ":") {
 		listenPort = ":" + listenPort
+	}
+	portNum := strings.TrimPrefix(listenPort, ":")
+	if portNum == "" {
+		portNum = "8443"
 	}
 
 	return fmt.Sprintf(`#!/usr/bin/env bash
@@ -914,6 +939,22 @@ elif [ -f "$RUN_DIR/fabric-node.pid" ]; then
         kill "$PID" 2>/dev/null || true
     fi
 fi
-`, listenPort)
+
+# Firewall Configuration for Remote Mode
+SUDO=""
+if [ "$EUID" -ne 0 ] && command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    SUDO="sudo"
+fi
+
+if command -v ufw >/dev/null 2>&1 && $SUDO ufw status 2>/dev/null | grep -qi "status: active"; then
+    $SUDO ufw allow "%s/tcp" comment "Fabric Remote Thread Listener" 2>/dev/null || $SUDO ufw allow "%s/tcp" || true
+elif command -v firewall-cmd >/dev/null 2>&1 && $SUDO firewall-cmd --state 2>/dev/null | grep -qi "running"; then
+    $SUDO firewall-cmd --permanent --add-port="%s/tcp" 2>/dev/null && $SUDO firewall-cmd --reload 2>/dev/null || true
+elif command -v nft >/dev/null 2>&1; then
+    $SUDO nft add rule inet filter input tcp dport "%s" accept comment "Fabric Remote Thread Listener" 2>/dev/null || $SUDO nft add rule inet filter input tcp dport "%s" accept 2>/dev/null || true
+elif command -v iptables >/dev/null 2>&1; then
+    $SUDO iptables -I INPUT -p tcp --dport "%s" -m comment --comment "Fabric Remote Thread Listener" -j ACCEPT 2>/dev/null || $SUDO iptables -I INPUT -p tcp --dport "%s" -j ACCEPT 2>/dev/null || true
+fi
+`, listenPort, portNum, portNum, portNum, portNum, portNum, portNum, portNum)
 }
 

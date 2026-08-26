@@ -199,6 +199,16 @@ fi
 
 # 6. Handover to Init
 if [ "$NO_SETUP" -eq 0 ]; then
+    echo ""
+    echo "========================================="
+    echo "   Fabric Network Port Prerequisites"
+    echo "========================================="
+    echo "  • Fabric Server / Control Plane: Port 8443/TCP (inbound)"
+    echo "  • Fabric Thread (Local Mode):     Outbound-only (no inbound ports required)"
+    echo "  • Fabric Thread (Remote Mode):    Port 8443/TCP (inbound direct mTLS)"
+    echo "  • Remote Stitching (SSH):         Port 22/TCP (inbound on target)"
+    echo "========================================="
+
     if [ -t 0 ] && command -v "$INSTALL_DIR/fabric" >/dev/null 2>&1; then
         echo ""
         echo "[+] Launching Fabric onboarding wizard..."
@@ -210,3 +220,4 @@ if [ "$NO_SETUP" -eq 0 ]; then
 else
     echo "[+] Installation complete (setup skipped via --no-setup)."
 fi
+
