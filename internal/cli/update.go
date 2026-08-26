@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -232,8 +234,87 @@ func FindInstallPath(customDir string) (string, error) {
 	return "/usr/local/bin/fabric", nil
 }
 
-// DownloadAndInstallBinary downloads a binary stream and atomically replaces targetPath.
+func computeSHA256(filePath string) (string, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func fetchExpectedChecksum(ctx context.Context, client *http.Client, downloadURL string) (string, error) {
+	// 1. Try direct <downloadURL>.sha256
+	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL+".sha256", nil)
+	if err == nil {
+		req.Header.Set("User-Agent", "fabric-updater")
+		resp, err := client.Do(req)
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				fields := strings.Fields(string(body))
+				if len(fields) > 0 && len(fields[0]) == 64 {
+					return strings.ToLower(fields[0]), nil
+				}
+			}
+		}
+	}
+
+	// 2. Try checksums.txt or SHA256SUMS in download directory
+	lastSlash := strings.LastIndex(downloadURL, "/")
+	if lastSlash > 0 {
+		baseURL := downloadURL[:lastSlash]
+		assetName := downloadURL[lastSlash+1:]
+
+		for _, manifestName := range []string{"checksums.txt", "SHA256SUMS", "checksums.sha256"} {
+			manifestURL := baseURL + "/" + manifestName
+			mReq, err := http.NewRequestWithContext(ctx, "GET", manifestURL, nil)
+			if err != nil {
+				continue
+			}
+			mReq.Header.Set("User-Agent", "fabric-updater")
+			mResp, err := client.Do(mReq)
+			if err != nil {
+				continue
+			}
+			defer mResp.Body.Close()
+
+			if mResp.StatusCode == http.StatusOK {
+				body, _ := io.ReadAll(mResp.Body)
+				for _, line := range strings.Split(string(body), "\n") {
+					line = strings.TrimSpace(line)
+					if line == "" || strings.HasPrefix(line, "#") {
+						continue
+					}
+					fields := strings.Fields(line)
+					if len(fields) >= 2 {
+						hash := strings.ToLower(fields[0])
+						name := strings.TrimPrefix(fields[1], "*")
+						if (name == assetName || filepath.Base(name) == assetName) && len(hash) == 64 {
+							return hash, nil
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("security error: checksum manifest missing for %s", filepath.Base(downloadURL))
+}
+
+// DownloadAndInstallBinary downloads a binary stream, verifies its SHA256 checksum, and atomically replaces targetPath.
 func DownloadAndInstallBinary(ctx context.Context, client *http.Client, downloadURL, targetPath string) error {
+	expectedChecksum, err := fetchExpectedChecksum(ctx, client, downloadURL)
+	if err != nil {
+		return fmt.Errorf("checksum verification aborted: %w", err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
 	if err != nil {
 		return err
@@ -270,6 +351,15 @@ func DownloadAndInstallBinary(ctx context.Context, client *http.Client, download
 		return fmt.Errorf("failed to write download payload: %w", err)
 	}
 	_ = tmpFile.Close()
+
+	// Verify SHA256 checksum
+	actualChecksum, err := computeSHA256(tmpPath)
+	if err != nil {
+		return fmt.Errorf("failed to compute binary checksum: %w", err)
+	}
+	if !strings.EqualFold(actualChecksum, expectedChecksum) {
+		return fmt.Errorf("security error: SHA256 checksum mismatch for %s (expected %s, got %s)", filepath.Base(downloadURL), expectedChecksum, actualChecksum)
+	}
 
 	if err := os.Chmod(tmpPath, 0755); err != nil {
 		return fmt.Errorf("failed to set executable permissions: %w", err)

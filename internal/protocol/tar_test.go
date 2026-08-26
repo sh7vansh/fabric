@@ -224,3 +224,80 @@ func TestExtractTarLeafSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestValidateDestinationPath(t *testing.T) {
+	protected := []string{
+		"/etc",
+		"/etc/shadow",
+		"/etc/passwd",
+		"/root",
+		"/root/.ssh/authorized_keys",
+		"/sys/kernel",
+		"/proc/1/cmdline",
+		"/boot/vmlinuz",
+		"/dev/null",
+	}
+
+	for _, p := range protected {
+		if err := ValidateDestinationPath(p); err == nil {
+			t.Errorf("ValidateDestinationPath(%q) expected error for protected system path, got nil", p)
+		}
+	}
+
+	valid := []string{
+		"/home/user/project",
+		"/tmp/app",
+		"/var/www/html",
+		"relative/path",
+		"./local",
+	}
+
+	for _, p := range valid {
+		if err := ValidateDestinationPath(p); err != nil {
+			t.Errorf("ValidateDestinationPath(%q) unexpected error for valid path: %v", p, err)
+		}
+	}
+
+	traversal := []string{
+		"../escape",
+		"../../etc/shadow",
+	}
+
+	for _, p := range traversal {
+		if err := ValidateDestinationPath(p); err == nil {
+			t.Errorf("ValidateDestinationPath(%q) expected error for path traversal, got nil", p)
+		}
+	}
+}
+
+func TestExtractTarAtomicCleanupOnInterruption(t *testing.T) {
+	destDir := filepath.Join(t.TempDir(), "target_dir")
+	// Pre-create some content in destDir
+	_ = os.MkdirAll(destDir, 0755)
+	existingFile := filepath.Join(destDir, "original.txt")
+	_ = os.WriteFile(existingFile, []byte("preserve me"), 0644)
+
+	// Interrupted stream with truncated data
+	corruptedStream := bytes.NewReader([]byte("not a valid tar header stream"))
+
+	err := ExtractTar(corruptedStream, destDir)
+	if err == nil {
+		t.Fatalf("expected error on corrupted stream, got nil")
+	}
+
+	// Verify existing files were preserved and not corrupted
+	content, err := os.ReadFile(existingFile)
+	if err != nil || string(content) != "preserve me" {
+		t.Errorf("expected original.txt to be preserved, got content=%q, err=%v", string(content), err)
+	}
+
+	// Verify no residual staging directories left behind
+	parentDir := filepath.Dir(destDir)
+	entries, _ := os.ReadDir(parentDir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".fabric-staging-") {
+			t.Errorf("found residual staging directory: %s", e.Name())
+		}
+	}
+}
+
+

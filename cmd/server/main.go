@@ -181,7 +181,7 @@ func main() {
 			}
 		} else {
 			provided := extractBearerToken(r)
-			if provided != "" && !meshRelay.ValidateToken(provided) {
+			if !meshRelay.ValidateToken(provided) {
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}

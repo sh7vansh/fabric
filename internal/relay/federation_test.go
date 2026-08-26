@@ -502,4 +502,91 @@ func TestFederatedDNSResolution_FQTNDotFabric(t *testing.T) {
 	}
 }
 
+func TestUnauthenticatedPeerSessionQuarantine(t *testing.T) {
+	server := New(Config{
+		Domain:    "fabric.mesh",
+		Token:     "test-secret",
+		GatewayID: "gw-target",
+	})
+	defer server.Close()
+
+	sMux, cMux := createMockMultiplexers(t)
+	defer sMux.Session.Close()
+	defer cMux.Session.Close()
+
+	// Server accepts peer connection
+	go func() {
+		_ = server.ServePeerMux(sMux, "127.0.0.1:443", false, "")
+	}()
+
+	// Attacker attempts to send ExecRequest without ServerHello handshake
+	stream, err := cMux.Session.Open()
+	if err != nil {
+		t.Fatalf("failed to open stream: %v", err)
+	}
+
+	execReq := protocol.ExecRequest{
+		Type:           protocol.TypeExecRequest,
+		SessionID:      "malicious-sess",
+		TargetHostname: "victim-node",
+		Command:        "whoami",
+	}
+	b, _ := json.Marshal(execReq)
+	_, _ = stream.Write(b)
+
+	// Stream should be closed immediately by server quarantine
+	buf := make([]byte, 128)
+	_, readErr := stream.Read(buf)
+	if readErr == nil {
+		t.Errorf("expected read error on quarantined unauthenticated stream, got nil")
+	}
+
+	// The session itself should be closed
+	time.Sleep(50 * time.Millisecond)
+	if !sMux.Session.IsClosed() && !cMux.Session.IsClosed() {
+		// Attempting to open another stream should fail
+		_, err2 := cMux.Session.Open()
+		if err2 == nil {
+			t.Errorf("expected peer session to be closed after quarantine violation")
+		}
+	}
+}
+
+func TestPeerHandshakeRejectionEmptyToken(t *testing.T) {
+	server := New(Config{
+		Domain:    "fabric.mesh",
+		Token:     "test-secret",
+		GatewayID: "gw-target",
+	})
+	defer server.Close()
+
+	sMux, cMux := createMockMultiplexers(t)
+	defer sMux.Session.Close()
+	defer cMux.Session.Close()
+
+	go func() {
+		_ = server.ServePeerMux(sMux, "127.0.0.1:443", false, "")
+	}()
+
+	stream, err := cMux.Session.Open()
+	if err != nil {
+		t.Fatalf("failed to open stream: %v", err)
+	}
+
+	// Send ServerHello without token
+	hello := protocol.ServerHello{
+		Type:      protocol.TypeServerHello,
+		ServerID:  "gw-attacker",
+		GatewayID: "gw-attacker",
+		Token:     "",
+	}
+	b, _ := json.Marshal(hello)
+	_, _ = stream.Write(b)
+
+	time.Sleep(50 * time.Millisecond)
+	if len(server.ListPeers()) != 0 {
+		t.Errorf("expected 0 peers registered on empty token, got %d", len(server.ListPeers()))
+	}
+}
+
 

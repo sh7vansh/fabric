@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"fabric/internal/meshdns"
@@ -345,6 +346,40 @@ func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) 
 	}
 }
 
+func killProcessGroup(pid int) {
+	if pid <= 0 {
+		return
+	}
+	pgid, err := syscall.Getpgid(pid)
+	targetPGID := pid
+	if err == nil && pgid > 0 {
+		targetPGID = pgid
+	}
+
+	// Send SIGTERM to entire process group
+	_ = syscall.Kill(-targetPGID, syscall.SIGTERM)
+
+	// Monitor if process group exits within 500ms grace period; if not, enforce SIGKILL
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 10; i++ {
+			time.Sleep(50 * time.Millisecond)
+			if err := syscall.Kill(pid, 0); err != nil {
+				close(done)
+				return
+			}
+		}
+		_ = syscall.Kill(-targetPGID, syscall.SIGKILL)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(600 * time.Millisecond):
+		_ = syscall.Kill(-targetPGID, syscall.SIGKILL)
+	}
+}
+
 // HandleExec executes an incoming command or interactive PTY session and streams stdio frames.
 func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 	defer stream.Close()
@@ -361,7 +396,12 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 			protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
 			return
 		}
-		cmd = exec.Command("su", "-", req.User, "-c", req.Command)
+		var envPrefix strings.Builder
+		for _, e := range req.Env {
+			envPrefix.WriteString(fmt.Sprintf("export %s\n", e))
+		}
+		fullCmd := envPrefix.String() + req.Command
+		cmd = exec.Command("su", "-", req.User, "-c", fullCmd)
 	} else {
 		cmd = exec.Command("sh", "-c", req.Command)
 	}
@@ -371,6 +411,9 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 	if len(req.Env) > 0 {
 		cmd.Env = append(os.Environ(), req.Env...)
 	}
+
+	// Process group isolation
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if req.Detached {
 		if err := cmd.Start(); err != nil {
@@ -384,20 +427,35 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		return
 	}
 
+	var killOnce sync.Once
+	killCmd := func() {
+		killOnce.Do(func() {
+			if cmd.Process != nil {
+				killProcessGroup(cmd.Process.Pid)
+			}
+		})
+	}
+	defer killCmd()
+
 	if req.AllocatePTY {
 		ptmx, err := pty.Start(cmd)
 		if err != nil {
 			protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
 			return
 		}
-		defer ptmx.Close()
+		defer func() {
+			_ = ptmx.Close()
+		}()
 
 		go func() {
-			buf := make([]byte, 1024)
+			buf := make([]byte, 64*1024)
 			for {
 				n, err := ptmx.Read(buf)
 				if n > 0 {
-					protocol.WriteFrame(stream, protocol.StreamStdout, buf[:n])
+					if writeErr := protocol.WriteFrame(stream, protocol.StreamStdout, buf[:n]); writeErr != nil {
+						killCmd()
+						break
+					}
 				}
 				if err != nil {
 					break
@@ -409,10 +467,14 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 			for {
 				frame, err := protocol.ReadFrame(stream)
 				if err != nil {
+					// Client stream terminated or disconnected
+					killCmd()
 					break
 				}
 				if frame.Type == protocol.StreamStdin {
-					ptmx.Write(frame.Payload)
+					if _, writeErr := ptmx.Write(frame.Payload); writeErr != nil {
+						break
+					}
 				}
 			}
 		}()
@@ -427,11 +489,15 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		}
 
 		go func() {
-			buf := make([]byte, 1024)
+			defer stdout.Close()
+			buf := make([]byte, 64*1024)
 			for {
 				n, err := stdout.Read(buf)
 				if n > 0 {
-					protocol.WriteFrame(stream, protocol.StreamStdout, buf[:n])
+					if writeErr := protocol.WriteFrame(stream, protocol.StreamStdout, buf[:n]); writeErr != nil {
+						killCmd()
+						break
+					}
 				}
 				if err != nil {
 					break
@@ -440,11 +506,15 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		}()
 
 		go func() {
-			buf := make([]byte, 1024)
+			defer stderr.Close()
+			buf := make([]byte, 64*1024)
 			for {
 				n, err := stderr.Read(buf)
 				if n > 0 {
-					protocol.WriteFrame(stream, protocol.StreamStderr, buf[:n])
+					if writeErr := protocol.WriteFrame(stream, protocol.StreamStderr, buf[:n]); writeErr != nil {
+						killCmd()
+						break
+					}
 				}
 				if err != nil {
 					break
@@ -453,16 +523,20 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		}()
 
 		go func() {
+			defer stdin.Close()
 			for {
 				frame, err := protocol.ReadFrame(stream)
 				if err != nil {
+					// Client stream terminated or disconnected
+					killCmd()
 					break
 				}
 				if frame.Type == protocol.StreamStdin {
-					stdin.Write(frame.Payload)
+					if _, writeErr := stdin.Write(frame.Payload); writeErr != nil {
+						break
+					}
 				}
 			}
-			stdin.Close()
 		}()
 	}
 
@@ -492,6 +566,10 @@ func (a *Agent) HandleCopy(stream net.Conn, env []byte) {
 			log.Println("[Agent] Error creating tar for download:", err)
 		}
 	} else if req.Direction == "upload" {
+		if err := protocol.ValidateDestinationPath(req.RemotePath); err != nil {
+			log.Printf("[Agent] Blocked upload to restricted destination %q: %v\n", req.RemotePath, err)
+			return
+		}
 		if err := protocol.ExtractTar(stream, req.RemotePath); err != nil {
 			log.Println("[Agent] Error extracting tar for upload:", err)
 		}

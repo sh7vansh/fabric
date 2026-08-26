@@ -200,8 +200,8 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 			return
 		}
 
-		if hs.Hostname == "" {
-			log.Println("[Relay] Handshake rejected: empty hostname")
+		if !protocol.IsValidHostname(hs.Hostname) {
+			log.Println("[Relay] Handshake rejected: invalid hostname (must match RFC 1123):", hs.Hostname)
 			mux.Session.Close()
 			return
 		}
@@ -316,11 +316,12 @@ func (r *Relay) pingLoop(freq time.Duration) {
 		case <-r.closeCh:
 			return
 		case <-ticker.C:
-			r.mu.RLock()
+			r.mu.Lock()
+			nowStr := time.Now().UTC().Format(time.RFC3339)
 			for _, state := range r.nodes {
-				state.Metadata.LastSeen = time.Now().UTC().Format(time.RFC3339)
+				state.Metadata.LastSeen = nowStr
 			}
-			r.mu.RUnlock()
+			r.mu.Unlock()
 		}
 	}
 }
@@ -339,6 +340,9 @@ func (r *Relay) ValidateToken(provided string) bool {
 func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMultiplexer) (*NodeSession, error) {
 	if meta.Hostname == "" {
 		return nil, fmt.Errorf("empty hostname")
+	}
+	if !protocol.IsValidHostname(meta.Hostname) {
+		return nil, fmt.Errorf("invalid hostname %q: must match RFC 1123 DNS naming rules", meta.Hostname)
 	}
 
 	if meta.ID == "" {
@@ -405,10 +409,13 @@ func (r *Relay) UnregisterNode(hostname string) {
 func (r *Relay) GetNode(hostname string) (*protocol.NodeMetadata, bool) {
 	r.mu.RLock()
 	state, ok := r.nodes[hostname]
+	var metaCopy protocol.NodeMetadata
+	if ok {
+		metaCopy = state.Metadata
+	}
 	r.mu.RUnlock()
 
 	if ok {
-		metaCopy := state.Metadata
 		return &metaCopy, true
 	}
 

@@ -52,6 +52,38 @@ func SanitizeExtractPath(destDir, entryName string) (string, error) {
 	return cleanTarget, nil
 }
 
+var protectedSystemPrefixes = []string{
+	"/etc",
+	"/root",
+	"/sys",
+	"/proc",
+	"/boot",
+	"/dev",
+	"/run",
+	"/sbin",
+	"/usr/sbin",
+	"/lib",
+	"/lib64",
+}
+
+// ValidateDestinationPath ensures a file transfer target is not an unauthorized protected system directory.
+func ValidateDestinationPath(path string) error {
+	clean := filepath.Clean(path)
+	if !filepath.IsAbs(clean) {
+		if strings.HasPrefix(clean, "..") {
+			return fmt.Errorf("path traversal: destination path %q escapes root", path)
+		}
+		return nil
+	}
+
+	for _, prefix := range protectedSystemPrefixes {
+		if clean == prefix || strings.HasPrefix(clean, prefix+string(filepath.Separator)) {
+			return fmt.Errorf("access denied: destination %q is a protected system directory", path)
+		}
+	}
+	return nil
+}
+
 // ExtractTar reads a tar stream from r and unpacks it safely inside destDir with default limits.
 func ExtractTar(r io.Reader, destDir string) error {
 	return ExtractTarWithLimits(r, destDir, MaxTarDecompressedSize, MaxTarEntryCount)
@@ -67,9 +99,21 @@ func ExtractTarWithLimits(r io.Reader, destDir string, maxBytes int64, maxEntrie
 	}
 
 	cleanDest := filepath.Clean(destDir)
-	if err := os.MkdirAll(cleanDest, 0755); err != nil {
-		return err
+	parentDir := filepath.Dir(cleanDest)
+	_ = os.MkdirAll(parentDir, 0755)
+
+	stagingDir, err := os.MkdirTemp(parentDir, ".fabric-staging-*")
+	if err != nil {
+		stagingDir, err = os.MkdirTemp("", ".fabric-staging-*")
+		if err != nil {
+			return fmt.Errorf("failed to create staging directory: %w", err)
+		}
 	}
+	defer func() {
+		if stagingDir != "" {
+			_ = os.RemoveAll(stagingDir)
+		}
+	}()
 
 	tr := tar.NewReader(io.LimitReader(r, maxBytes))
 	var totalDecompressedBytes int64
@@ -89,7 +133,7 @@ func ExtractTarWithLimits(r io.Reader, destDir string, maxBytes int64, maxEntrie
 			return fmt.Errorf("tar archive exceeds maximum entry count of %d", maxEntries)
 		}
 
-		targetPath, err := SanitizeExtractPath(cleanDest, header.Name)
+		targetPath, err := SanitizeExtractPath(stagingDir, header.Name)
 		if err != nil {
 			return err
 		}
@@ -133,7 +177,82 @@ func ExtractTarWithLimits(r io.Reader, destDir string, maxBytes int64, maxEntrie
 			}
 		}
 	}
+
+	// Commit staged files to target destination atomically
+	if err := commitStagedDirectory(stagingDir, cleanDest); err != nil {
+		return fmt.Errorf("failed to commit staged archive: %w", err)
+	}
+
 	return nil
+}
+
+func commitStagedDirectory(stagingDir, destDir string) error {
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(stagingDir)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		src := filepath.Join(stagingDir, entry.Name())
+		dst := filepath.Join(destDir, entry.Name())
+
+		// Remove existing destination item if present
+		if _, err := os.Lstat(dst); err == nil {
+			_ = os.RemoveAll(dst)
+		}
+
+		if err := os.Rename(src, dst); err != nil {
+			// Fallback recursive copy if rename fails across filesystems
+			if err := copyRecursive(src, dst); err != nil {
+				return err
+			}
+			_ = os.RemoveAll(src)
+		}
+	}
+
+	return nil
+}
+
+func copyRecursive(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	if info.IsDir() {
+		if err := os.MkdirAll(dst, info.Mode().Perm()); err != nil {
+			return err
+		}
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := copyRecursive(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
 }
 
 // CreateTar writes the file or directory at srcPath as a tar stream to w.

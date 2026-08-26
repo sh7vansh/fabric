@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -343,3 +344,106 @@ func TestRelayServeMuxUnauthorized(t *testing.T) {
 		t.Errorf("expected unauthorized session to be closed")
 	}
 }
+
+func TestRelayHostnameValidation(t *testing.T) {
+	r := New(Config{
+		Domain: "fabric.mesh",
+		Token:  "test-token",
+	})
+	defer r.Close()
+
+	sMux, cMux := createMockMultiplexers(t)
+	defer sMux.Session.Close()
+	defer cMux.Session.Close()
+
+	invalidNames := []string{
+		"node\npoison",
+		"node\r\npoison",
+		"node 1",
+		"-invalid-start",
+		"invalid-end-",
+		"invalid_underscore",
+		"very-long-hostname-that-exceeds-the-maximum-sixty-three-character-limit-allowed-by-rfc-1123",
+		"",
+	}
+
+	for _, name := range invalidNames {
+		_, err := r.RegisterNode(protocol.NodeMetadata{
+			Hostname: name,
+		}, sMux)
+		if err == nil {
+			t.Errorf("RegisterNode(%q) expected error for invalid RFC 1123 hostname, got nil", name)
+		}
+	}
+
+	validNames := []string{
+		"node-1",
+		"web",
+		"db-prod-01",
+		"a",
+		"123",
+	}
+
+	for _, name := range validNames {
+		sess, err := r.RegisterNode(protocol.NodeMetadata{
+			Hostname: name,
+		}, sMux)
+		if err != nil {
+			t.Errorf("RegisterNode(%q) unexpected error for valid RFC 1123 hostname: %v", name, err)
+		}
+		if sess == nil || sess.Metadata.Hostname != name {
+			t.Errorf("RegisterNode(%q) returned invalid session: %+v", name, sess)
+		}
+	}
+}
+
+func TestRelayPingLoopConcurrentTelemetryReadWrite(t *testing.T) {
+	r := New(Config{
+		Domain:   "fabric.mesh",
+		Token:    "test-token",
+		PingFreq: 5 * time.Millisecond,
+	})
+	defer r.Close()
+
+	sMux, cMux := createMockMultiplexers(t)
+	defer sMux.Session.Close()
+	defer cMux.Session.Close()
+
+	_, err := r.RegisterNode(protocol.NodeMetadata{
+		Hostname: "worker-telemetry",
+	}, sMux)
+	if err != nil {
+		t.Fatalf("RegisterNode failed: %v", err)
+	}
+
+	stopCh := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Spin up concurrent readers
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stopCh:
+					return
+				default:
+					nodes := r.ListNodes()
+					if len(nodes) > 0 {
+						_ = nodes[0].LastSeen
+					}
+					if node, ok := r.GetNode("worker-telemetry"); ok {
+						_ = node.LastSeen
+					}
+					time.Sleep(1 * time.Millisecond)
+				}
+			}
+		}()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	close(stopCh)
+	wg.Wait()
+}
+

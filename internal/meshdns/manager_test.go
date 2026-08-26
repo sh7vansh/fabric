@@ -99,3 +99,124 @@ func TestSystemDNSManagerHostsFallback(t *testing.T) {
 		t.Errorf("Expected node entry to be removed, got:\n%s", cleanedStr)
 	}
 }
+
+func TestHostsSanitizationRejection(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "test-hosts-sanitize-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	tmpFile.WriteString("127.0.0.1 localhost\n")
+	tmpFile.Close()
+
+	mgr := NewSystemDNSManager("fabric.mesh")
+	defer mgr.Teardown()
+	mgr.hostsPath = tmpFile.Name()
+	mgr.useResolved = false
+
+	maliciousNodes := []protocol.NodeMetadata{
+		{Hostname: "valid-node"},
+		{Hostname: "poison\n10.0.0.99 evil.com"},
+		{Hostname: "node with spaces"},
+		{Hostname: "invalid_underscore"},
+	}
+
+	mgr.updateHostsBlock(maliciousNodes, "10.0.0.1")
+
+	content, err := os.ReadFile(tmpFile.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	str := string(content)
+
+	if !strings.Contains(str, "10.0.0.1 valid-node.fabric.mesh") {
+		t.Errorf("expected valid-node to be present in hosts file, got:\n%s", str)
+	}
+	if strings.Contains(str, "evil.com") {
+		t.Errorf("expected injection attempt with evil.com to be rejected, got:\n%s", str)
+	}
+	if strings.Contains(str, "node with spaces") {
+		t.Errorf("expected spaces to be rejected, got:\n%s", str)
+	}
+}
+
+func TestConcurrentHostsUpdates(t *testing.T) {
+	tmpFile, err := os.CreateTemp("", "test-hosts-concurrent-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	tmpFile.WriteString("127.0.0.1 localhost\n")
+	tmpFile.Close()
+
+	mgr := NewSystemDNSManager("fabric.mesh")
+	defer mgr.Teardown()
+	mgr.hostsPath = tmpFile.Name()
+	mgr.useResolved = false
+
+	done := make(chan struct{})
+	for i := 0; i < 5; i++ {
+		go func(id int) {
+			nodes := []protocol.NodeMetadata{
+				{Hostname: "node-1"},
+				{Hostname: "node-2"},
+			}
+			for j := 0; j < 20; j++ {
+				mgr.updateHostsBlock(nodes, "10.0.0.1")
+				mgr.cleanHostsBlock()
+			}
+			done <- struct{}{}
+		}(i)
+	}
+
+	for i := 0; i < 5; i++ {
+		<-done
+	}
+
+	// Verify file is readable and valid
+	_, err = os.ReadFile(tmpFile.Name())
+	if err != nil {
+		t.Fatalf("hosts file corrupt or unreadable after concurrent writes: %v", err)
+	}
+}
+
+func TestCentralizedCacheEviction(t *testing.T) {
+	mgr := NewSystemDNSManager("fabric.mesh")
+	defer mgr.Teardown()
+
+	m := new(dns.Msg)
+	m.SetQuestion("short-ttl.fabric.mesh.", dns.TypeA)
+	respMsg := new(dns.Msg)
+	respMsg.SetReply(m)
+	rr, _ := dns.NewRR("short-ttl.fabric.mesh. 1 IN A 10.0.0.5")
+	respMsg.Answer = append(respMsg.Answer, rr)
+	wire, _ := respMsg.Pack()
+
+	mgr.HandleDNSResponse(protocol.DNSResponse{
+		Type:      protocol.TypeDNSResponse,
+		SessionID: "sess-ttl",
+		RCode:     dns.RcodeSuccess,
+		TTL:       1, // 1 second TTL
+		Data:      base64.StdEncoding.EncodeToString(wire),
+	})
+
+	mgr.cacheMux.RLock()
+	_, found := mgr.cache["short-ttl.fabric.mesh."]
+	mgr.cacheMux.RUnlock()
+	if !found {
+		t.Fatalf("expected entry to be cached initially")
+	}
+
+	// Wait for background ticker eviction (runs every 1s)
+	time.Sleep(2200 * time.Millisecond)
+
+	mgr.cacheMux.RLock()
+	_, foundAfter := mgr.cache["short-ttl.fabric.mesh."]
+	mgr.cacheMux.RUnlock()
+	if foundAfter {
+		t.Errorf("expected entry to be evicted by central ticker loop after TTL expiry")
+	}
+}
+

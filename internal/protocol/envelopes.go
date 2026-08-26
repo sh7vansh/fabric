@@ -1,6 +1,16 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"regexp"
+)
+
+var rfc1123HostnameRegex = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+
+// IsValidHostname validates that a hostname adheres strictly to RFC 1123 DNS character rules.
+func IsValidHostname(name string) bool {
+	return rfc1123HostnameRegex.MatchString(name)
+}
 
 type EnvelopeType string
 

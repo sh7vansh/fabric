@@ -28,18 +28,19 @@ const MaxCachedLeafCerts = 512
 
 // CA manages an in-process Certificate Authority and mints leaf certificates.
 type CA struct {
-	mu          sync.RWMutex
-	dir         string
-	domain      string
-	rootCert    *x509.Certificate
-	rootKey     crypto.Signer
-	certPEM     []byte
-	keyPEM      []byte
-	certPool    *x509.CertPool
-	leafCache   map[string]*list.Element
-	lruList     *list.List
-	maxCache    int
-	activeNodes func() []string
+	mu           sync.RWMutex
+	dir          string
+	domain       string
+	rootCert     *x509.Certificate
+	rootKey      crypto.Signer
+	certPEM      []byte
+	keyPEM       []byte
+	certPool     *x509.CertPool
+	leafCache    map[string]*list.Element
+	lruList      *list.List
+	maxCache     int
+	activeNodes  func() []string
+	allowedHosts []string
 }
 
 type cachedCert struct {
@@ -56,6 +57,7 @@ type caOptions struct {
 	leafValidity time.Duration
 	maxCache     int
 	activeNodes  func() []string
+	allowedHosts []string
 }
 
 func defaultOptions() *caOptions {
@@ -94,6 +96,13 @@ func WithActiveNodes(fn func() []string) Option {
 	}
 }
 
+// WithAllowedHosts configures statically authorized SNI hostnames.
+func WithAllowedHosts(hosts []string) Option {
+	return func(o *caOptions) {
+		o.allowedHosts = hosts
+	}
+}
+
 // LoadOrInitCA loads an existing CA from storage directory or creates a new one.
 func LoadOrInitCA(dir, domain string, opts ...Option) (*CA, error) {
 	options := defaultOptions()
@@ -109,12 +118,13 @@ func LoadOrInitCA(dir, domain string, opts ...Option) (*CA, error) {
 	keyPath := filepath.Join(dir, "ca.key")
 
 	ca := &CA{
-		dir:         dir,
-		domain:      domain,
-		leafCache:   make(map[string]*list.Element),
-		lruList:     list.New(),
-		maxCache:    options.maxCache,
-		activeNodes: options.activeNodes,
+		dir:          dir,
+		domain:       domain,
+		leafCache:    make(map[string]*list.Element),
+		lruList:      list.New(),
+		maxCache:     options.maxCache,
+		activeNodes:  options.activeNodes,
+		allowedHosts: options.allowedHosts,
 	}
 
 	if fileExists(certPath) && fileExists(keyPath) {
@@ -141,6 +151,22 @@ func LoadOrInitCA(dir, domain string, opts ...Option) (*CA, error) {
 		if fabricDir != dir {
 			_ = ca.EnsureClientCertificate(fabricDir)
 		}
+	}
+
+	// Pre-mint server and gateway certificates for configured cluster domain
+	preMint := [][]string{
+		{"localhost", "127.0.0.1", "::1"},
+	}
+	if domain != "" {
+		preMint = append(preMint,
+			[]string{domain},
+			[]string{"gateway." + domain, domain},
+			[]string{"server." + domain, domain},
+			[]string{"socket." + domain, domain},
+		)
+	}
+	for _, h := range preMint {
+		_, _ = ca.MintCertificate(h, options.leafValidity)
 	}
 
 	return ca, nil
@@ -467,20 +493,21 @@ func (c *CA) isAllowedSNI(serverName string) bool {
 		return true
 	}
 	serverName = strings.ToLower(serverName)
-	if strings.HasSuffix(serverName, ".mesh") {
-		return true
-	}
 	if c.domain != "" {
-		if serverName == c.domain || strings.HasSuffix(serverName, "."+c.domain) {
+		if serverName == c.domain || serverName == "gateway."+c.domain || serverName == "server."+c.domain || serverName == "socket."+c.domain {
 			return true
 		}
-		if !strings.Contains(serverName, ".") {
-			return true
+	}
+	if c.allowedHosts != nil {
+		for _, h := range c.allowedHosts {
+			if strings.EqualFold(h, serverName) {
+				return true
+			}
 		}
 	}
 	if c.activeNodes != nil {
 		for _, n := range c.activeNodes() {
-			if strings.EqualFold(n, serverName) || strings.EqualFold(n+"."+c.domain, serverName) {
+			if strings.EqualFold(n, serverName) || (c.domain != "" && strings.EqualFold(n+"."+c.domain, serverName)) {
 				return true
 			}
 		}

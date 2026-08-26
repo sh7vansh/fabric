@@ -57,7 +57,10 @@ func New(cfg Config) (*Engine, error) {
 		}
 	}
 
-	ca, err := pki.LoadOrInitCA(caDir, cfg.MeshDomain, pki.WithActiveNodes(cfg.ActiveNodes))
+	ca, err := pki.LoadOrInitCA(caDir, cfg.MeshDomain,
+		pki.WithActiveNodes(cfg.ActiveNodes),
+		pki.WithAllowedHosts(cfg.AllowedHosts),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init internal CA: %w", err)
 	}
@@ -126,9 +129,6 @@ func (e *Engine) matchesPublicDomain(host string) bool {
 
 func (e *Engine) isInternalOrLocal(host string) bool {
 	if host == "" || host == "localhost" || net.ParseIP(host) != nil {
-		return true
-	}
-	if strings.HasSuffix(host, ".mesh") {
 		return true
 	}
 	if e.meshDomain != "" && (host == e.meshDomain || strings.HasSuffix(host, "."+e.meshDomain)) {

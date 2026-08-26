@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,13 @@ const (
 	defaultListenAddr = "127.0.0.1:53535"
 )
 
+type dnsCacheEntry struct {
+	resp      protocol.DNSResponse
+	expiresAt time.Time
+}
+
+var hostsFileLock sync.Mutex
+
 // SystemDNSManager is a deep module encapsulating local stub DNS resolution,
 // systemd-resolved split-DNS configuration, and fallback /etc/hosts manipulation.
 type SystemDNSManager struct {
@@ -35,24 +43,49 @@ type SystemDNSManager struct {
 	skipOSOps   bool // For testing without touching OS files or running systemctl
 	useResolved bool
 
-	mux       *protocol.StreamMultiplexer
-	cache     map[string]protocol.DNSResponse
-	cacheMux  sync.RWMutex
-	pending   map[string]chan protocol.DNSResponse
-	pendMux   sync.Mutex
-	server    *dns.Server
-	serverMux sync.Mutex
+	mux           *protocol.StreamMultiplexer
+	cache         map[string]dnsCacheEntry
+	cacheMux      sync.RWMutex
+	stopCacheLoop chan struct{}
+	cacheLoopOnce sync.Once
+	pending       map[string]chan protocol.DNSResponse
+	pendMux       sync.Mutex
+	server        *dns.Server
+	serverMux     sync.Mutex
 }
 
 // NewSystemDNSManager creates a new SystemDNSManager for the specified mesh domain.
 func NewSystemDNSManager(domain string) *SystemDNSManager {
-	return &SystemDNSManager{
-		domain:      domain,
-		listenAddr:  defaultListenAddr,
-		hostsPath:   defaultHostsPath,
-		useResolved: HasSystemdResolved(),
-		cache:       make(map[string]protocol.DNSResponse),
-		pending:     make(map[string]chan protocol.DNSResponse),
+	mgr := &SystemDNSManager{
+		domain:        domain,
+		listenAddr:    defaultListenAddr,
+		hostsPath:     defaultHostsPath,
+		useResolved:   HasSystemdResolved(),
+		cache:         make(map[string]dnsCacheEntry),
+		stopCacheLoop: make(chan struct{}),
+		pending:       make(map[string]chan protocol.DNSResponse),
+	}
+	go mgr.evictionLoop()
+	return mgr
+}
+
+func (m *SystemDNSManager) evictionLoop() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopCacheLoop:
+			return
+		case now := <-ticker.C:
+			m.cacheMux.Lock()
+			for k, entry := range m.cache {
+				if now.After(entry.expiresAt) {
+					delete(m.cache, k)
+				}
+			}
+			m.cacheMux.Unlock()
+		}
 	}
 }
 
@@ -116,6 +149,12 @@ func (m *SystemDNSManager) SyncNodes(nodes []protocol.NodeMetadata, socketURL st
 
 // Teardown cleanly reverts OS DNS configuration, cleans /etc/hosts blocks, and shuts down the DNS server.
 func (m *SystemDNSManager) Teardown() {
+	m.cacheLoopOnce.Do(func() {
+		if m.stopCacheLoop != nil {
+			close(m.stopCacheLoop)
+		}
+	})
+
 	if !m.skipOSOps {
 		if m.useResolved {
 			m.revertSystemdResolved()
@@ -140,14 +179,11 @@ func (m *SystemDNSManager) HandleDNSResponse(resp protocol.DNSResponse) {
 			if err := reply.Unpack(replyWire); err == nil && len(reply.Question) > 0 {
 				name := strings.ToLower(reply.Question[0].Name)
 				m.cacheMux.Lock()
-				m.cache[name] = resp
+				m.cache[name] = dnsCacheEntry{
+					resp:      resp,
+					expiresAt: time.Now().Add(time.Duration(resp.TTL) * time.Second),
+				}
 				m.cacheMux.Unlock()
-
-				time.AfterFunc(time.Duration(resp.TTL)*time.Second, func() {
-					m.cacheMux.Lock()
-					delete(m.cache, name)
-					m.cacheMux.Unlock()
-				})
 			}
 		}
 	}
@@ -187,12 +223,12 @@ func (m *SystemDNSManager) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	}
 
 	m.cacheMux.RLock()
-	cachedResp, found := m.cache[name]
+	cachedEntry, found := m.cache[name]
 	mux := m.mux
 	m.cacheMux.RUnlock()
 
-	if found {
-		replyWire, err := base64.StdEncoding.DecodeString(cachedResp.Data)
+	if found && time.Now().Before(cachedEntry.expiresAt) {
+		replyWire, err := base64.StdEncoding.DecodeString(cachedEntry.resp.Data)
 		if err == nil {
 			reply := new(dns.Msg)
 			if err := reply.Unpack(replyWire); err == nil {
@@ -328,6 +364,9 @@ func (m *SystemDNSManager) readAndStripHostsBlock() ([]string, error) {
 }
 
 func (m *SystemDNSManager) updateHostsBlock(nodes []protocol.NodeMetadata, socketIP string) {
+	hostsFileLock.Lock()
+	defer hostsFileLock.Unlock()
+
 	newLines, err := m.readAndStripHostsBlock()
 	if err != nil {
 		return
@@ -338,14 +377,20 @@ func (m *SystemDNSManager) updateHostsBlock(nodes []protocol.NodeMetadata, socke
 	}
 	newLines = append(newLines, hostsBlockStart)
 	for _, n := range nodes {
-		newLines = append(newLines, socketIP+" "+n.Hostname+"."+m.domain)
+		// Strict RFC 1123 DNS hostname validation to prevent /etc/hosts injection
+		if protocol.IsValidHostname(n.Hostname) {
+			newLines = append(newLines, socketIP+" "+n.Hostname+"."+m.domain)
+		}
 	}
 	newLines = append(newLines, hostsBlockEnd, "")
 
-	_ = os.WriteFile(m.hostsPath, []byte(strings.Join(newLines, "\n")), 0644)
+	_ = m.writeHostsFileAtomic(strings.Join(newLines, "\n"))
 }
 
 func (m *SystemDNSManager) cleanHostsBlock() {
+	hostsFileLock.Lock()
+	defer hostsFileLock.Unlock()
+
 	newLines, err := m.readAndStripHostsBlock()
 	if err != nil {
 		return
@@ -354,5 +399,36 @@ func (m *SystemDNSManager) cleanHostsBlock() {
 	if len(newLines) > 0 {
 		newLines = append(newLines, "")
 	}
-	_ = os.WriteFile(m.hostsPath, []byte(strings.Join(newLines, "\n")), 0644)
+	_ = m.writeHostsFileAtomic(strings.Join(newLines, "\n"))
+}
+
+func (m *SystemDNSManager) writeHostsFileAtomic(content string) error {
+	dir := filepath.Dir(m.hostsPath)
+	tmpFile, err := os.CreateTemp(dir, ".hosts.fabric.tmp-*")
+	if err != nil {
+		tmpFile, err = os.CreateTemp("", ".hosts.fabric.tmp-*")
+		if err != nil {
+			return err
+		}
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmpFile.WriteString(content); err != nil {
+		tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Chmod(tmpPath, 0644); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, m.hostsPath)
 }

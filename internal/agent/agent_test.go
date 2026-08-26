@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -413,4 +416,63 @@ func TestAgentCheckOrigin(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentHandleExecStreamCloseKillsProcessGroup(t *testing.T) {
+	ag := New(Config{
+		Domain:   "fabric.mesh",
+		Hostname: "test-node",
+	})
+
+	serverConn, clientConn := net.Pipe()
+
+	// Launch a long-running process that prints its PID and sleeps
+	req := protocol.ExecRequest{
+		Command: "echo $$; sleep 100",
+	}
+	env, _ := json.Marshal(req)
+
+	doneCh := make(chan struct{})
+	go func() {
+		ag.HandleExec(serverConn, env)
+		close(doneCh)
+	}()
+
+	// Read the PID from stdout
+	frame, err := protocol.ReadFrame(clientConn)
+	if err != nil {
+		t.Fatalf("failed to read PID frame: %v", err)
+	}
+	if frame.Type != protocol.StreamStdout {
+		t.Fatalf("expected stdout frame, got type %d", frame.Type)
+	}
+
+	pidStr := strings.TrimSpace(string(frame.Payload))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil {
+		t.Fatalf("failed to parse child PID from %q: %v", pidStr, err)
+	}
+
+	// Verify child process is running
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("process %d is not running: %v", pid, err)
+	}
+
+	// Close client connection
+	clientConn.Close()
+
+	// Wait for HandleExec to complete and verify process is killed within 1s
+	select {
+	case <-doneCh:
+	case <-time.After(1500 * time.Millisecond):
+		t.Fatalf("HandleExec did not terminate within 1.5s after stream close")
+	}
+
+	// Process should no longer exist
+	time.Sleep(50 * time.Millisecond)
+	if err := syscall.Kill(pid, 0); err == nil {
+		t.Errorf("process %d is still alive after stream closure", pid)
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	}
+}
+
 

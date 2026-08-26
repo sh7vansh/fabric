@@ -62,9 +62,38 @@ func ReadFrame(r io.Reader) (*Frame, error) {
 		return nil, ErrFrameTooLarge
 	}
 
-	payload := make([]byte, size)
-	if size > 0 {
-		if _, err := io.ReadFull(r, payload); err != nil {
+	if size == 0 {
+		return &Frame{
+			Type:    streamType,
+			Payload: nil,
+		}, nil
+	}
+
+	// Bounded reading: allocate incrementally rather than allocating upfront 'size' bytes
+	// which prevents memory exhaustion DoS when a client sends a large size in the header
+	// but sends few or no actual bytes.
+	initCap := size
+	if initCap > 4096 {
+		initCap = 4096
+	}
+	payload := make([]byte, 0, initCap)
+	tmp := make([]byte, 32*1024)
+	var totalRead uint32
+
+	for totalRead < size {
+		toRead := int(size - totalRead)
+		if toRead > len(tmp) {
+			toRead = len(tmp)
+		}
+		n, err := r.Read(tmp[:toRead])
+		if n > 0 {
+			payload = append(payload, tmp[:n]...)
+			totalRead += uint32(n)
+		}
+		if err != nil {
+			if err == io.EOF && totalRead < size {
+				return nil, io.ErrUnexpectedEOF
+			}
 			return nil, err
 		}
 	}

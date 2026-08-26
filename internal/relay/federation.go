@@ -489,6 +489,19 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 	var currentPeerMu sync.Mutex
 	var currentPeer *GatewayPeerSession
 
+	if peerGatewayID != "" {
+		r.peerMu.RLock()
+		currentPeer = r.peers[peerGatewayID]
+		r.peerMu.RUnlock()
+		if currentPeer == nil {
+			currentPeer = &GatewayPeerSession{
+				ServerID:  peerGatewayID,
+				GatewayID: peerGatewayID,
+				Mux:       mux,
+			}
+		}
+	}
+
 	setRegisteredPeer := func(p *GatewayPeerSession) {
 		currentPeerMu.Lock()
 		currentPeer = p
@@ -501,17 +514,35 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 		return currentPeer
 	}
 
+	requirePeerAuth := func(name string, handler func(stream net.Conn, env []byte)) func(stream net.Conn, env []byte) {
+		return func(stream net.Conn, env []byte) {
+			if getRegisteredPeer() == nil {
+				log.Printf("[Relay/Peering] Dropping %s on unauthenticated peer session\n", name)
+				stream.Close()
+				mux.Session.Close()
+				return
+			}
+			handler(stream, env)
+		}
+	}
+
 	// 1. Server Handshake
 	handleHello := func(stream net.Conn, env []byte) {
 		defer stream.Close()
 
 		var hello protocol.ServerHello
 		if err := json.Unmarshal(env, &hello); err != nil {
+			mux.Session.Close()
 			return
 		}
 
 		if hello.Token != "" && !r.ValidateToken(hello.Token) {
 			log.Printf("[Relay/Peering] Unauthorized peer connection attempt from: %s\n", hello.ServerID)
+			mux.Session.Close()
+			return
+		}
+		if r.federationCA == "" && (hello.Token == "" || !r.ValidateToken(hello.Token)) {
+			log.Printf("[Relay/Peering] Unauthorized peer connection attempt (missing/invalid token) from: %s\n", hello.ServerID)
 			mux.Session.Close()
 			return
 		}
@@ -562,7 +593,7 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 	router.HandleFunc(string(protocol.TypeGatewayHello), handleHello)
 
 	// 2. Thread Advertisement
-	router.HandleFunc(string(protocol.TypeThreadAdvertise), func(stream net.Conn, env []byte) {
+	router.HandleFunc(string(protocol.TypeThreadAdvertise), requirePeerAuth("ThreadAdvertise", func(stream net.Conn, env []byte) {
 		defer stream.Close()
 
 		var adv protocol.ThreadAdvertise
@@ -573,10 +604,10 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 		for _, node := range adv.Nodes {
 			r.RegisterRemoteNode(node, adv.GatewayID)
 		}
-	})
+	}))
 
 	// 3. Thread Withdrawal
-	router.HandleFunc(string(protocol.TypeThreadWithdraw), func(stream net.Conn, env []byte) {
+	router.HandleFunc(string(protocol.TypeThreadWithdraw), requirePeerAuth("ThreadWithdraw", func(stream net.Conn, env []byte) {
 		defer stream.Close()
 
 		var with protocol.ThreadWithdraw
@@ -585,10 +616,10 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 		}
 
 		r.UnregisterRemoteNode(with.Hostname, with.GatewayID)
-	})
+	}))
 
 	// 4. Cross-gateway ExecRequest
-	router.HandleFunc(string(protocol.TypeExecRequest), func(stream net.Conn, env []byte) {
+	router.HandleFunc(string(protocol.TypeExecRequest), requirePeerAuth("ExecRequest", func(stream net.Conn, env []byte) {
 		var req protocol.ExecRequest
 		if err := json.Unmarshal(env, &req); err != nil {
 			stream.Close()
@@ -611,10 +642,10 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 		if err := r.RouteStream(cleanTarget, env, prefixedConn); err != nil {
 			log.Printf("[Relay/Peering] Failed to route ExecRequest to %s: %v\n", cleanTarget, err)
 		}
-	})
+	}))
 
 	// 5. Cross-gateway CopyRequest
-	router.HandleFunc(string(protocol.TypeCopyRequest), func(stream net.Conn, env []byte) {
+	router.HandleFunc(string(protocol.TypeCopyRequest), requirePeerAuth("CopyRequest", func(stream net.Conn, env []byte) {
 		var req protocol.CopyRequest
 		if err := json.Unmarshal(env, &req); err != nil {
 			stream.Close()
@@ -636,10 +667,10 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 		if err := r.RouteStream(cleanTarget, env, prefixedConn); err != nil {
 			log.Printf("[Relay/Peering] Failed to route CopyRequest to %s: %v\n", cleanTarget, err)
 		}
-	})
+	}))
 
 	// 6. Cross-gateway ProxyRequest
-	router.HandleFunc(string(protocol.TypeProxyRequest), func(stream net.Conn, env []byte) {
+	router.HandleFunc(string(protocol.TypeProxyRequest), requirePeerAuth("ProxyRequest", func(stream net.Conn, env []byte) {
 		var req protocol.ProxyRequest
 		if err := json.Unmarshal(env, &req); err != nil {
 			stream.Close()
@@ -661,7 +692,19 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 		if err := r.RouteProxyStream(cleanTarget, env, prefixedConn); err != nil {
 			log.Printf("[Relay/Peering] Failed to route ProxyRequest to %s: %v\n", cleanTarget, err)
 		}
-	})
+	}))
+
+	// 7. Cross-gateway DNSQuery
+	router.HandleFunc(string(protocol.TypeDNSQuery), requirePeerAuth("DNSQuery", func(stream net.Conn, env []byte) {
+		defer stream.Close()
+		var query protocol.DNSQuery
+		if err := json.Unmarshal(env, &query); err != nil {
+			return
+		}
+		resp := r.ResolveDNS(query, "127.0.0.1")
+		respBytes, _ := json.Marshal(resp)
+		_, _ = stream.Write(respBytes)
+	}))
 
 	err := router.Accept()
 

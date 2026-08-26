@@ -8,11 +8,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"fabric/internal/pki"
@@ -780,9 +782,38 @@ func (c *Client) executeSingle(opts ExecOptions, in io.Reader, out, errOut io.Wr
 
 	if opts.AllocatePTY && in != nil {
 		if file, ok := in.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
-			oldState, err := term.MakeRaw(int(file.Fd()))
+			fd := int(file.Fd())
+			oldState, err := term.MakeRaw(fd)
 			if err == nil {
-				defer term.Restore(int(file.Fd()), oldState)
+				var restoreOnce sync.Once
+				restoreTerminal := func() {
+					restoreOnce.Do(func() {
+						_ = term.Restore(fd, oldState)
+					})
+				}
+				defer restoreTerminal()
+
+				// Trap OS termination signals to ensure terminal state is restored
+				sigCh := make(chan os.Signal, 1)
+				signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+				defer signal.Stop(sigCh)
+
+				go func() {
+					select {
+					case <-sigCh:
+						restoreTerminal()
+					case <-mux.Session.CloseChan():
+						restoreTerminal()
+					}
+				}()
+
+				// Guarantee deferred terminal restoration upon panics
+				defer func() {
+					if r := recover(); r != nil {
+						restoreTerminal()
+						panic(r)
+					}
+				}()
 			}
 		}
 	}

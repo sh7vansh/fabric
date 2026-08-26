@@ -188,7 +188,7 @@ func TestCALRUCacheEviction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Mint 5 different host certificates
+	// Mint 5 different host certificates for registered nodes
 	for i := 0; i < 5; i++ {
 		host := fmt.Sprintf("node-%d.fabric.mesh", i)
 		if _, err := ca.MintCertificate([]string{host}, 1*time.Hour); err != nil {
@@ -196,10 +196,10 @@ func TestCALRUCacheEviction(t *testing.T) {
 		}
 	}
 
-	// Verify that GetCertificate for authorized domain succeeds
-	cert, err := ca.GetCertificate(&tls.ClientHelloInfo{ServerName: "node-4.fabric.mesh"})
+	// Verify that MintCertificate caching works
+	cert, err := ca.MintCertificate([]string{"node-4.fabric.mesh"}, 1*time.Hour)
 	if err != nil || cert == nil {
-		t.Errorf("expected GetCertificate for node-4.fabric.mesh to succeed, got %v", err)
+		t.Errorf("expected MintCertificate for node-4.fabric.mesh to succeed, got %v", err)
 	}
 }
 
@@ -210,9 +210,12 @@ func TestCAGetCertificateSNIAuthorization(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	ca, err := pki.LoadOrInitCA(tmpDir, "fabric.mesh", pki.WithActiveNodes(func() []string {
-		return []string{"registered-node"}
-	}))
+	ca, err := pki.LoadOrInitCA(tmpDir, "fabric.mesh",
+		pki.WithActiveNodes(func() []string {
+			return []string{"registered-node"}
+		}),
+		pki.WithAllowedHosts([]string{"federation-peer.mesh"}),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,11 +226,12 @@ func TestCAGetCertificateSNIAuthorization(t *testing.T) {
 		"127.0.0.1",
 		"::1",
 		"fabric.mesh",
-		"node-1.fabric.mesh",
-		"foo.bar.fabric.mesh",
-		"node-1", // single host without dots
+		"gateway.fabric.mesh",
+		"server.fabric.mesh",
+		"socket.fabric.mesh",
 		"registered-node",
 		"registered-node.fabric.mesh",
+		"federation-peer.mesh",
 	}
 
 	for _, sni := range allowedSNIs {
@@ -242,6 +246,9 @@ func TestCAGetCertificateSNIAuthorization(t *testing.T) {
 		"evil-phishing-site.com",
 		"attacker.org",
 		"random.domain.io",
+		"unregistered-node.fabric.mesh",
+		"unregistered-node",
+		"random.mesh",
 	}
 
 	for _, sni := range disallowedSNIs {
@@ -252,7 +259,7 @@ func TestCAGetCertificateSNIAuthorization(t *testing.T) {
 	}
 
 	// 3. Verify no unsolicited wildcard SAN injection
-	cert, err := ca.GetCertificate(&tls.ClientHelloInfo{ServerName: "node-1.fabric.mesh"})
+	cert, err := ca.GetCertificate(&tls.ClientHelloInfo{ServerName: "registered-node.fabric.mesh"})
 	if err != nil {
 		t.Fatalf("GetCertificate failed: %v", err)
 	}
@@ -262,8 +269,9 @@ func TestCAGetCertificateSNIAuthorization(t *testing.T) {
 	}
 	for _, dnsName := range parsedCert.DNSNames {
 		if strings.HasPrefix(dnsName, "*.") {
-			t.Errorf("unexpected wildcard SAN %q in minted certificate for node-1.fabric.mesh", dnsName)
+			t.Errorf("unexpected wildcard SAN %q in minted certificate for registered-node.fabric.mesh", dnsName)
 		}
 	}
 }
+
 
