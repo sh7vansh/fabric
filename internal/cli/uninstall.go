@@ -144,9 +144,8 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 				fmt.Printf("[+] Removing binary: %s\n", binPath)
 				// Try to remove directly
 				if err := os.Remove(binPath); err != nil {
-					// If permission denied, try with sudo
-					fmt.Printf("[*] Elevating privileges to remove %s...\n", binPath)
-					_ = exec.Command("sudo", "rm", "-f", binPath).Run()
+					// If permission denied, try with non-interactive sudo
+					_ = exec.Command("sudo", "-n", "rm", "-f", binPath).Run()
 				}
 			}
 		}

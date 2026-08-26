@@ -573,7 +573,7 @@ func (m *InitManager) RunPrivileged(name string, args ...string) error {
 	var cmd *exec.Cmd
 	if os.Geteuid() != 0 {
 		if _, err := exec.LookPath("sudo"); err == nil {
-			cmd = exec.Command("sudo", append([]string{name}, args...)...)
+			cmd = exec.Command("sudo", append([]string{"-n", name}, args...)...)
 		} else {
 			cmd = exec.Command(name, args...)
 		}

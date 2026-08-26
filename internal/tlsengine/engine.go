@@ -49,11 +49,17 @@ func New(cfg Config) (*Engine, error) {
 
 	caDir := cfg.CADir
 	if caDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			caDir = "/tmp/fabric-ca"
+		if envCADir := os.Getenv("FABRIC_CA_DIR"); envCADir != "" {
+			caDir = envCADir
+		} else if _, err := os.Stat("/etc/fabric/ca/ca.crt"); err == nil {
+			caDir = "/etc/fabric/ca"
 		} else {
-			caDir = filepath.Join(home, ".fabric", "ca")
+			home, err := os.UserHomeDir()
+			if err != nil {
+				caDir = "/tmp/fabric-ca"
+			} else {
+				caDir = filepath.Join(home, ".fabric", "ca")
+			}
 		}
 	}
 

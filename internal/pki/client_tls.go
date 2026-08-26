@@ -48,6 +48,12 @@ func BuildMTLSConfig(customCAPath string) (*tls.Config, error) {
 		"/etc/fabric/ca/ca.crt",
 		"/etc/fabric/ca.crt",
 	}
+	if envCACert := os.Getenv("FABRIC_CA_CERT"); envCACert != "" {
+		defaultPaths = append([]string{envCACert}, defaultPaths...)
+	}
+	if envCADir := os.Getenv("FABRIC_CA_DIR"); envCADir != "" {
+		defaultPaths = append([]string{filepath.Join(envCADir, "ca.crt")}, defaultPaths...)
+	}
 	if home, err := os.UserHomeDir(); err == nil {
 		defaultPaths = append(defaultPaths,
 			filepath.Join(home, ".fabric", "ca", "ca.crt"),

@@ -204,8 +204,30 @@ func runInit(cmd *cobra.Command, args []string) error {
 		domain = prompt(reader, "Fabric Domain", "fabric.mesh")
 	}
 
-	// 6. CA Trust Setup
-	if !initNonInteract && role != "server" {
+	// 6. CA Initialization and Trust Setup
+	caPath := ""
+	if role == "server" || role == "both" {
+		caDir := ""
+		if home, err := os.UserHomeDir(); err == nil {
+			caDir = filepath.Join(home, ".fabric", "ca")
+		} else {
+			caDir = "/etc/fabric/ca"
+		}
+		if ca, err := pki.LoadOrInitCA(caDir, domain); err == nil && ca != nil {
+			caPath = filepath.Join(caDir, "ca.crt")
+			if home, err := os.UserHomeDir(); err == nil {
+				_ = ca.EnsureClientCertificate(filepath.Join(home, ".fabric"))
+			}
+			if data, err := os.ReadFile(caPath); err == nil {
+				if os.Geteuid() == 0 {
+					_ = os.MkdirAll("/etc/fabric", 0755)
+					_ = os.WriteFile("/etc/fabric/ca.crt", data, 0644)
+				}
+			}
+		}
+	}
+
+	if !initNonInteract {
 		trustChoice := prompt(reader, "Trust private Fabric Root CA in system trust store? (y/N)", "N")
 		if strings.ToLower(trustChoice) == "y" || strings.ToLower(trustChoice) == "yes" {
 			_ = installLocalCATrust()
@@ -213,16 +235,17 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// 7. Save CLI Config
-	caPath := ""
-	if home, err := os.UserHomeDir(); err == nil {
-		for _, p := range []string{
-			filepath.Join(home, ".fabric", "ca", "ca.crt"),
-			filepath.Join(home, ".fabric", "ca.crt"),
-			"/etc/fabric/ca.crt",
-		} {
-			if _, err := os.Stat(p); err == nil {
-				caPath = p
-				break
+	if caPath == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			for _, p := range []string{
+				filepath.Join(home, ".fabric", "ca", "ca.crt"),
+				filepath.Join(home, ".fabric", "ca.crt"),
+				"/etc/fabric/ca.crt",
+			} {
+				if _, err := os.Stat(p); err == nil {
+					caPath = p
+					break
+				}
 			}
 		}
 	}
@@ -317,6 +340,7 @@ func writeRoleEnv(role, serverURL, token, domain, mode string) error {
 		sb.WriteString(fmt.Sprintf("FABRIC_TOKEN=%s\n", token))
 		sb.WriteString(fmt.Sprintf("FABRIC_DOMAIN=%s\n", domain))
 		sb.WriteString("FABRIC_PORT=8443\n")
+		sb.WriteString(fmt.Sprintf("FABRIC_CA_DIR=%s\n", filepath.Join(home, ".fabric", "ca")))
 	} else if role == "thread" || role == "agent" {
 		sb.WriteString(fmt.Sprintf("FABRIC_SERVER_URL=%s\n", serverURL))
 		if mode == "" {
@@ -343,21 +367,36 @@ func writeRoleEnv(role, serverURL, token, domain, mode string) error {
 }
 
 func installLocalCATrust() error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
+	var certPEM []byte
+	var foundPath string
+	candidates := []string{
+		"/etc/fabric/ca/ca.crt",
+		"/etc/fabric/ca.crt",
 	}
-	certPath := filepath.Join(home, ".fabric", "ca", "ca.crt")
-	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
-		return fmt.Errorf("could not find Root CA at %s: %w", certPath, err)
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append([]string{
+			filepath.Join(home, ".fabric", "ca", "ca.crt"),
+			filepath.Join(home, ".fabric", "ca.crt"),
+		}, candidates...)
+	}
+
+	for _, p := range candidates {
+		if data, err := os.ReadFile(p); err == nil && len(data) > 0 {
+			certPEM = data
+			foundPath = p
+			break
+		}
+	}
+
+	if len(certPEM) == 0 {
+		return fmt.Errorf("could not find Root CA in standard locations (~/.fabric/ca/ca.crt or /etc/fabric/ca.crt)")
 	}
 
 	trustStore := pki.NewSystemTrustStore()
 	if err := trustStore.InstallCA(certPEM, "fabric-ca"); err != nil {
-		return fmt.Errorf("failed to install CA into system trust store (try running with sudo): %w", err)
+		return fmt.Errorf("failed to install CA from %s into system trust store (try running with sudo): %w", foundPath, err)
 	}
-	fmt.Println("[+] Successfully installed Fabric Root CA into system trust store.")
+	fmt.Printf("[+] Successfully installed Fabric Root CA (%s) into system trust store.\n", foundPath)
 	return nil
 }
 
