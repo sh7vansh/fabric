@@ -83,7 +83,7 @@ func setupTestPKIAndAgent(t *testing.T, hostname string) (string, string, func()
 	tmpDir, pkiCleanup := setupTestPKI(t)
 
 	ag := agent.New(agent.Config{
-		ServerURL:     "ws://dummy",
+		ServerURL:     "wss://dummy",
 		ListenAddress: "127.0.0.1:0",
 		Domain:        "fabric.test",
 		Hostname:      hostname,
@@ -352,6 +352,11 @@ func TestPortForwarding_RelayMode(t *testing.T) {
 		go r.ServeWSAuth(conn, req.RemoteAddr, authenticated)
 	})
 
+	ca, err := pki.LoadOrInitCA(tmpDir, "fabric.test")
+	if err != nil {
+		t.Fatalf("failed to init CA: %v", err)
+	}
+
 	relayLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to start relay listener: %v", err)
@@ -359,16 +364,20 @@ func TestPortForwarding_RelayMode(t *testing.T) {
 	defer relayLn.Close()
 	relayPort := relayLn.Addr().(*net.TCPAddr).Port
 
+	tlsRelayLn := tls.NewListener(relayLn, ca.TLSConfig())
+	defer tlsRelayLn.Close()
+
 	relayServer := &http.Server{Handler: relayMux}
-	go relayServer.Serve(relayLn)
+	go relayServer.Serve(tlsRelayLn)
 	defer relayServer.Close()
 
 	// 2. Start Agent connected to Relay
 	ag := agent.New(agent.Config{
-		ServerURL:     fmt.Sprintf("ws://127.0.0.1:%d/ws", relayPort),
+		ServerURL:     fmt.Sprintf("wss://127.0.0.1:%d/ws", relayPort),
 		Domain:        "fabric.test",
 		Hostname:      "node-relay-1",
 		Token:         "test-token",
+		CACertPath:    tmpDir + "/ca.crt",
 		InitialRetry: 20 * time.Millisecond,
 		MaxBackoff:   50 * time.Millisecond,
 	})
@@ -417,7 +426,7 @@ func TestPortForwarding_RelayMode(t *testing.T) {
 	// 4. Configure CLI client pointing to Relay WebSocket and run ForwardPort
 	localPort := getFreePort(t)
 	cfg := &Config{
-		Host:   fmt.Sprintf("ws://127.0.0.1:%d/ws", relayPort),
+		Host:   fmt.Sprintf("wss://127.0.0.1:%d/ws", relayPort),
 		Token:  "test-token",
 		CACert: tmpDir + "/ca.crt",
 	}

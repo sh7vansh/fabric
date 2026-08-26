@@ -65,7 +65,7 @@ type FileConfig struct {
 
 func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *Config {
 	cfg := &Config{
-		Host:        "ws://localhost:8080/ws",
+		Host:        "wss://localhost:8443/ws",
 		Token:       "default-secret",
 		DirectNodes: make(map[string]DirectNodeEntry),
 	}
@@ -130,7 +130,7 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 	for _, p := range envCandidates {
 		envVars := parseEnvFile(p)
 		if len(envVars) > 0 {
-			if cfg.Host == "ws://localhost:8080/ws" {
+			if cfg.Host == "wss://localhost:8443/ws" || cfg.Host == "ws://localhost:8080/ws" {
 				if sURL, ok := envVars["FABRIC_SERVER_URL"]; ok && sURL != "" {
 					cfg.Host = sURL
 				} else if sURL, ok := envVars["FABRIC_SOCKET_URL"]; ok && sURL != "" {

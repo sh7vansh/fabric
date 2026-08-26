@@ -109,7 +109,7 @@ func TestGenerateStitchScript_ZeroInternetAndTags(t *testing.T) {
 		BinaryData: fakeBinary,
 	}
 
-	script := GenerateStitchScript(opts, "ws://192.168.1.1:8080/ws")
+	script := GenerateStitchScript(opts, "wss://192.168.1.1:8443/ws")
 
 	// Verify absence of external downloads in script shell commands
 	for _, line := range strings.Split(script, "\n") {
@@ -125,7 +125,7 @@ func TestGenerateStitchScript_ZeroInternetAndTags(t *testing.T) {
 	envStr := extractDecodedEnv(script)
 
 	// Verify environment variables and tags
-	if !strings.Contains(envStr, "FABRIC_SERVER_URL=ws://192.168.1.1:8080/ws") {
+	if !strings.Contains(envStr, "FABRIC_SERVER_URL=wss://192.168.1.1:8443/ws") {
 		t.Errorf("Script missing server URL: %s", envStr)
 	}
 	if !strings.Contains(envStr, "FABRIC_TOKEN=test-secret-token") {
@@ -156,7 +156,7 @@ func TestGenerateStitchScript_MultiTierInit(t *testing.T) {
 		BinaryData: []byte("mock-data"),
 	}
 
-	script := GenerateStitchScript(opts, "ws://10.0.0.1:8080/ws")
+	script := GenerateStitchScript(opts, "wss://10.0.0.1:8443/ws")
 
 	// Tier 1: Root / system systemd
 	if !strings.Contains(script, "/etc/systemd/system/fabric-thread.service") {
@@ -187,7 +187,7 @@ func TestExecuteStitchHostWithMock(t *testing.T) {
 	mockExec := &mockExecutor{}
 	opts := StitchHostOptions{
 		Target:     "node-1",
-		SocketURL:  "ws://10.0.0.1:8080/ws",
+		SocketURL:  "wss://10.0.0.1:8443/ws",
 		Token:      "tok",
 		Domain:     "fabric.mesh",
 		Tags:       []string{"ingress"},
@@ -212,7 +212,7 @@ func TestExecuteStitchHostWithMock(t *testing.T) {
 		t.Errorf("Expected tag ingress, got: %v", node.Tags)
 	}
 	mockEnv := extractDecodedEnv(mockExec.LastScript())
-	if !strings.Contains(mockEnv, "FABRIC_SERVER_URL=ws://10.0.0.1:8080/ws") {
+	if !strings.Contains(mockEnv, "FABRIC_SERVER_URL=wss://10.0.0.1:8443/ws") {
 		t.Errorf("Script was not passed correctly to mock executor: %s", mockEnv)
 	}
 	if !strings.Contains(mockEnv, "FABRIC_TAGS=ingress") {
@@ -232,8 +232,8 @@ func TestProvisionerBatch(t *testing.T) {
 	provisioner := NewProvisioner(mockExec, verifier)
 
 	targets := []StitchHostOptions{
-		{Target: "host-a", SocketURL: "ws://10.0.0.1:8080/ws", Token: "tok", BinaryData: []byte("bin")},
-		{Target: "host-b", SocketURL: "ws://10.0.0.1:8080/ws", Token: "tok", BinaryData: []byte("bin")},
+		{Target: "host-a", SocketURL: "wss://10.0.0.1:8443/ws", Token: "tok", BinaryData: []byte("bin")},
+		{Target: "host-b", SocketURL: "wss://10.0.0.1:8443/ws", Token: "tok", BinaryData: []byte("bin")},
 	}
 
 	results, err := provisioner.ProvisionBatch(targets)
@@ -256,7 +256,7 @@ func TestGenerateStitchScript_MTLSPayloads(t *testing.T) {
 	tmpDir := t.TempDir()
 	opts := StitchHostOptions{
 		Target:     "node-direct",
-		SocketURL:  "ws://10.0.0.1:8080/ws",
+		SocketURL:  "wss://10.0.0.1:8443/ws",
 		Token:      "tok-direct",
 		Domain:     "fabric.test",
 		CADir:      tmpDir,

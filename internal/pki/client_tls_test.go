@@ -19,26 +19,38 @@ var upgrader = websocket.Upgrader{
 }
 
 func TestNormalizeURL(t *testing.T) {
-	cases := []struct {
-		input       string
-		expected    string
+	validCases := []struct {
+		input        string
 		expectScheme string
 	}{
-		{"localhost:8080/ws", "ws://localhost:8080/ws", "ws"},
-		{"ws://localhost:8080/ws", "ws://localhost:8080/ws", "ws"},
-		{"ws://localhost:443/ws", "wss://localhost:443/ws", "wss"},
-		{"ws://localhost:8443/ws", "wss://localhost:8443/ws", "wss"},
-		{"http://example.com:443/api", "https://example.com:443/api", "https"},
-		{"wss://example.com/ws", "wss://example.com/ws", "wss"},
+		{"localhost:8443/ws", "wss"},
+		{"localhost:8080/ws", "wss"},
+		{"wss://localhost:8443/ws", "wss"},
+		{"https://example.com:443/api", "https"},
+		{"wss://example.com/ws", "wss"},
+		{"192.168.1.50:8443/ws", "wss"},
 	}
 
-	for _, c := range cases {
+	for _, c := range validCases {
 		u, err := pki.NormalizeURL(c.input)
 		if err != nil {
-			t.Fatalf("NormalizeURL(%q) failed: %v", c.input, err)
+			t.Fatalf("NormalizeURL(%q) unexpectedly failed: %v", c.input, err)
 		}
 		if u.Scheme != c.expectScheme {
 			t.Errorf("NormalizeURL(%q) scheme = %q, expected %q", c.input, u.Scheme, c.expectScheme)
+		}
+	}
+
+	invalidCases := []string{
+		"ws://localhost:8080/ws",
+		"http://localhost:8080/api",
+		"ftp://localhost:21",
+	}
+
+	for _, raw := range invalidCases {
+		_, err := pki.NormalizeURL(raw)
+		if err == nil {
+			t.Errorf("NormalizeURL(%q) expected error for unencrypted/unsupported scheme, got nil", raw)
 		}
 	}
 }

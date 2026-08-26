@@ -45,7 +45,7 @@ func TestInvertedConnectionMode(t *testing.T) {
 
 	// 2. Start Agent daemon with Inverted Connection Mode enabled on dynamic port
 	ag := agent.New(agent.Config{
-		ServerURL:     "ws://dummy",
+		ServerURL:     "wss://dummy",
 		ListenAddress: "127.0.0.1:0", // dynamic port
 		Domain:        "fabric.test",
 		Hostname:      "test-node",
@@ -131,7 +131,7 @@ func TestTransparentDirectRoutingAndNodeListing(t *testing.T) {
 	os.WriteFile(tmpDir+"/client.key", keyPEM, 0600)
 
 	ag := agent.New(agent.Config{
-		ServerURL:     "ws://dummy",
+		ServerURL:     "wss://dummy",
 		ListenAddress: "127.0.0.1:0",
 		Domain:        "fabric.test",
 		Hostname:      "inv-node-1",

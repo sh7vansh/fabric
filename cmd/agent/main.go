@@ -21,7 +21,7 @@ func main() {
 		defaultURL = os.Getenv("FABRIC_HOST")
 	}
 	if defaultURL == "" && os.Getenv("FABRIC_LISTEN") == "" {
-		defaultURL = "ws://localhost:8080/ws"
+		defaultURL = "wss://localhost:8443/ws"
 	}
 
 	defaultDomain := os.Getenv("FABRIC_DOMAIN")
@@ -29,7 +29,7 @@ func main() {
 		defaultDomain = "fabric.mesh"
 	}
 
-	serverURL := flag.String("url", defaultURL, "Fabric Server WebSocket URL (ws:// or wss://)")
+	serverURL := flag.String("url", defaultURL, "Fabric Server WebSocket URL (wss://)")
 	listenFlag := flag.String("listen", os.Getenv("FABRIC_LISTEN"), "Local address to listen on for direct remote connection mode (e.g. :8443)")
 	domainFlag := flag.String("domain", defaultDomain, "Domain to register with the Fabric")
 	caCertFlag := flag.String("ca-cert", os.Getenv("FABRIC_CA_CERT"), "Path to custom Root CA certificate")

@@ -42,13 +42,13 @@ participation role (thread, server, or both), operating mode (local or remote), 
   fabric init --role server
 
   # Set up as a managed Thread
-  fabric init --role thread --server ws://gateway:8080/ws --token secret-token
+  fabric init --role thread --server wss://gateway:8443/ws --token secret-token
 
   # Set up as a Thread in remote mode
   fabric init --role thread --mode remote --token secret-token
 
   # Non-interactive setup for scripts
-  fabric init -y --server ws://gateway:8080/ws --token secret-token
+  fabric init -y --server wss://gateway:8443/ws --token secret-token
 
   # Install local Fabric Root CA into the OS trust store
   fabric init --trust-ca
@@ -62,7 +62,7 @@ func init() {
 	initCmd.Flags().StringVar(&initRoleFlag, "role", "", "Machine participation role: 'thread' (default), 'server', 'both', or 'cli'")
 	initCmd.Flags().StringVar(&initModeFlag, "mode", "local", "Operating mode: 'local' (default) or 'remote'")
 	initCmd.Flags().BoolVar(&initRemoteFlag, "remote", false, "Set operating mode to remote (shorthand for --mode=remote)")
-	initCmd.Flags().StringVarP(&initServerFlag, "server", "s", "", "Fabric server WebSocket URL (e.g. ws://192.168.1.50:8080/ws)")
+	initCmd.Flags().StringVarP(&initServerFlag, "server", "s", "", "Fabric server WebSocket URL (e.g. wss://192.168.1.50:8443/ws)")
 	initCmd.Flags().StringVarP(&initHostFlag, "host", "H", "", "Server URL (deprecated, use --server)")
 	initCmd.Flags().StringVar(&initTokenFlag, "token", "", "Pre-shared cluster token")
 	initCmd.Flags().StringVar(&initDomainFlag, "domain", "fabric.mesh", "Domain for Fabric DNS")
@@ -154,13 +154,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 		serverURL = initHostFlag
 	}
 	if serverURL == "" {
-		defaultSrv := "ws://localhost:8080/ws"
+		defaultSrv := "wss://localhost:8443/ws"
 		if initNonInteract {
 			serverURL = defaultSrv
 		} else if role == "server" {
 			serverURL = prompt(reader, "Fabric Server listen URL", defaultSrv)
 		} else {
-			serverURL = prompt(reader, "Fabric Server WebSocket URL (e.g. ws://192.168.1.50:8080/ws)", defaultSrv)
+			serverURL = prompt(reader, "Fabric Server WebSocket URL (e.g. wss://192.168.1.50:8443/ws)", defaultSrv)
 		}
 	}
 
@@ -179,33 +179,46 @@ func runInit(cmd *cobra.Command, args []string) error {
 				token = prompt(reader, "Enter cluster token", "default-secret")
 			}
 		} else {
-			token = prompt(reader, "Enter cluster token", "default-secret")
+			token = prompt(reader, "Cluster Token", "default-secret")
 		}
 	}
 
-	// 5. Fabric Domain
+	// 5. Fabric DNS Domain
 	domain := initDomainFlag
-	if !initNonInteract && domain == "fabric.mesh" {
+	if domain == "" {
+		domain = "fabric.mesh"
+	}
+	if !initNonInteract && initDomainFlag == "fabric.mesh" {
 		domain = prompt(reader, "Fabric Domain", "fabric.mesh")
 	}
 
-	// 6. CA Trust Store Setup
-	home, _ := os.UserHomeDir()
-	caDir := filepath.Join(home, ".fabric", "ca")
-	caCertPath := filepath.Join(caDir, "ca.crt")
-	if _, err := os.Stat(caCertPath); err == nil {
-		if !initNonInteract {
-			resp := prompt(reader, "Install Fabric Root CA into system trust store for automatic HTTPS? (Y/n)", "Y")
-			if strings.ToLower(resp) == "y" || strings.ToLower(resp) == "yes" {
-				_ = installLocalCATrust()
-			}
+	// 6. CA Trust Setup
+	if !initNonInteract && role != "server" {
+		trustChoice := prompt(reader, "Trust private Fabric Root CA in system trust store? (y/N)", "N")
+		if strings.ToLower(trustChoice) == "y" || strings.ToLower(trustChoice) == "yes" {
+			_ = installLocalCATrust()
 		}
 	}
 
 	// 7. Save CLI Config
+	caPath := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		for _, p := range []string{
+			filepath.Join(home, ".fabric", "ca", "ca.crt"),
+			filepath.Join(home, ".fabric", "ca.crt"),
+			"/etc/fabric/ca.crt",
+		} {
+			if _, err := os.Stat(p); err == nil {
+				caPath = p
+				break
+			}
+		}
+	}
+
 	cliCfg := &Config{
-		Host:  serverURL,
-		Token: token,
+		Host:   serverURL,
+		Token:  token,
+		CACert: caPath,
 	}
 	if err := SaveConfig(cliCfg); err != nil {
 		fmt.Printf("[!] Warning: Could not save CLI config: %v\n", err)

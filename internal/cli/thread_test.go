@@ -3,9 +3,11 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +51,13 @@ func setupTestMesh(t *testing.T) (*httptest.Server, *relay.Relay) {
 		json.NewEncoder(w).Encode(meta)
 	})
 
-	ts := httptest.NewServer(mux)
+	ts := httptest.NewTLSServer(mux)
+	if home, err := os.UserHomeDir(); err == nil {
+		caDir := filepath.Join(home, ".fabric")
+		_ = os.MkdirAll(caDir, 0755)
+		pemBlock := &pem.Block{Type: "CERTIFICATE", Bytes: ts.Certificate().Raw}
+		_ = os.WriteFile(filepath.Join(caDir, "ca.crt"), pem.EncodeToMemory(pemBlock), 0644)
+	}
 	return ts, r
 }
 
@@ -90,9 +98,11 @@ func TestThreadCommandsAndDeprecations(t *testing.T) {
 	// Set CLI flags for the server
 	serverFlag = ts.URL
 	tokenFlag = "test-token-thread"
+	caCertFlag = filepath.Join(tempHome, ".fabric", "ca.crt")
 	defer func() {
 		serverFlag = ""
 		tokenFlag = ""
+		caCertFlag = ""
 	}()
 
 	var stderrBuf bytes.Buffer

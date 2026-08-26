@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,9 +32,11 @@ func TestCoreOperationsThreadTerminology(t *testing.T) {
 
 	serverFlag = ts.URL
 	tokenFlag = "test-token-thread"
+	caCertFlag = filepath.Join(tempHome, ".fabric", "ca.crt")
 	defer func() {
 		serverFlag = ""
 		tokenFlag = ""
+		caCertFlag = ""
 	}()
 
 	// 1. Test fabric cp validation errors

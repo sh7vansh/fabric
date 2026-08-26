@@ -2,10 +2,14 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +21,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer, *relay.Relay) {
+func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer, *relay.Relay, string) {
 	meshRelay := relay.New(relay.Config{
 		Domain:   "fabric.mesh",
 		Token:    testToken,
@@ -67,19 +71,34 @@ func setupTestServer(testToken string) (*httptest.Server, *websocket.Dialer, *re
 		json.NewEncoder(w).Encode(meshRelay.ListNodes())
 	})
 
-	server := httptest.NewServer(mux)
-	dialer := websocket.DefaultDialer
-	return server, dialer, meshRelay
+	server := httptest.NewTLSServer(mux)
+	certPool := x509.NewCertPool()
+	certPool.AddCert(server.Certificate())
+
+	dialer := &websocket.Dialer{
+		TLSClientConfig: &tls.Config{
+			RootCAs: certPool,
+		},
+	}
+
+	// Write cert PEM to temp file for client
+	tmpFile, _ := os.CreateTemp("", "ca-*.crt")
+	pemBlock := &pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}
+	_ = os.WriteFile(tmpFile.Name(), pem.EncodeToMemory(pemBlock), 0644)
+	tmpFile.Close()
+
+	return server, dialer, meshRelay, tmpFile.Name()
 }
 
 func TestServerHTTPAuth(t *testing.T) {
 	testToken := "test-secret-token-123"
-	ts, _, r := setupTestServer(testToken)
+	ts, _, r, caCert := setupTestServer(testToken)
 	defer ts.Close()
 	defer r.Close()
+	defer os.Remove(caCert)
 
 	// 1. Unauthorized request
-	resp, err := http.Get(ts.URL + "/nodes")
+	resp, err := ts.Client().Get(ts.URL + "/nodes")
 	if err != nil {
 		t.Fatalf("HTTP GET failed: %v", err)
 	}
@@ -91,8 +110,7 @@ func TestServerHTTPAuth(t *testing.T) {
 	// 2. Authorized request
 	req, _ := http.NewRequest("GET", ts.URL+"/nodes", nil)
 	req.Header.Set("Authorization", "Bearer "+testToken)
-	client := &http.Client{}
-	resp2, err := client.Do(req)
+	resp2, err := ts.Client().Do(req)
 	if err != nil {
 		t.Fatalf("HTTP GET with auth failed: %v", err)
 	}
@@ -104,11 +122,12 @@ func TestServerHTTPAuth(t *testing.T) {
 
 func TestServerWebSocketHandshakeAuthAndReconnect(t *testing.T) {
 	testToken := "test-secret-token-123"
-	ts, dialer, r := setupTestServer(testToken)
+	ts, dialer, r, caCert := setupTestServer(testToken)
 	defer ts.Close()
 	defer r.Close()
+	defer os.Remove(caCert)
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsURL := "wss" + strings.TrimPrefix(ts.URL, "https") + "/ws"
 
 	// 1. Handshake with invalid token
 	conn1, _, err := dialer.Dial(wsURL, nil)
@@ -195,11 +214,12 @@ func TestServerWebSocketHandshakeAuthAndReconnect(t *testing.T) {
 
 func TestServerMultiNodeParallelExecution(t *testing.T) {
 	testToken := "secret-broadcast-token"
-	ts, dialer, r := setupTestServer(testToken)
+	ts, dialer, r, caCert := setupTestServer(testToken)
 	defer ts.Close()
 	defer r.Close()
+	defer os.Remove(caCert)
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsURL := "wss" + strings.TrimPrefix(ts.URL, "https") + "/ws"
 
 	// Connect Node 1 (worker-1, tags: [web, prod])
 	conn1, _, err := dialer.Dial(wsURL, nil)
@@ -296,11 +316,12 @@ func TestServerMultiNodeParallelExecution(t *testing.T) {
 
 func TestServerUnauthenticatedExecStreamRejected(t *testing.T) {
 	testToken := "secret-cluster-token"
-	ts, dialer, r := setupTestServer(testToken)
+	ts, dialer, r, caCert := setupTestServer(testToken)
 	defer ts.Close()
 	defer r.Close()
+	defer os.Remove(caCert)
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsURL := "wss" + strings.TrimPrefix(ts.URL, "https") + "/ws"
 
 	// Connect without Authorization header
 	conn, _, err := dialer.Dial(wsURL, nil)
@@ -337,11 +358,12 @@ func TestServerUnauthenticatedExecStreamRejected(t *testing.T) {
 
 func TestServerCSWSHOriginRejection(t *testing.T) {
 	testToken := "secret-cluster-token"
-	ts, dialer, r := setupTestServer(testToken)
+	ts, dialer, r, caCert := setupTestServer(testToken)
 	defer ts.Close()
 	defer r.Close()
+	defer os.Remove(caCert)
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsURL := "wss" + strings.TrimPrefix(ts.URL, "https") + "/ws"
 
 	// 1. Unauthorized origin should be rejected with 403 Forbidden
 	headerBad := http.Header{}
@@ -370,11 +392,12 @@ func TestServerCSWSHOriginRejection(t *testing.T) {
 
 func TestServerEndToEndAuthenticatedLifecycle(t *testing.T) {
 	testToken := "e2e-token-xyz"
-	ts, dialer, r := setupTestServer(testToken)
+	ts, dialer, r, caCert := setupTestServer(testToken)
 	defer ts.Close()
 	defer r.Close()
+	defer os.Remove(caCert)
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsURL := "wss" + strings.TrimPrefix(ts.URL, "https") + "/ws"
 
 	// Connect mock target node agent
 	nodeConn, _, err := dialer.Dial(wsURL, nil)
@@ -423,8 +446,9 @@ func TestServerEndToEndAuthenticatedLifecycle(t *testing.T) {
 
 	// Now use CLI client with valid token to execute command
 	cliCfg := &cli.Config{
-		Host:  ts.URL,
-		Token: testToken,
+		Host:   ts.URL,
+		Token:  testToken,
+		CACert: caCert,
 	}
 	client := cli.NewClient(cliCfg)
 
@@ -449,11 +473,12 @@ func TestServerEndToEndAuthenticatedLifecycle(t *testing.T) {
 
 func TestServerWebSocketOriginValidation(t *testing.T) {
 	testToken := "test-origin-token"
-	ts, dialer, r := setupTestServer(testToken)
+	ts, dialer, r, caCert := setupTestServer(testToken)
 	defer ts.Close()
 	defer r.Close()
+	defer os.Remove(caCert)
 
-	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws"
+	wsURL := "wss" + strings.TrimPrefix(ts.URL, "https") + "/ws"
 
 	// 1. Dial with disallowed Origin header
 	badHeader := http.Header{}

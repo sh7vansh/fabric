@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -33,7 +35,7 @@ func TestThreadLsMultiClusterAndPeerFiltering(t *testing.T) {
 		},
 	}
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/nodes" {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(mockNodes)
@@ -48,11 +50,19 @@ func TestThreadLsMultiClusterAndPeerFiltering(t *testing.T) {
 	}))
 	defer ts.Close()
 
+	tmpFile, _ := os.CreateTemp("", "ca-*.crt")
+	pemBlock := &pem.Block{Type: "CERTIFICATE", Bytes: ts.Certificate().Raw}
+	_ = os.WriteFile(tmpFile.Name(), pem.EncodeToMemory(pemBlock), 0644)
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
 	serverFlag = ts.URL
 	tokenFlag = "test-token"
+	caCertFlag = tmpFile.Name()
 	defer func() {
 		serverFlag = ""
 		tokenFlag = ""
+		caCertFlag = ""
 	}()
 
 	// 1. Test listing all threads displays SERVER column

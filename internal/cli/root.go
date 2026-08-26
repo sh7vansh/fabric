@@ -90,7 +90,7 @@ func init() {
 		},
 	)
 
-	rootCmd.PersistentFlags().StringVarP(&serverFlag, "server", "s", "", "Fabric server URL to connect to (e.g. ws://localhost:8080/ws)")
+	rootCmd.PersistentFlags().StringVarP(&serverFlag, "server", "s", "", "Fabric server URL to connect to (e.g. wss://localhost:8443/ws)")
 	rootCmd.PersistentFlags().StringVarP(&hostFlag, "host", "H", "", "Socket URL to connect to (deprecated, use --server)")
 	rootCmd.PersistentFlags().StringVar(&tokenFlag, "token", "", "Pre-shared token for authentication")
 	rootCmd.PersistentFlags().StringVar(&caCertFlag, "ca-cert", "", "Path to custom Root CA certificate for TLS verification")

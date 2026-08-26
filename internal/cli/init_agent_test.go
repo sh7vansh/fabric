@@ -22,7 +22,7 @@ func TestInitAndAgentCommands(t *testing.T) {
 		var stdoutBuf bytes.Buffer
 		rootCmd.SetOut(&stdoutBuf)
 		rootCmd.SetErr(&stderrBuf)
-		rootCmd.SetArgs([]string{"init", "-y", "--server", "ws://test-gw:8080/ws", "--token", "custom-secret", "--domain", "fabric.mesh"})
+		rootCmd.SetArgs([]string{"init", "-y", "--server", "wss://test-gw:8443/ws", "--token", "custom-secret", "--domain", "fabric.mesh"})
 
 		err := rootCmd.Execute()
 		if err != nil {
@@ -36,8 +36,8 @@ func TestInitAndAgentCommands(t *testing.T) {
 		}
 
 		cfg := LoadConfig("", "", "")
-		if cfg.Host != "ws://test-gw:8080/ws" {
-			t.Errorf("expected host 'ws://test-gw:8080/ws', got %s", cfg.Host)
+		if cfg.Host != "wss://test-gw:8443/ws" {
+			t.Errorf("expected host 'wss://test-gw:8443/ws', got %s", cfg.Host)
 		}
 		if cfg.Token != "custom-secret" {
 			t.Errorf("expected token 'custom-secret', got %s", cfg.Token)
@@ -50,7 +50,7 @@ func TestInitAndAgentCommands(t *testing.T) {
 		var stdoutBuf bytes.Buffer
 		rootCmd.SetOut(&stdoutBuf)
 		rootCmd.SetErr(&stderrBuf)
-		rootCmd.SetArgs([]string{"setup", "-y", "--server", "ws://setup-gw:8080/ws", "--token", "setup-secret"})
+		rootCmd.SetArgs([]string{"setup", "-y", "--server", "wss://setup-gw:8443/ws", "--token", "setup-secret"})
 
 		err := rootCmd.Execute()
 		if err != nil {
@@ -62,8 +62,8 @@ func TestInitAndAgentCommands(t *testing.T) {
 		}
 
 		cfg := LoadConfig("", "", "")
-		if cfg.Host != "ws://setup-gw:8080/ws" {
-			t.Errorf("expected host updated to 'ws://setup-gw:8080/ws', got %s", cfg.Host)
+		if cfg.Host != "wss://setup-gw:8443/ws" {
+			t.Errorf("expected host updated to 'wss://setup-gw:8443/ws', got %s", cfg.Host)
 		}
 	}
 
@@ -152,7 +152,7 @@ func TestInitRoleEnvGeneration(t *testing.T) {
 	// Test init with --role=both and --mode=remote non-interactively
 	var stdoutBuf bytes.Buffer
 	rootCmd.SetOut(&stdoutBuf)
-	rootCmd.SetArgs([]string{"init", "-y", "--role", "both", "--mode", "remote", "--server", "ws://localhost:8080/ws", "--token", "both-secret", "--domain", "fabric.mesh"})
+	rootCmd.SetArgs([]string{"init", "-y", "--role", "both", "--mode", "remote", "--server", "wss://localhost:8443/ws", "--token", "both-secret", "--domain", "fabric.mesh"})
 
 	err := rootCmd.Execute()
 	if err != nil {
@@ -174,7 +174,7 @@ func TestInitRoleEnvGeneration(t *testing.T) {
 		t.Errorf("expected thread.env at %s, error: %v", threadEnv, err)
 	} else {
 		content := string(data)
-		if !strings.Contains(content, "FABRIC_SERVER_URL=ws://localhost:8080/ws") ||
+		if !strings.Contains(content, "FABRIC_SERVER_URL=wss://localhost:8443/ws") ||
 			!strings.Contains(content, "FABRIC_MODE=remote") ||
 			!strings.Contains(content, "FABRIC_LISTEN=:8443") ||
 			!strings.Contains(content, "FABRIC_TOKEN=both-secret") {
@@ -195,7 +195,7 @@ func TestInitRoleAgentDeprecation(t *testing.T) {
 	var stdoutBuf bytes.Buffer
 	rootCmd.SetOut(&stdoutBuf)
 	rootCmd.SetErr(&stderrBuf)
-	rootCmd.SetArgs([]string{"init", "-y", "--role", "agent", "--server", "ws://localhost:8080/ws", "--token", "agent-secret"})
+	rootCmd.SetArgs([]string{"init", "-y", "--role", "agent", "--server", "wss://localhost:8443/ws", "--token", "agent-secret"})
 
 	err := rootCmd.Execute()
 	if err != nil {

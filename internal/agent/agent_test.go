@@ -288,7 +288,7 @@ func TestAgentHandleProxy_NoProxyResponseOnError(t *testing.T) {
 func TestAgentContextCancellation(t *testing.T) {
 	dnsMgr := meshdns.NewSystemDNSManager("fabric.mesh")
 	ag := New(Config{
-		ServerURL:    "ws://127.0.0.1:65530/ws",
+		ServerURL:    "wss://127.0.0.1:65530/ws",
 		Domain:       "fabric.mesh",
 		Token:        "tok",
 		Hostname:     "node-canceler",

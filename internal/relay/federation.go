@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -378,12 +379,6 @@ func (r *Relay) dialAndRunPeerSession(rawEndpoint string, isLeaf bool) error {
 	if err != nil {
 		return fmt.Errorf("invalid peer url: %w", err)
 	}
-
-	if u.Scheme == "http" {
-		u.Scheme = "ws"
-	} else if u.Scheme == "https" {
-		u.Scheme = "wss"
-	}
 	if u.Path == "" || u.Path == "/" {
 		u.Path = "/gateway/v1/peer"
 	}
@@ -393,17 +388,25 @@ func (r *Relay) dialAndRunPeerSession(rawEndpoint string, isLeaf bool) error {
 		header.Add("Authorization", "Bearer "+r.token)
 	}
 
-	dialer := websocket.DefaultDialer
-	if u.Scheme == "wss" && r.federationCA != "" {
-		tlsCfg, err := pki.BuildFederationClientTLSConfig(r.federationCA, nil)
+	var tlsCfg *tls.Config
+	if r.federationCA != "" {
+		cfg, err := pki.BuildFederationClientTLSConfig(r.federationCA, nil)
 		if err != nil {
 			return fmt.Errorf("failed to build federation TLS config: %w", err)
 		}
-		dialer = &websocket.Dialer{
-			Proxy:            http.ProxyFromEnvironment,
-			HandshakeTimeout: 15 * time.Second,
-			TLSClientConfig:  tlsCfg,
+		tlsCfg = cfg
+	} else {
+		cfg, err := pki.BuildMTLSConfig("")
+		if err != nil {
+			return fmt.Errorf("failed to build client TLS config: %w", err)
 		}
+		tlsCfg = cfg
+	}
+
+	dialer := &websocket.Dialer{
+		Proxy:            http.ProxyFromEnvironment,
+		HandshakeTimeout: 15 * time.Second,
+		TLSClientConfig:  tlsCfg,
 	}
 
 	conn, _, err := dialer.Dial(u.String(), header)

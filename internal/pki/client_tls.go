@@ -1,6 +1,7 @@
 package pki
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -122,10 +123,65 @@ func NewWSSDialer(customCAPath string) (*websocket.Dialer, error) {
 	}, nil
 }
 
-// NormalizeURL auto-upgrades schemes for TLS ports (e.g. port 443).
+// SecureDialer provides a deep, unified interface for establishing encrypted WebSocket sessions
+// across the Fabric, encapsulating CA discovery, mTLS auto-healing, and strict TLS enforcement.
+type SecureDialer struct {
+	dialer *websocket.Dialer
+	tlsCfg *tls.Config
+}
+
+// NewSecureDialer constructs a SecureDialer configured with cluster root CAs and client certificates.
+func NewSecureDialer(customCAPath string) (*SecureDialer, error) {
+	tlsCfg, err := BuildMTLSConfig(customCAPath)
+	if err != nil {
+		return nil, err
+	}
+	return &SecureDialer{
+		dialer: &websocket.Dialer{
+			Proxy:            http.ProxyFromEnvironment,
+			HandshakeTimeout: 15 * time.Second,
+			TLSClientConfig:  tlsCfg,
+		},
+		tlsCfg: tlsCfg,
+	}, nil
+}
+
+// DialContext connects to the target URL over strict TLS.
+func (d *SecureDialer) DialContext(ctx context.Context, targetURL string, header http.Header) (*websocket.Conn, *http.Response, error) {
+	u, err := NormalizeURL(targetURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	if u.Scheme == "https" {
+		u.Scheme = "wss"
+	}
+	conn, resp, err := d.dialer.DialContext(ctx, u.String(), header)
+	if err != nil {
+		return nil, resp, FormatTLSError(err)
+	}
+	return conn, resp, nil
+}
+
+// Dial connects to the target URL over strict TLS using context.Background.
+func (d *SecureDialer) Dial(targetURL string, header http.Header) (*websocket.Conn, *http.Response, error) {
+	return d.DialContext(context.Background(), targetURL, header)
+}
+
+// TLSConfig returns the underlying *tls.Config.
+func (d *SecureDialer) TLSConfig() *tls.Config {
+	return d.tlsCfg
+}
+
+// NormalizeURL parses and strictly enforces TLS schemes (wss:// or https://) on URLs and bare addresses.
+// Plaintext schemes (ws://, http://) are rejected to uphold the Zero-Cleartext Invariant.
 func NormalizeURL(rawURL string) (*url.URL, error) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return nil, fmt.Errorf("empty URL")
+	}
+
 	if !strings.Contains(rawURL, "://") {
-		rawURL = "ws://" + rawURL
+		rawURL = "wss://" + rawURL
 	}
 
 	u, err := url.Parse(rawURL)
@@ -133,18 +189,14 @@ func NormalizeURL(rawURL string) (*url.URL, error) {
 		return nil, err
 	}
 
-	// Auto-upgrade ws -> wss if port is 443 or host is https
-	if u.Scheme == "ws" {
-		if u.Port() == "443" || u.Port() == "8443" {
-			u.Scheme = "wss"
-		}
-	} else if u.Scheme == "http" {
-		if u.Port() == "443" || u.Port() == "8443" {
-			u.Scheme = "https"
-		}
+	switch u.Scheme {
+	case "wss", "https":
+		return u, nil
+	case "ws", "http":
+		return nil, fmt.Errorf("unencrypted scheme %q is disallowed: Fabric strictly enforces TLS (use 'wss://' or omit the scheme)", u.Scheme+"://")
+	default:
+		return nil, fmt.Errorf("unsupported scheme %q: Fabric requires 'wss://' or 'https://'", u.Scheme)
 	}
-
-	return u, nil
 }
 
 // FormatTLSError wraps a TLS handshake error with actionable diagnostic guidance.
@@ -183,11 +235,11 @@ func ProbeDirectMTLS(targetAddr, customCAPath string, timeout time.Duration) err
 		return fmt.Errorf("invalid probe url: %w", err)
 	}
 
-	dialer, err := NewWSSDialer(customCAPath)
+	dialer, err := NewSecureDialer(customCAPath)
 	if err != nil {
 		return fmt.Errorf("failed to build mTLS dialer: %w", err)
 	}
-	dialer.HandshakeTimeout = timeout
+	dialer.dialer.HandshakeTimeout = timeout
 
 	conn, _, err := dialer.Dial(u.String(), nil)
 	if err != nil {

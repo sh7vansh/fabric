@@ -62,7 +62,7 @@ func TestGenerateSupervisorScript(t *testing.T) {
 func TestRenderBootstrapScript(t *testing.T) {
 	mgr := NewInitManager()
 	opts := BootstrapScriptOptions{
-		ServerURL:   "ws://10.0.0.1:8080/ws",
+		ServerURL:   "wss://10.0.0.1:8443/ws",
 		ListenAddr:  ":8443",
 		Token:       "tok-123",
 		Domain:      "custom.mesh",
@@ -91,7 +91,7 @@ func TestRenderBootstrapScript(t *testing.T) {
 	}
 	envStr := string(decoded)
 
-	if !strings.Contains(envStr, "FABRIC_SERVER_URL=ws://10.0.0.1:8080/ws") {
+	if !strings.Contains(envStr, "FABRIC_SERVER_URL=wss://10.0.0.1:8443/ws") {
 		t.Errorf("missing server url in decoded env: %s", envStr)
 	}
 	if !strings.Contains(envStr, "FABRIC_MODE=remote") {
@@ -132,7 +132,7 @@ func TestRenderBootstrapScript(t *testing.T) {
 func TestRenderBootstrapScript_ShellMetacharactersInjectionSafety(t *testing.T) {
 	mgr := NewInitManager()
 	opts := BootstrapScriptOptions{
-		ServerURL:   "ws://10.0.0.1:8080/ws",
+		ServerURL:   "wss://10.0.0.1:8443/ws",
 		Token:       `secret" && rm -rf / && echo "pwned; $(whoami); \` + "`id`",
 		Domain:      `mesh.local" # comment`,
 		Tags:        []string{`tag1"`, `$USER`, "\nMALICIOUS=true"},

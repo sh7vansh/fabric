@@ -159,9 +159,7 @@ func (c *Client) DialWebSocketForNode(targetNode string) (*websocket.Conn, error
 	if err != nil {
 		return nil, fmt.Errorf("invalid host url: %w", err)
 	}
-	if u.Scheme == "http" {
-		u.Scheme = "ws"
-	} else if u.Scheme == "https" {
+	if u.Scheme == "https" {
 		u.Scheme = "wss"
 	}
 	if u.Path == "" || u.Path == "/" {
@@ -171,18 +169,14 @@ func (c *Client) DialWebSocketForNode(targetNode string) (*websocket.Conn, error
 	header := http.Header{}
 	header.Add("Authorization", "Bearer "+c.Config.Token)
 
-	dialer := websocket.DefaultDialer
-	if u.Scheme == "wss" {
-		var err error
-		dialer, err = pki.NewWSSDialer(c.caCertPath())
-		if err != nil {
-			return nil, fmt.Errorf("failed to configure TLS: %w", err)
-		}
+	dialer, err := pki.NewSecureDialer(c.caCertPath())
+	if err != nil {
+		return nil, fmt.Errorf("failed to configure secure TLS dialer: %w", err)
 	}
 
 	conn, _, err := dialer.Dial(u.String(), header)
 	if err != nil {
-		return nil, pki.FormatTLSError(fmt.Errorf("websocket dial (%s): %w", u.String(), err))
+		return nil, fmt.Errorf("websocket dial (%s): %w", u.String(), err)
 	}
 	return conn, nil
 }
@@ -194,12 +188,7 @@ func (c *Client) DoHTTP(method, path string, body interface{}) (*http.Response, 
 		return nil, err
 	}
 
-	scheme := "http"
-	if u.Scheme == "wss" {
-		scheme = "https"
-	}
-	u.Scheme = scheme
-
+	u.Scheme = "https"
 	basePath := strings.TrimSuffix(u.Path, "/ws")
 	basePath = strings.TrimRight(basePath, "/")
 	u.Path = basePath + "/" + strings.TrimLeft(path, "/")
@@ -222,18 +211,15 @@ func (c *Client) DoHTTP(method, path string, body interface{}) (*http.Response, 
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	httpClient := http.DefaultClient
-	if scheme == "https" {
-		tlsCfg, err := pki.BuildMTLSConfig(c.caCertPath())
-		if err != nil {
-			return nil, fmt.Errorf("failed to configure TLS: %w", err)
-		}
-		httpClient = &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: tlsCfg,
-			},
-			Timeout: 30 * time.Second,
-		}
+	tlsCfg, err := pki.BuildMTLSConfig(c.caCertPath())
+	if err != nil {
+		return nil, fmt.Errorf("failed to configure TLS: %w", err)
+	}
+	httpClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsCfg,
+		},
+		Timeout: 30 * time.Second,
 	}
 
 	resp, err := httpClient.Do(req)
@@ -408,7 +394,7 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 	}
 
 	if socketNode == nil {
-		if c.Config != nil && c.Config.Host != "" && c.Config.Host != "ws://localhost:8080/ws" && c.Config.Host != "localhost:8080" {
+		if c.Config != nil && c.Config.Host != "" && c.Config.Host != "wss://localhost:8443/ws" && c.Config.Host != "ws://localhost:8080/ws" && c.Config.Host != "localhost:8080" && c.Config.Host != "localhost:8443" {
 			socketNode = &protocol.NodeMetadata{
 				ID:       "socket",
 				Hostname: "socket",

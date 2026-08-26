@@ -312,20 +312,15 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) error {
-	dialer := websocket.DefaultDialer
-	if u.Scheme == "wss" {
-		var err error
-		dialer, err = pki.NewWSSDialer(a.cfg.CACertPath)
-		if err != nil {
-			log.Printf("[Agent] Warning: TLS dialer error: %v", err)
-			dialer = websocket.DefaultDialer
-		}
+	dialer, err := pki.NewSecureDialer(a.cfg.CACertPath)
+	if err != nil {
+		return fmt.Errorf("failed to build secure TLS dialer: %w", err)
 	}
 
-	log.Printf("[Agent] Connecting to %s...", u.String())
+	log.Printf("[Agent] Connecting to %s (mTLS enabled)...", u.String())
 	conn, _, err := dialer.DialContext(ctx, u.String(), nil)
 	if err != nil {
-		return pki.FormatTLSError(err)
+		return err
 	}
 	defer conn.Close()
 

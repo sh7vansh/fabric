@@ -37,6 +37,8 @@ Fabric is a lightweight remote execution, service discovery, and networking plat
 - **Provisioner**: An autonomous domain module in `internal/provision` for subnet discovery probing, SSH script generation, and remote host bootstrapping into the Fabric.
 - **RemoteExecutor**: An adapter abstracting the SSH transport for provisioning, allowing pure testing of script generation and host bootstrapping.
 - **InitManager**: A deep module in `internal/service` encapsulating multi-tier init rules (system systemd, user systemd, standalone supervisor), canonical unit/supervisor script definitions, and local lifecycle management.
+- **SecureServer (`fabric-server`)**: A deep control-plane module in `internal/server` encapsulating MeshRelay, dynamic in-process TLS certificate minting, ACME autocertification, and authenticated WebSocket listeners.
+- **SecureDialer**: A deep transport module in `internal/pki` encapsulating root CA auto-discovery, mTLS certificate discovery/auto-healing, and strict TLS 1.2+ encrypted WebSocket sessions.
 
 ---
 
@@ -57,27 +59,28 @@ Fabric is a lightweight remote execution, service discovery, and networking plat
 ## System Architecture
 
 ```text
-[ fabric CLI ] ----WebSocket----> [ fabric-server ] <----WebSocket---- [ fabric-thread Daemon ]
-(Exec/CP/Port)                   (Relay & DNS)                             (Thread Host Control)
-                                        ▲
-                                        │ Yamux Peering (Federation)
-                                        ▼
-                                 [ fabric-server Peer ]
+[ fabric CLI ] =====WSS/TLS=====> [ fabric-server ] <=====WSS/mTLS===== [ fabric-thread Daemon ]
+(Exec/CP/Port)                   (SecureServer & DNS)                      (Thread Host Control)
+                                         ▲
+                                         │ Yamux Peering over WSS (Federation)
+                                         ▼
+                                  [ fabric-server Peer ]
 ```
 
-- **Protocol**: Bidirectional JSON envelopes over WebSocket (`TypeHandshake`, `TypeExecRequest`, `TypeExecStream`, `TypeCopyRequest`, `TypeDNSQuery`, `TypeNodeSync`, `TypeServerHello`, `TypeThreadAdvertise`).
+- **Protocol**: Bidirectional JSON envelopes over encrypted WebSocket (`TypeHandshake`, `TypeExecRequest`, `TypeExecStream`, `TypeCopyRequest`, `TypeDNSQuery`, `TypeNodeSync`, `TypeServerHello`, `TypeThreadAdvertise`).
 - **Binary Data**: Tar archives, raw TTY I/O, and DNS query payloads are Base64 encoded inside stream envelopes.
 
 ---
 
 ## Invariants & Design Rules
 
-1. **One Concept, One Name**: Eliminate synonyms and ambiguous terms across CLI, docs, logs, and APIs.
-2. **Mode Governs Execution, Not Identity**: `local` and `remote` modify how an operation executes; they do not define distinct thread types and are not inferred from metadata tags.
-3. **Outbound Only**: Threads generally never require inbound firewall holes; communication originates outbound from threads to the Fabric Server, and from Leaf servers to Core servers.
-4. **Deterministic Teardown**: DNS hooks (`/etc/hosts` modifications) and PTY processes must be cleanly cleaned up on daemon shutdown or disconnect.
-5. **Streaming Transfers**: File copies (`cp`) and execution streams must operate incrementally over chunked tar/stream envelopes without holding unbounded memory buffers.
-6. **Obvious Verbs & Personality Nouns**: Keep standard system commands obvious (`ps`, `exec`, `cp`, `port`, `stitch`, `peer`, `init`) and conceptual nouns focused (`thread`, `Fabric`, `Server`).
+1. **Zero-Cleartext Invariant**: All transport across the Fabric (CLI, Thread, and Server Peering) is strictly TLS-encrypted (`wss://` and `https://`). Unencrypted plaintext (`ws://`, `http://`) is strictly prohibited.
+2. **One Concept, One Name**: Eliminate synonyms and ambiguous terms across CLI, docs, logs, and APIs.
+3. **Mode Governs Execution, Not Identity**: `local` and `remote` modify how an operation executes; they do not define distinct thread types and are not inferred from metadata tags.
+4. **Outbound Only**: Threads generally never require inbound firewall holes; communication originates outbound from threads to the Fabric Server, and from Leaf servers to Core servers.
+5. **Deterministic Teardown**: DNS hooks (`/etc/hosts` modifications) and PTY processes must be cleanly cleaned up on daemon shutdown or disconnect.
+6. **Streaming Transfers**: File copies (`cp`) and execution streams must operate incrementally over chunked tar/stream envelopes without holding unbounded memory buffers.
+7. **Obvious Verbs & Personality Nouns**: Keep standard system commands obvious (`ps`, `exec`, `cp`, `port`, `stitch`, `peer`, `init`) and conceptual nouns focused (`thread`, `Fabric`, `Server`).
 
 ---
 

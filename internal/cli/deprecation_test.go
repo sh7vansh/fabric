@@ -45,7 +45,7 @@ func TestGetConfigDeprecationWarnings(t *testing.T) {
 
 	// Reset flags
 	serverFlag = ""
-	hostFlag = "ws://legacy-host:8080/ws"
+	hostFlag = "wss://legacy-host:8443/ws"
 	remoteFlag = ""
 	directFlag = "192.168.1.10:8443"
 	defer func() {
@@ -56,8 +56,8 @@ func TestGetConfigDeprecationWarnings(t *testing.T) {
 	}()
 
 	cfg := GetConfig()
-	if cfg.Host != "ws://legacy-host:8080/ws" {
-		t.Errorf("expected Host %q, got %q", "ws://legacy-host:8080/ws", cfg.Host)
+	if cfg.Host != "wss://legacy-host:8443/ws" {
+		t.Errorf("expected Host %q, got %q", "wss://legacy-host:8443/ws", cfg.Host)
 	}
 	if cfg.DirectAddress != "192.168.1.10:8443" {
 		t.Errorf("expected DirectAddress %q, got %q", "192.168.1.10:8443", cfg.DirectAddress)

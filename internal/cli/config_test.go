@@ -16,7 +16,7 @@ func TestLoadConfig(t *testing.T) {
 
 	// 1. Test Defaults
 	cfg := LoadConfig("", "", "")
-	if cfg.Host != "ws://localhost:8080/ws" {
+	if cfg.Host != "wss://localhost:8443/ws" {
 		t.Errorf("expected default host, got %s", cfg.Host)
 	}
 	if cfg.Token != "default-secret" {
@@ -27,10 +27,10 @@ func TestLoadConfig(t *testing.T) {
 	configDir := filepath.Join(tempHome, ".fabric")
 	os.MkdirAll(configDir, 0755)
 	configFile := filepath.Join(configDir, "config.json")
-	os.WriteFile(configFile, []byte(`{"contexts": {"default": {"host": "ws://remote:8080/ws", "token": "file-secret", "ca_cert": "/etc/ca.crt"}}, "current_context": "default"}`), 0644)
+	os.WriteFile(configFile, []byte(`{"contexts": {"default": {"host": "wss://remote:8443/ws", "token": "file-secret", "ca_cert": "/etc/ca.crt"}}, "current_context": "default"}`), 0644)
 
 	cfg = LoadConfig("", "", "")
-	if cfg.Host != "ws://remote:8080/ws" {
+	if cfg.Host != "wss://remote:8443/ws" {
 		t.Errorf("expected file host, got %s", cfg.Host)
 	}
 	if cfg.Token != "file-secret" {
@@ -41,7 +41,7 @@ func TestLoadConfig(t *testing.T) {
 	}
 
 	// 3. Test Env Vars
-	os.Setenv("FABRIC_HOST", "ws://env:8080/ws")
+	os.Setenv("FABRIC_HOST", "wss://env:8443/ws")
 	os.Setenv("FABRIC_TOKEN", "env-secret")
 	os.Setenv("FABRIC_CA_CERT", "/env/ca.crt")
 	defer os.Unsetenv("FABRIC_HOST")
@@ -49,7 +49,7 @@ func TestLoadConfig(t *testing.T) {
 	defer os.Unsetenv("FABRIC_CA_CERT")
 
 	cfg = LoadConfig("", "", "")
-	if cfg.Host != "ws://env:8080/ws" {
+	if cfg.Host != "wss://env:8443/ws" {
 		t.Errorf("expected env host, got %s", cfg.Host)
 	}
 	if cfg.Token != "env-secret" {
@@ -60,17 +60,17 @@ func TestLoadConfig(t *testing.T) {
 	}
 
 	// Test modern FABRIC_SERVER_URL precedence over FABRIC_SOCKET_URL and FABRIC_HOST
-	os.Setenv("FABRIC_SOCKET_URL", "ws://socket-url:8080/ws")
+	os.Setenv("FABRIC_SOCKET_URL", "wss://socket-url:8443/ws")
 	defer os.Unsetenv("FABRIC_SOCKET_URL")
 	cfg = LoadConfig("", "", "")
-	if cfg.Host != "ws://socket-url:8080/ws" {
+	if cfg.Host != "wss://socket-url:8443/ws" {
 		t.Errorf("expected FABRIC_SOCKET_URL over FABRIC_HOST, got %s", cfg.Host)
 	}
 
-	os.Setenv("FABRIC_SERVER_URL", "ws://server-url:8080/ws")
+	os.Setenv("FABRIC_SERVER_URL", "wss://server-url:8443/ws")
 	defer os.Unsetenv("FABRIC_SERVER_URL")
 	cfg = LoadConfig("", "", "")
-	if cfg.Host != "ws://server-url:8080/ws" {
+	if cfg.Host != "wss://server-url:8443/ws" {
 		t.Errorf("expected FABRIC_SERVER_URL precedence, got %s", cfg.Host)
 	}
 
@@ -90,8 +90,8 @@ func TestLoadConfig(t *testing.T) {
 	}
 
 	// 4. Test Flags
-	cfg = LoadConfig("ws://flag:8080/ws", "flag-secret", "", "/flag/ca.crt")
-	if cfg.Host != "ws://flag:8080/ws" {
+	cfg = LoadConfig("wss://flag:8443/ws", "flag-secret", "", "/flag/ca.crt")
+	if cfg.Host != "wss://flag:8443/ws" {
 		t.Errorf("expected flag host, got %s", cfg.Host)
 	}
 	if cfg.Token != "flag-secret" {
