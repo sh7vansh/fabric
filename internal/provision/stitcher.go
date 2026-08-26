@@ -766,7 +766,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 	targetProbeAddr := net.JoinHostPort(targetHostOnly, listenPort)
 	caCertPath := ""
 	if opts.CADir != "" {
-		caCertPath = filepath.Join(opts.CADir, "ca.crt")
+		caCertPath = filepath.Join(pki.ResolveCADir(opts.CADir), "ca.crt")
 	} else if path, _, err := pki.FindCACert(""); err == nil {
 		caCertPath = path
 	}

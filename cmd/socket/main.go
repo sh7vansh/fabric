@@ -54,10 +54,10 @@ func main() {
 		ACMEEmail:    *acmeEmailFlag,
 		ACMEStaging:  *acmeStagingFlag,
 		ActiveThreads: func() []string {
-			nodes := meshRelay.ListNodes()
-			list := make([]string, len(nodes))
-			for i, n := range nodes {
-				list[i] = n.Hostname
+			threads := meshRelay.ListThreads()
+			list := make([]string, len(threads))
+			for i, t := range threads {
+				list[i] = t.Hostname
 			}
 			return list
 		},

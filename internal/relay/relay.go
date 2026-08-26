@@ -498,8 +498,8 @@ func (r *Relay) listNodesLocked() []protocol.NodeMetadata {
 	return list
 }
 
-// ListNodes returns metadata for all currently connected local and federated nodes.
-func (r *Relay) ListNodes() []protocol.NodeMetadata {
+// ListThreads returns metadata for all currently connected local and federated threads.
+func (r *Relay) ListThreads() []protocol.NodeMetadata {
 	r.mu.RLock()
 	list := r.listNodesLocked()
 	r.mu.RUnlock()
@@ -511,6 +511,13 @@ func (r *Relay) ListNodes() []protocol.NodeMetadata {
 	r.peerMu.RUnlock()
 
 	return list
+}
+
+// ListNodes is a backward-compatible alias for ListThreads.
+//
+// Deprecated: Use ListThreads instead.
+func (r *Relay) ListNodes() []protocol.NodeMetadata {
+	return r.ListThreads()
 }
 
 func (r *Relay) resolveTarget(targetHostname string) (isLocal bool, nodeSess *NodeSession, peerSess *GatewayPeerSession, cleanTarget string) {

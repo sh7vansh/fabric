@@ -100,6 +100,13 @@ func TestResolveCADir(t *testing.T) {
 	}
 	t.Setenv("FABRIC_CA_DIR", "")
 
+	// 2b. FABRIC_CA_CERT env directory
+	t.Setenv("FABRIC_CA_CERT", "/opt/fabric/certs/ca.crt")
+	if dir := pki.ResolveCADir(""); dir != "/opt/fabric/certs" {
+		t.Errorf("ResolveCADir(\"\") with FABRIC_CA_CERT = %q, expected %q", dir, "/opt/fabric/certs")
+	}
+	t.Setenv("FABRIC_CA_CERT", "")
+
 	// 3. User home precedence when CA files exist
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

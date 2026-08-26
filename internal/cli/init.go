@@ -217,7 +217,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if !initNonInteract {
 		trustChoice := prompt(reader, "Trust private Fabric Root CA in system trust store? (y/N)", "N")
 		if strings.ToLower(trustChoice) == "y" || strings.ToLower(trustChoice) == "yes" {
-			_ = installLocalCATrust()
+			if err := installLocalCATrust(); err != nil {
+				fmt.Printf("[!] Warning: %v\n", err)
+			}
 		}
 	}
 

@@ -3,8 +3,10 @@ package protocol_test
 import (
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -358,6 +360,79 @@ func TestStreamManager_NonHalfClose_CleanEOF_ImmediateTeardown(t *testing.T) {
 	}
 	if bridgeTelem.BytesFromAToB != int64(len(msg)) {
 		t.Errorf("expected %d bytes, got %d", len(msg), bridgeTelem.BytesFromAToB)
+	}
+}
+
+type errConnWithCloseWrite struct {
+	net.Conn
+	closeWriteCalled bool
+	closed           bool
+	mu               sync.Mutex
+}
+
+func (c *errConnWithCloseWrite) Write(b []byte) (n int, err error) {
+	return 0, errors.New("simulated fatal write error")
+}
+
+func (c *errConnWithCloseWrite) CloseWrite() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closeWriteCalled = true
+	return nil
+}
+
+func (c *errConnWithCloseWrite) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return c.Conn.Close()
+}
+
+func TestStreamManager_HardWriteError_ImmediateTeardownEvenWithCloseWrite(t *testing.T) {
+	sm := protocol.NewStreamManager(protocol.StreamManagerConfig{
+		BufferSize:   32 * 1024,
+		IdleDeadline: 10 * time.Second,
+	})
+
+	a1, a2 := net.Pipe()
+	b1, b2 := net.Pipe()
+	defer b2.Close()
+	errB1 := &errConnWithCloseWrite{Conn: b1}
+
+	done := make(chan struct{})
+	var bridgeTelem *protocol.StreamTelemetry
+	var bridgeErr error
+
+	go func() {
+		defer close(done)
+		bridgeTelem, bridgeErr = sm.Bridge(a2, errB1)
+	}()
+
+	// Write from a1 to trigger write on errB1 which fails with fatal write error
+	go func() {
+		_, _ = a1.Write([]byte("trigger write"))
+	}()
+
+	select {
+	case <-done:
+		// Bridge should immediately close both sides upon write error
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("bridge stalled and did not tear down both sides on fatal write error")
+	}
+
+	if bridgeErr != nil {
+		t.Fatalf("unexpected fatal bridge framework error: %v", bridgeErr)
+	}
+	if bridgeTelem == nil || bridgeTelem.ErrB == nil {
+		t.Fatalf("expected non-nil ErrB in telemetry on fatal write, got %v", bridgeTelem)
+	}
+
+	// Verify a2 is closed (writing or reading on a1 returns error)
+	buf := make([]byte, 10)
+	_ = a1.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	_, err := a1.Read(buf)
+	if err == nil {
+		t.Errorf("expected error reading from closed connection a1")
 	}
 }
 

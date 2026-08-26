@@ -188,8 +188,8 @@ func LoadOrInitCA(dir, domain string, opts ...Option) (*CA, error) {
 }
 
 // ResolveCADir resolves the target directory for CA operations based on custom path,
-// environment variables (FABRIC_CA_DIR), user home directory (~/.fabric/ca), system directory (/etc/fabric/ca),
-// or fallback directory (/tmp/fabric-ca).
+// environment variables (FABRIC_CA_DIR, FABRIC_CA_CERT), user home directory (~/.fabric/ca),
+// system directory (/etc/fabric/ca), or fallback directory (/tmp/fabric-ca).
 func ResolveCADir(customDir string) string {
 	if customDir != "" {
 		return customDir
@@ -197,20 +197,13 @@ func ResolveCADir(customDir string) string {
 	if envCADir := os.Getenv("FABRIC_CA_DIR"); envCADir != "" {
 		return envCADir
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		userCADir := filepath.Join(home, ".fabric", "ca")
-		if _, err := os.Stat(filepath.Join(userCADir, "ca.crt")); err == nil {
-			return userCADir
-		}
-		if _, err := os.Stat(filepath.Join(home, ".fabric", "ca.crt")); err == nil {
-			return filepath.Join(home, ".fabric")
-		}
+	if envCACert := os.Getenv("FABRIC_CA_CERT"); envCACert != "" {
+		return filepath.Dir(envCACert)
 	}
-	if _, err := os.Stat("/etc/fabric/ca/ca.crt"); err == nil {
-		return "/etc/fabric/ca"
-	}
-	if _, err := os.Stat("/etc/fabric/ca.crt"); err == nil {
-		return "/etc/fabric"
+	for _, p := range DefaultCACandidatePaths() {
+		if _, err := os.Stat(p); err == nil {
+			return filepath.Dir(p)
+		}
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".fabric", "ca")

@@ -220,15 +220,11 @@ func (d *NFTablesDriver) Open(runner CommandRunner, port int, proto, comment str
 		return &PermissionError{
 			Backend: BackendNFTables,
 			Command: "nft " + strings.Join(args, " "),
-			Output:  string(delOutOrOut(out)),
+			Output:  string(out),
 			Err:     err,
 		}
 	}
 	return nil
-}
-
-func delOutOrOut(out []byte) string {
-	return string(out)
 }
 
 var handleRegex = regexp.MustCompile(`handle\s+(\d+)`)

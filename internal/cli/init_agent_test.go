@@ -256,3 +256,24 @@ func TestInitServerCABootstrapSuccess(t *testing.T) {
 		t.Errorf("expected ca.crt to be created at %s, got err: %v", caCert, err)
 	}
 }
+
+func TestInitTrustCA_FailureWhenNoCAFound(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("FABRIC_CA_DIR", filepath.Join(tempHome, "nonexistent-ca"))
+	t.Setenv("FABRIC_CA_CERT", "")
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	rootCmd.SetOut(&stdoutBuf)
+	rootCmd.SetErr(&stderrBuf)
+	rootCmd.SetArgs([]string{"init", "--trust-ca"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected fabric init --trust-ca to fail when no CA is found")
+	}
+	if !strings.Contains(err.Error(), "could not find Root CA") {
+		t.Errorf("expected 'could not find Root CA' error, got: %v", err)
+	}
+}
