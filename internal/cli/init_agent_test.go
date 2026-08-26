@@ -164,8 +164,11 @@ func TestInitRoleEnvGeneration(t *testing.T) {
 		t.Errorf("expected server.env at %s, error: %v", serverEnv, err)
 	} else {
 		content := string(data)
-		if !strings.Contains(content, "FABRIC_TOKEN=both-secret") || !strings.Contains(content, "FABRIC_DOMAIN=fabric.mesh") {
-			t.Errorf("unexpected server.env content: %s", content)
+		if !strings.Contains(content, "FABRIC_TOKEN=both-secret") || !strings.Contains(content, "FABRIC_DOMAIN=fabric.mesh") || !strings.Contains(content, "FABRIC_PORT=8443") {
+			t.Errorf("unexpected server.env content (missing FABRIC_PORT=8443): %s", content)
+		}
+		if strings.Contains(content, "8080") {
+			t.Errorf("server.env should not contain legacy 8080: %s", content)
 		}
 	}
 

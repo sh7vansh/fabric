@@ -135,3 +135,75 @@ func TestServerGracefulShutdown(t *testing.T) {
 		t.Errorf("server did not stop in time on cancel")
 	}
 }
+
+func TestServerCanonicalVocabularyRoutes(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "fabric-server-vocab-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	caDir := filepath.Join(tmpDir, "ca")
+	srv, err := server.New(server.Config{
+		Domain:     "fabric.test",
+		Port:       8443,
+		CADir:      caDir,
+		Token:      "tok-123",
+		AdminToken: "admin-tok-456",
+		ServerID:   "srv-alpha",
+	})
+	if err != nil {
+		t.Fatalf("server.New failed: %v", err)
+	}
+	defer srv.Close()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		_ = srv.ServeTLS(ln)
+	}()
+
+	serverPort := ln.Addr().(*net.TCPAddr).Port
+	caCertPath := filepath.Join(caDir, "ca.crt")
+	tlsCfg, err := pki.BuildMTLSConfig(caCertPath)
+	if err != nil {
+		t.Fatalf("BuildMTLSConfig failed: %v", err)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsCfg,
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	// 1. Verify /version contains server_id
+	req, _ := http.NewRequest("GET", fmt.Sprintf("https://127.0.0.1:%d/version", serverPort), nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /version failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var verMap map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&verMap)
+	if verMap["server_id"] != "srv-alpha" {
+		t.Errorf("expected server_id 'srv-alpha', got %v", verMap["server_id"])
+	}
+
+	// 2. Verify /threads endpoint exists (requires auth)
+	reqAuth, _ := http.NewRequest("GET", fmt.Sprintf("https://127.0.0.1:%d/threads", serverPort), nil)
+	reqAuth.Header.Set("Authorization", "Bearer tok-123")
+	respThreads, err := client.Do(reqAuth)
+	if err != nil {
+		t.Fatalf("GET /threads failed: %v", err)
+	}
+	defer respThreads.Body.Close()
+	if respThreads.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK on /threads, got %d", respThreads.StatusCode)
+	}
+}
+

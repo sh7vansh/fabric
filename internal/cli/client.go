@@ -304,7 +304,7 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 	var socketErr error
 	var socketNode *protocol.NodeMetadata
 
-	socketHost := "localhost:8080"
+	socketHost := "localhost:8443"
 	socketDomain := "fabric.mesh"
 	if c.Config != nil && c.Config.Host != "" {
 		if u, parseErr := pki.NormalizeURL(c.Config.Host); parseErr == nil {
@@ -394,7 +394,7 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 	}
 
 	if socketNode == nil {
-		if c.Config != nil && c.Config.Host != "" && c.Config.Host != "wss://localhost:8443/ws" && c.Config.Host != "ws://localhost:8080/ws" && c.Config.Host != "localhost:8080" && c.Config.Host != "localhost:8443" {
+		if c.Config != nil && c.Config.Host != "" && c.Config.Host != "wss://localhost:8443/ws" && c.Config.Host != "localhost:8443" {
 			socketNode = &protocol.NodeMetadata{
 				ID:       "socket",
 				Hostname: "socket",

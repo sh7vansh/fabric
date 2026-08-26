@@ -112,3 +112,21 @@ func TestLiveWSSHandshake(t *testing.T) {
 		t.Errorf("unexpected message: %q", string(msg))
 	}
 }
+
+func TestFederationSecureDialer(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "fabric-fed-dialer-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	caCertPath := filepath.Join(tmpDir, "fed-ca.crt")
+	os.WriteFile(caCertPath, []byte("invalid-ca-data"), 0644)
+
+	// Should fail cleanly on invalid CA
+	_, err = pki.NewFederationSecureDialer(caCertPath, nil)
+	if err == nil {
+		t.Errorf("expected error building federation dialer with invalid CA, got nil")
+	}
+}
+

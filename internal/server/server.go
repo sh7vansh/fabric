@@ -25,11 +25,11 @@ type Config struct {
 	PublicDomain string
 	ACMEEmail    string
 	ACMEStaging  bool
-	TLSPort      int
 	HTTPPort     int
 	CADir        string
 	Token        string
 	AdminToken   string
+	ServerID     string
 	GatewayID    string
 	Region       string
 	FederationCA string
@@ -59,12 +59,18 @@ func New(cfg Config) (*Server, error) {
 		cfg.Port = 8443
 	}
 
+	serverID := cfg.ServerID
+	if serverID == "" {
+		serverID = cfg.GatewayID
+	}
+
 	meshRelay := relay.New(relay.Config{
 		Domain:       cfg.Domain,
 		Token:        cfg.Token,
 		AdminToken:   cfg.AdminToken,
 		PingFreq:     5 * time.Second,
-		GatewayID:    cfg.GatewayID,
+		ServerID:     serverID,
+		GatewayID:    serverID,
 		Region:       cfg.Region,
 		FederationCA: cfg.FederationCA,
 		Peers:        cfg.Peers,
@@ -172,8 +178,7 @@ func (s *Server) registerRoutes() {
 		}()
 	})
 
-	// Yamux inter-server federation peering endpoint
-	s.mux.HandleFunc("/gateway/v1/peer", func(w http.ResponseWriter, r *http.Request) {
+	peerHandler := func(w http.ResponseWriter, r *http.Request) {
 		if s.relay.FederationCA() != "" {
 			if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 				http.Error(w, "Unauthorized: mTLS Federation Certificate Required", http.StatusUnauthorized)
@@ -204,7 +209,11 @@ func (s *Server) registerRoutes() {
 				log.Printf("[Server/Peering] Peer session ended for %s: %v\n", r.RemoteAddr, err)
 			}
 		}()
-	})
+	}
+
+	// Canonical & legacy Yamux inter-server federation peering endpoints
+	s.mux.HandleFunc("/peer", peerHandler)
+	s.mux.HandleFunc("/gateway/v1/peer", peerHandler)
 
 	s.mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -223,27 +232,35 @@ func (s *Server) registerRoutes() {
 		})
 	})
 
-	s.mux.HandleFunc("/nodes", func(w http.ResponseWriter, r *http.Request) {
+	threadsListHandler := func(w http.ResponseWriter, r *http.Request) {
 		if !authenticate(w, r) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(s.relay.ListNodes())
-	})
+	}
 
-	s.mux.HandleFunc("/nodes/", func(w http.ResponseWriter, r *http.Request) {
-		if !authenticate(w, r) {
-			return
+	threadsGetHandler := func(prefix string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !authenticate(w, r) {
+				return
+			}
+			hostname := r.URL.Path[len(prefix):]
+			meta, ok := s.relay.GetNode(hostname)
+			if !ok {
+				http.Error(w, "Not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(meta)
 		}
-		hostname := r.URL.Path[len("/nodes/"):]
-		meta, ok := s.relay.GetNode(hostname)
-		if !ok {
-			http.Error(w, "Not found", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(meta)
-	})
+	}
+
+	// Canonical Thread endpoints & legacy node aliases
+	s.mux.HandleFunc("/threads", threadsListHandler)
+	s.mux.HandleFunc("/threads/", threadsGetHandler("/threads/"))
+	s.mux.HandleFunc("/nodes", threadsListHandler)
+	s.mux.HandleFunc("/nodes/", threadsGetHandler("/nodes/"))
 
 	s.mux.HandleFunc("/peers", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {

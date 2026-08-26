@@ -112,15 +112,11 @@ func BuildMTLSConfig(customCAPath string) (*tls.Config, error) {
 
 // NewWSSDialer constructs a websocket.Dialer configured with cluster root CAs and custom CA support.
 func NewWSSDialer(customCAPath string) (*websocket.Dialer, error) {
-	tlsCfg, err := BuildMTLSConfig(customCAPath)
+	sd, err := NewSecureDialer(customCAPath)
 	if err != nil {
 		return nil, err
 	}
-	return &websocket.Dialer{
-		Proxy:            http.ProxyFromEnvironment,
-		HandshakeTimeout: 15 * time.Second,
-		TLSClientConfig:  tlsCfg,
-	}, nil
+	return sd.dialer, nil
 }
 
 // SecureDialer provides a deep, unified interface for establishing encrypted WebSocket sessions
@@ -133,6 +129,22 @@ type SecureDialer struct {
 // NewSecureDialer constructs a SecureDialer configured with cluster root CAs and client certificates.
 func NewSecureDialer(customCAPath string) (*SecureDialer, error) {
 	tlsCfg, err := BuildMTLSConfig(customCAPath)
+	if err != nil {
+		return nil, err
+	}
+	return &SecureDialer{
+		dialer: &websocket.Dialer{
+			Proxy:            http.ProxyFromEnvironment,
+			HandshakeTimeout: 15 * time.Second,
+			TLSClientConfig:  tlsCfg,
+		},
+		tlsCfg: tlsCfg,
+	}, nil
+}
+
+// NewFederationSecureDialer constructs a SecureDialer configured with a Federation Root CA pool and optional client cert.
+func NewFederationSecureDialer(federationCAPath string, clientCert *tls.Certificate) (*SecureDialer, error) {
+	tlsCfg, err := BuildFederationClientTLSConfig(federationCAPath, clientCert)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +220,7 @@ func FormatTLSError(err error) error {
 	errStr := err.Error()
 	if strings.Contains(errStr, "certificate signed by unknown authority") ||
 		strings.Contains(errStr, "x509: certificate signed by unknown authority") {
-		return fmt.Errorf("%w\n  👉 Tip: The socket is using a private Root CA. Run 'fabric setup --trust-ca' or pass '--ca-cert /path/to/ca.crt'", err)
+		return fmt.Errorf("%w\n  👉 Tip: The server is using a private Root CA. Run 'fabric init --trust-ca' or pass '--ca-cert /path/to/ca.crt'", err)
 	}
 
 	if strings.Contains(errStr, "certificate is not valid for any names") ||

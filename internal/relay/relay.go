@@ -31,6 +31,7 @@ type Config struct {
 	Token        string
 	AdminToken   string
 	PingFreq     time.Duration
+	ServerID     string
 	GatewayID    string
 	Region       string
 	FederationCA string
@@ -66,10 +67,14 @@ func New(cfg Config) *Relay {
 		domain = "fabric.mesh"
 	}
 
-	gatewayID := cfg.GatewayID
-	if gatewayID == "" {
-		gatewayID = "gw-" + strings.ReplaceAll(domain, ".", "-")
+	serverID := cfg.ServerID
+	if serverID == "" {
+		serverID = cfg.GatewayID
 	}
+	if serverID == "" {
+		serverID = "gw-" + strings.ReplaceAll(domain, ".", "-")
+	}
+
 
 	region := cfg.Region
 	if region == "" {
@@ -84,7 +89,7 @@ func New(cfg Config) *Relay {
 		adminToken:   adminToken,
 		nodes:        make(map[string]*NodeSession),
 		closeCh:      make(chan struct{}),
-		gatewayID:    gatewayID,
+		gatewayID:    serverID,
 		region:       region,
 		federationCA: cfg.FederationCA,
 		peers:        make(map[string]*GatewayPeerSession),

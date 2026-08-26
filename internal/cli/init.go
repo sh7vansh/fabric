@@ -301,7 +301,7 @@ func writeRoleEnv(role, serverURL, token, domain, mode string) error {
 	if role == "server" {
 		sb.WriteString(fmt.Sprintf("FABRIC_TOKEN=%s\n", token))
 		sb.WriteString(fmt.Sprintf("FABRIC_DOMAIN=%s\n", domain))
-		sb.WriteString("FABRIC_HTTP_PORT=8080\n")
+		sb.WriteString("FABRIC_PORT=8443\n")
 	} else if role == "thread" || role == "agent" {
 		sb.WriteString(fmt.Sprintf("FABRIC_SERVER_URL=%s\n", serverURL))
 		if mode == "" {
