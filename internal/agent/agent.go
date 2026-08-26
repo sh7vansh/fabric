@@ -487,23 +487,21 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		return
 	}
 
+	var procMu sync.Mutex
+	var procPid int
+
 	var killOnce sync.Once
 	killCmd := func() {
 		killOnce.Do(func() {
-			if cmd.Process != nil {
-				killProcessGroup(cmd.Process.Pid)
+			procMu.Lock()
+			pid := procPid
+			procMu.Unlock()
+			if pid > 0 {
+				killProcessGroup(pid)
 			}
 		})
 	}
 	defer killCmd()
-
-	if req.TimeoutSeconds > 0 {
-		timeoutTimer := time.AfterFunc(time.Duration(req.TimeoutSeconds)*time.Second, func() {
-			protocol.WriteFrame(stream, protocol.StreamStderr, []byte(fmt.Sprintf("\n[!] Execution timed out after %d seconds\n", req.TimeoutSeconds)))
-			killCmd()
-		})
-		defer timeoutTimer.Stop()
-	}
 
 	if req.AllocatePTY {
 		ptmx, err := pty.Start(cmd)
@@ -511,6 +509,20 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 			protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
 			return
 		}
+		procMu.Lock()
+		if cmd.Process != nil {
+			procPid = cmd.Process.Pid
+		}
+		procMu.Unlock()
+
+		if req.TimeoutSeconds > 0 {
+			timeoutTimer := time.AfterFunc(time.Duration(req.TimeoutSeconds)*time.Second, func() {
+				protocol.WriteFrame(stream, protocol.StreamStderr, []byte(fmt.Sprintf("\n[!] Execution timed out after %d seconds\n", req.TimeoutSeconds)))
+				killCmd()
+			})
+			defer timeoutTimer.Stop()
+		}
+
 		defer func() {
 			_ = ptmx.Close()
 		}()
@@ -554,6 +566,19 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		if err := cmd.Start(); err != nil {
 			protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
 			return
+		}
+		procMu.Lock()
+		if cmd.Process != nil {
+			procPid = cmd.Process.Pid
+		}
+		procMu.Unlock()
+
+		if req.TimeoutSeconds > 0 {
+			timeoutTimer := time.AfterFunc(time.Duration(req.TimeoutSeconds)*time.Second, func() {
+				protocol.WriteFrame(stream, protocol.StreamStderr, []byte(fmt.Sprintf("\n[!] Execution timed out after %d seconds\n", req.TimeoutSeconds)))
+				killCmd()
+			})
+			defer timeoutTimer.Stop()
 		}
 
 		go func() {
