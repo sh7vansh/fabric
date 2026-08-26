@@ -137,8 +137,20 @@ fabric thread service uninstall    # Cleanly remove service and DNS entries
 
 ---
 
+## Dependencies
+
+Fabric relies on the following key open-source libraries:
+* [HashiCorp Yamux](https://github.com/hashicorp/yamux) — Stream multiplexing over WebSocket/TLS
+* [Gorilla WebSocket](https://github.com/gorilla/websocket) — WebSocket transport protocol
+* [miekg/dns](https://github.com/miekg/dns) — RFC 1035 DNS engine for Mesh DNS
+* [creack/pty](https://github.com/creack/pty) — Linux pseudo-terminal allocation for interactive sessions
+* [spf13/cobra](https://github.com/spf13/cobra) — Modern CLI command framework
+
+---
+
 ## License
 
 Fabric is open-source software released under the [MIT License](LICENSE).
+
 
 
