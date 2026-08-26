@@ -18,8 +18,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// GatewayPeerSession manages an active multiplexed peering session to another fabric-server gateway.
+// GatewayPeerSession manages an active multiplexed peering session to another fabric-server peer.
 type GatewayPeerSession struct {
+	ServerID     string
 	GatewayID    string
 	Domain       string
 	Region       string
@@ -36,9 +37,13 @@ type GatewayPeerSession struct {
 	mu      sync.Mutex
 }
 
-// RemoteNodeEntry maps a remote thread hostname to its hosting gateway.
+// ServerPeerSession is the canonical name for GatewayPeerSession.
+type ServerPeerSession = GatewayPeerSession
+
+// RemoteNodeEntry maps a remote thread hostname to its hosting server.
 type RemoteNodeEntry struct {
 	Node        protocol.NodeMetadata
+	ServerID    string
 	GatewayID   string
 	PeerSession *GatewayPeerSession
 }
@@ -52,7 +57,14 @@ func (p *prefixConn) Read(b []byte) (int, error) {
 	return p.r.Read(b)
 }
 
-// GatewayID returns the local server's unique federation GatewayID.
+// ServerID returns the local server's unique federation ServerID.
+func (r *Relay) ServerID() string {
+	r.peerMu.RLock()
+	defer r.peerMu.RUnlock()
+	return r.gatewayID
+}
+
+// GatewayID returns the local server's unique federation GatewayID (deprecated alias for ServerID).
 func (r *Relay) GatewayID() string {
 	r.peerMu.RLock()
 	defer r.peerMu.RUnlock()
@@ -73,13 +85,22 @@ func (r *Relay) FederationCA() string {
 	return r.federationCA
 }
 
-// RegisterPeer registers an active gateway peer session, handling deduplication.
+// RegisterPeer registers an active server peer session, handling deduplication.
 func (r *Relay) RegisterPeer(peer *GatewayPeerSession) error {
-	if peer == nil || peer.GatewayID == "" {
-		return fmt.Errorf("invalid peer session or empty gateway ID")
+	if peer == nil {
+		return fmt.Errorf("invalid peer session")
+	}
+	if peer.ServerID == "" && peer.GatewayID != "" {
+		peer.ServerID = peer.GatewayID
+	}
+	if peer.GatewayID == "" && peer.ServerID != "" {
+		peer.GatewayID = peer.ServerID
+	}
+	if peer.ServerID == "" {
+		return fmt.Errorf("invalid peer session or empty server ID")
 	}
 
-	if peer.GatewayID == r.gatewayID {
+	if peer.ServerID == r.gatewayID {
 		return fmt.Errorf("cannot peer with self (%s)", r.gatewayID)
 	}
 
@@ -95,7 +116,7 @@ func (r *Relay) RegisterPeer(peer *GatewayPeerSession) error {
 	if existing, exists := r.peers[peer.GatewayID]; exists {
 		// Tie-breaker: Lexicographical comparison in symmetric core peering
 		// When both servers dial each other simultaneously, keep the connection initiated
-		// by the gateway with the lexicographically smaller GatewayID.
+		// by the server with the lexicographically smaller ServerID.
 		if peer.Topology == "core" && existing.Topology == "core" && existing.IsOutbound != peer.IsOutbound {
 			preferOutbound := r.gatewayID < peer.GatewayID
 			if peer.IsOutbound != preferOutbound {
@@ -116,7 +137,7 @@ func (r *Relay) RegisterPeer(peer *GatewayPeerSession) error {
 	r.peers[peer.GatewayID] = peer
 	r.peerMu.Unlock()
 
-	log.Printf("[Relay/Peering] Peered successfully with gateway %q (region: %s, topology: %s)\n", peer.GatewayID, peer.Region, peer.Topology)
+	log.Printf("[Relay/Peering] Peered successfully with server %q (region: %s, topology: %s)\n", peer.GatewayID, peer.Region, peer.Topology)
 
 	// Send current local nodes to newly joined peer
 	go r.sendLocalThreadAdvertisementsToPeer(peer)
@@ -236,7 +257,8 @@ func (r *Relay) ListPeers() []protocol.GatewayPeerInfo {
 			rttStr = p.RTT.Round(time.Millisecond).String()
 		}
 
-		list = append(list, protocol.GatewayPeerInfo{
+		list = append(list, protocol.ServerPeerInfo{
+			ServerID:     p.GatewayID,
 			GatewayID:    p.GatewayID,
 			Domain:       p.Domain,
 			Region:       p.Region,
@@ -252,8 +274,8 @@ func (r *Relay) ListPeers() []protocol.GatewayPeerInfo {
 	return list
 }
 
-// GetPeer retrieves telemetry for a single peer gateway.
-func (r *Relay) GetPeer(gatewayID string) (*protocol.GatewayPeerInfo, bool) {
+// GetPeer retrieves telemetry for a single peer server.
+func (r *Relay) GetPeer(gatewayID string) (*protocol.ServerPeerInfo, bool) {
 	r.peerMu.RLock()
 	defer r.peerMu.RUnlock()
 
@@ -274,7 +296,8 @@ func (r *Relay) GetPeer(gatewayID string) (*protocol.GatewayPeerInfo, bool) {
 		rttStr = p.RTT.Round(time.Millisecond).String()
 	}
 
-	info := protocol.GatewayPeerInfo{
+	info := protocol.ServerPeerInfo{
+		ServerID:     p.GatewayID,
 		GatewayID:    p.GatewayID,
 		Domain:       p.Domain,
 		Region:       p.Region,
@@ -478,29 +501,30 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 		return currentPeer
 	}
 
-	// 1. Gateway Handshake
-	router.HandleFunc(string(protocol.TypeGatewayHello), func(stream net.Conn, env []byte) {
+	// 1. Server Handshake
+	handleHello := func(stream net.Conn, env []byte) {
 		defer stream.Close()
 
-		var hello protocol.GatewayHello
+		var hello protocol.ServerHello
 		if err := json.Unmarshal(env, &hello); err != nil {
 			return
 		}
 
 		if hello.Token != "" && !r.ValidateToken(hello.Token) {
-			log.Printf("[Relay/Peering] Unauthorized peer connection attempt from: %s\n", hello.GatewayID)
+			log.Printf("[Relay/Peering] Unauthorized peer connection attempt from: %s\n", hello.ServerID)
 			mux.Session.Close()
 			return
 		}
 
-		if hello.GatewayID == "" {
+		if hello.ServerID == "" {
 			mux.Session.Close()
 			return
 		}
 
-		// Reply with local GatewayHello
-		myHello := protocol.GatewayHello{
-			Type:         protocol.TypeGatewayHello,
+		// Reply with local ServerHello
+		myHello := protocol.ServerHello{
+			Type:         protocol.TypeServerHello,
+			ServerID:     r.gatewayID,
 			GatewayID:    r.gatewayID,
 			Domain:       r.domain,
 			Region:       r.region,
@@ -516,7 +540,8 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 		}
 
 		peerSession := &GatewayPeerSession{
-			GatewayID:    hello.GatewayID,
+			ServerID:     hello.ServerID,
+			GatewayID:    hello.ServerID,
 			Domain:       hello.Domain,
 			Region:       hello.Region,
 			Capabilities: hello.Capabilities,
@@ -528,11 +553,13 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 
 		setRegisteredPeer(peerSession)
 		if err := r.RegisterPeer(peerSession); err != nil {
-			log.Printf("[Relay/Peering] Failed to register peer %s: %v\n", hello.GatewayID, err)
+			log.Printf("[Relay/Peering] Failed to register peer %s: %v\n", hello.ServerID, err)
 			mux.Session.Close()
 			return
 		}
-	})
+	}
+	router.HandleFunc(string(protocol.TypeServerHello), handleHello)
+	router.HandleFunc(string(protocol.TypeGatewayHello), handleHello)
 
 	// 2. Thread Advertisement
 	router.HandleFunc(string(protocol.TypeThreadAdvertise), func(stream net.Conn, env []byte) {

@@ -55,7 +55,7 @@ func TestThreadLsMultiClusterAndPeerFiltering(t *testing.T) {
 		tokenFlag = ""
 	}()
 
-	// 1. Test listing all threads displays GATEWAY column
+	// 1. Test listing all threads displays SERVER column
 	var bufAll bytes.Buffer
 	threadLsCmd.SetOut(&bufAll)
 	defer threadLsCmd.SetOut(nil)
@@ -65,7 +65,7 @@ func TestThreadLsMultiClusterAndPeerFiltering(t *testing.T) {
 	}
 
 	outputAll := bufAll.String()
-	if !strings.Contains(outputAll, "GATEWAY") || !strings.Contains(outputAll, "gw-us-east") || !strings.Contains(outputAll, "gw-eu-west") {
+	if !strings.Contains(outputAll, "SERVER") || !strings.Contains(outputAll, "gw-us-east") || !strings.Contains(outputAll, "gw-eu-west") {
 		t.Errorf("unexpected thread ls table output:\n%s", outputAll)
 	}
 

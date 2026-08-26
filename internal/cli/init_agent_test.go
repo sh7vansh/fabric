@@ -77,30 +77,63 @@ func TestInitAndAgentCommands(t *testing.T) {
 
 		_ = rootCmd.Execute()
 
-		if !strings.Contains(stderrBuf.String(), "Warning: 'fabric service' is deprecated. Use 'fabric agent' instead.") {
+		if !strings.Contains(stderrBuf.String(), "Warning: 'fabric service' is deprecated. Use 'fabric thread service' instead.") {
 			t.Errorf("expected deprecation warning for service status, got: %s", stderrBuf.String())
+		}
+	}
+
+	// 4. Test `fabric agent status` legacy alias deprecation warning
+	{
+		stderrBuf.Reset()
+		var stdoutBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetErr(&stderrBuf)
+		rootCmd.SetArgs([]string{"agent", "status"})
+
+		_ = rootCmd.Execute()
+
+		if !strings.Contains(stderrBuf.String(), "Warning: 'fabric agent' is deprecated. Use 'fabric thread service' instead.") {
+			t.Errorf("expected deprecation warning for agent status, got: %s", stderrBuf.String())
+		}
+	}
+
+	// 5. Test `fabric thread service status`
+	{
+		stderrBuf.Reset()
+		var stdoutBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetErr(&stderrBuf)
+		rootCmd.SetArgs([]string{"thread", "service", "status"})
+
+		_ = rootCmd.Execute()
+		// Should not produce deprecation warning
+		if strings.Contains(stderrBuf.String(), "deprecated") {
+			t.Errorf("unexpected deprecation warning for thread service: %s", stderrBuf.String())
 		}
 	}
 }
 
 func TestParseRoleChoice(t *testing.T) {
+	var stderrBuf bytes.Buffer
+	SetDeprecationWriter(&stderrBuf)
+	defer SetDeprecationWriter(nil)
+
 	tests := []struct {
 		input    string
 		expected string
 	}{
-		{"1", "cli"},
-		{"cli", "cli"},
-		{"CLI", "cli"},
-		{"client", "cli"},
-		{"CLIENT", "cli"},
+		{"1", "thread"},
+		{"thread", "thread"},
+		{"THREAD", "thread"},
 		{"2", "server"},
 		{"server", "server"},
-		{"3", "agent"},
-		{"agent", "agent"},
-		{"4", "both"},
+		{"3", "both"},
 		{"both", "both"},
-		{"", "cli"},
-		{"invalid", "cli"},
+		{"agent", "thread"},
+		{"cli", "cli"},
+		{"client", "cli"},
+		{"", "thread"},
+		{"invalid", "thread"},
 	}
 
 	for _, tt := range tests {
@@ -116,10 +149,10 @@ func TestInitRoleEnvGeneration(t *testing.T) {
 	os.Setenv("HOME", tempHome)
 	defer os.Unsetenv("HOME")
 
-	// Test init with --role=both non-interactively
+	// Test init with --role=both and --mode=remote non-interactively
 	var stdoutBuf bytes.Buffer
 	rootCmd.SetOut(&stdoutBuf)
-	rootCmd.SetArgs([]string{"init", "-y", "--role", "both", "--server", "ws://localhost:8080/ws", "--token", "both-secret", "--domain", "fabric.mesh"})
+	rootCmd.SetArgs([]string{"init", "-y", "--role", "both", "--mode", "remote", "--server", "ws://localhost:8080/ws", "--token", "both-secret", "--domain", "fabric.mesh"})
 
 	err := rootCmd.Execute()
 	if err != nil {
@@ -136,13 +169,45 @@ func TestInitRoleEnvGeneration(t *testing.T) {
 		}
 	}
 
-	agentEnv := filepath.Join(tempHome, ".fabric", "agent.env")
-	if data, err := os.ReadFile(agentEnv); err != nil {
-		t.Errorf("expected agent.env at %s, error: %v", agentEnv, err)
+	threadEnv := filepath.Join(tempHome, ".fabric", "thread.env")
+	if data, err := os.ReadFile(threadEnv); err != nil {
+		t.Errorf("expected thread.env at %s, error: %v", threadEnv, err)
 	} else {
 		content := string(data)
-		if !strings.Contains(content, "FABRIC_SERVER_URL=ws://localhost:8080/ws") || !strings.Contains(content, "FABRIC_TOKEN=both-secret") {
-			t.Errorf("unexpected agent.env content: %s", content)
+		if !strings.Contains(content, "FABRIC_SERVER_URL=ws://localhost:8080/ws") ||
+			!strings.Contains(content, "FABRIC_MODE=remote") ||
+			!strings.Contains(content, "FABRIC_LISTEN=:8443") ||
+			!strings.Contains(content, "FABRIC_TOKEN=both-secret") {
+			t.Errorf("unexpected thread.env content: %s", content)
 		}
+	}
+}
+
+func TestInitRoleAgentDeprecation(t *testing.T) {
+	tempHome := t.TempDir()
+	os.Setenv("HOME", tempHome)
+	defer os.Unsetenv("HOME")
+
+	var stderrBuf bytes.Buffer
+	SetDeprecationWriter(&stderrBuf)
+	defer SetDeprecationWriter(nil)
+
+	var stdoutBuf bytes.Buffer
+	rootCmd.SetOut(&stdoutBuf)
+	rootCmd.SetErr(&stderrBuf)
+	rootCmd.SetArgs([]string{"init", "-y", "--role", "agent", "--server", "ws://localhost:8080/ws", "--token", "agent-secret"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("fabric init with --role agent failed: %v", err)
+	}
+
+	if !strings.Contains(stderrBuf.String(), "Warning: '--role=agent' is deprecated. Use '--role=thread' instead.") {
+		t.Errorf("expected deprecation warning for --role=agent, got: %s", stderrBuf.String())
+	}
+
+	threadEnv := filepath.Join(tempHome, ".fabric", "thread.env")
+	if _, err := os.Stat(threadEnv); err != nil {
+		t.Errorf("expected thread.env at %s, error: %v", threadEnv, err)
 	}
 }

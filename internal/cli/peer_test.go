@@ -118,7 +118,20 @@ func TestPeerCLICommands(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "GATEWAY") || !strings.Contains(output, "gw-eu-west") || !strings.Contains(output, "LEAF") {
+	if !strings.Contains(output, "SERVER ID") || !strings.Contains(output, "gw-eu-west") || !strings.Contains(output, "LEAF") {
 		t.Errorf("unexpected peer ls table output:\n%s", output)
+	}
+
+	// 3. Test fabric peer ls -q (quiet) output
+	peerQuietFlag = true
+	var bufQuiet bytes.Buffer
+	peerLsCmd.SetOut(&bufQuiet)
+	err = runPeerLs(peerLsCmd, []string{})
+	if err != nil {
+		t.Fatalf("runPeerLs -q failed: %v", err)
+	}
+	outputQuiet := bufQuiet.String()
+	if !strings.Contains(outputQuiet, "gw-eu-west") || !strings.Contains(outputQuiet, "gw-onprem") || strings.Contains(outputQuiet, "SERVER ID") {
+		t.Errorf("unexpected peer ls -q output:\n%s", outputQuiet)
 	}
 }

@@ -54,6 +54,7 @@ func TestResolveStitchMode(t *testing.T) {
 		modeFlag string
 		remote   bool
 		inverted bool
+		direct   bool
 		expected string
 		wantErr  bool
 	}{
@@ -63,29 +64,35 @@ func TestResolveStitchMode(t *testing.T) {
 		{modeFlag: "inverted", expected: "inverted"},
 		{remote: true, expected: "inverted"},
 		{inverted: true, expected: "inverted"},
+		{direct: true, expected: "inverted"},
 		{modeFlag: "unknown", wantErr: true},
 	}
 
 	for _, tt := range tests {
 		stderrBuf.Reset()
-		mode, err := resolveStitchMode(tt.modeFlag, tt.remote, tt.inverted)
+		mode, err := resolveStitchMode(tt.modeFlag, tt.remote, tt.inverted, tt.direct)
 		if tt.wantErr {
 			if err == nil {
-				t.Errorf("resolveStitchMode(%q, %v, %v) expected error, got nil", tt.modeFlag, tt.remote, tt.inverted)
+				t.Errorf("resolveStitchMode(%q, %v, %v, %v) expected error, got nil", tt.modeFlag, tt.remote, tt.inverted, tt.direct)
 			} else if !strings.Contains(err.Error(), "must be 'local' or 'remote'") {
 				t.Errorf("resolveStitchMode error message %q should contain 'must be \\'local\\' or \\'remote\\''", err.Error())
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("resolveStitchMode(%q, %v, %v) unexpected error: %v", tt.modeFlag, tt.remote, tt.inverted, err)
+			t.Errorf("resolveStitchMode(%q, %v, %v, %v) unexpected error: %v", tt.modeFlag, tt.remote, tt.inverted, tt.direct, err)
 		}
 		if mode != tt.expected {
-			t.Errorf("resolveStitchMode(%q, %v, %v) = %q, want %q", tt.modeFlag, tt.remote, tt.inverted, mode, tt.expected)
+			t.Errorf("resolveStitchMode(%q, %v, %v, %v) = %q, want %q", tt.modeFlag, tt.remote, tt.inverted, tt.direct, mode, tt.expected)
 		}
 		if tt.inverted {
-			if !strings.Contains(stderrBuf.String(), "Warning: '--inverted' is deprecated. Use '--remote' instead.") {
+			if !strings.Contains(stderrBuf.String(), "Warning: '--inverted' is deprecated. Use '--mode=remote' or '--remote' instead.") {
 				t.Errorf("expected '--inverted' deprecation warning, got %q", stderrBuf.String())
+			}
+		}
+		if tt.direct {
+			if !strings.Contains(stderrBuf.String(), "Warning: '--direct' is deprecated. Use '--mode=remote' or '--remote' instead.") {
+				t.Errorf("expected '--direct' deprecation warning, got %q", stderrBuf.String())
 			}
 		}
 	}

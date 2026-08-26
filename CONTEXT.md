@@ -4,58 +4,80 @@ Fabric is a lightweight remote execution, service discovery, and networking plat
 
 ---
 
-## Governing Design Principle
+## Governing Design Principles
 
-> **Fabric's nouns have personality (`thread`, `Fabric`). Its actions stay obvious (`ps`, `exec`, `cp`, `port`, `stitch`).**
+1. **One-Concept / One-Name Rule**: Every core concept has exactly one canonical public name.
+2. **Nouns with Personality, Obvious Actions**: Fabric's nouns have personality (`thread`, `Fabric`, `peer`), and its actions stay obvious (`ps`, `exec`, `cp`, `port`, `stitch`, `init`).
+3. **Mode Rule**: `local` and `remote` describe *how* a Thread operation is performed, not *what* a Thread is (`mode` != Thread type, `mode` != tag).
 
 ---
 
-## Domain Vocabulary
+## Canonical Domain Vocabulary
 
-- **Fabric**: The interconnected network and execution plane connecting distributed machines.
-- **Thread**: A managed machine or remote execution target stitched into the Fabric (identified by a unique thread name/ID).
-- **Fabric Server (`fabric-server`)**: The central control-plane gateway and relay server. Coordinates WebSocket tunnels, TCP proxying, and Fabric DNS.
-- **Fabric Agent (`fabric-agent`)**: The managed agent daemon running on host machines, maintaining persistent outbound WebSocket connections to the Fabric Server.
-- **Fabric CLI (`fabric`)**: The operator tool used to execute commands, transfer files, inspect threads, and bridge networks.
-- **Fabric DNS**: RFC 1035-compliant DNS server embedded in `fabric-server` (defaulting to the `.mesh` / `.fabric` TLD) allowing inter-thread name resolution.
+- **Fabric**: The overall system and execution plane consisting of Servers and Threads connected directly or via Federation.
+- **fabric**: The operator CLI binary executable.
+- **Server (`fabric-server`)**: The central Fabric service that manages Threads and participates in federation (canonical: Server; Hub and Relay are deprecated).
+- **Thread**: The single program/entity representing a participating machine in the Fabric (canonical: Thread; Node, Agent, Worker, and Endpoint are deprecated).
+- **Operating Modes (`local` vs `remote`)**:
+  - **`local` (default)**: Used when a Thread operation is performed normally against the local environment.
+  - **`remote`**: Changes how the Thread operation is executed, particularly for remote/batched workflows.
+  - *Invariant*: Threads do not have separate "local Thread" and "remote Thread" types. Mode describes operation execution, not machine classification.
+- **Peer**: A Server-level relationship (`fabric peer ...`). A Server peers with another Server. A Peer is not a Thread.
+- **Federation**: The capability/architecture that enables Servers to peer across networks and clouds.
+- **Stitch**: The operation that connects/bootstraps a machine into Fabric as a Thread.
+- **Init**: The operation that initializes Fabric functionality (`fabric init`).
+- **Both**: Composition of Server + Thread on the same host, not a separate entity.
+- **Fabric DNS**: RFC 1035-compliant DNS server embedded in `fabric-server` allowing inter-thread name resolution.
 - **PTY Session**: A pseudo-terminal allocation streamed over WebSocket allowing full interactive shell access.
-- **Stitch / Discover**: Automated subnet scanner and SSH provisioning mechanism to bootstrap remote targets into the Fabric as threads.
-- **StreamMultiplexer**: A deep module wrapping the raw WebSocket to natively multiplex `io.Reader/Writer` streams using a binary protocol, replacing manual JSON stream chunking.
+- **StreamMultiplexer**: A deep module wrapping the raw WebSocket to natively multiplex `io.Reader/Writer` streams using a binary protocol.
 - **SystemDNSManager**: A deep module encapsulating local UDP DNS stub resolution, systemd-resolved split-DNS configuration, and `/etc/hosts` fallback mutation with deterministic teardown.
-- **MeshRelay**: The central control-plane domain module in `internal/relay` encapsulating thread registration, session displacement, multiplexed stream routing (exec, copy, proxy), DNS wire resolution, and cluster-wide sync broadcasts.
-- **NodeAgent / ThreadAgent**: The autonomous daemon module in `internal/agent` encapsulating persistent outbound connection resilience, TLS negotiation, PTY/process execution streaming, tar chunking, and deterministic teardown.
+- **MeshRelay**: The central control-plane domain module in `internal/relay` encapsulating thread registration, session displacement, multiplexed stream routing, DNS wire resolution, and cluster-wide sync broadcasts.
+- **ThreadDaemon (`fabric-thread`)**: The autonomous daemon module encapsulating persistent outbound connection resilience, TLS negotiation, PTY/process execution streaming, tar chunking, and deterministic teardown.
 - **MeshClient**: A deep client module that encapsulates WebSocket session multiplexing, binary framing, terminal PTY state management, and RPC streaming for CLI operations (`Execute`, `Copy`, `ForwardPort`).
 - **Provisioner**: An autonomous domain module in `internal/provision` for subnet discovery probing, SSH script generation, and remote host bootstrapping into the Fabric.
 - **RemoteExecutor**: An adapter abstracting the SSH transport for provisioning, allowing pure testing of script generation and host bootstrapping.
-- **InitManager**: A deep module in `internal/service` encapsulating multi-tier init rules (system systemd, user systemd, standalone supervisor), canonical unit/supervisor script definitions, and local lifecycle management or remote script rendering.
-- **Local vs Remote**: User-centric connection topologies. In standard operation, agents initiate outbound connections to the server; in direct remote mode, an agent listens directly with mTLS.
-- **Federation / Peering**: Inter-server mesh connecting multiple `fabric-server` gateways across regions, clouds, and on-premise networks.
-- **Core Gateway vs Leaf Relay**: Core gateways peer symmetrically with public/VPC IPs; Leaf relays run behind NAT/firewalls and maintain persistent outbound reverse-tunnels to Core gateways.
+- **InitManager**: A deep module in `internal/service` encapsulating multi-tier init rules (system systemd, user systemd, standalone supervisor), canonical unit/supervisor script definitions, and local lifecycle management.
+
+---
+
+## Deprecated & Non-Canonical Synonyms
+
+| Deprecated / Legacy Term | Canonical Term | Note |
+|---|---|---|
+| `Node` | `Thread` | Unified machine entity |
+| `Agent` | `Thread` | Unified machine entity; daemon is `fabric-thread` |
+| `Worker` / `Endpoint` | `Thread` | Unified machine entity |
+| `Relay` / `Hub` | `Server` | Unified central control-plane service |
+| `Gateway` / `GatewayID` | `Server` / `ServerID` | Unified server identity and peer relationship |
+| `Local Thread` | `Thread` + `local` mode | Operational modifier, not a thread type |
+| `Remote Thread` | `Thread` + `remote` mode | Operational modifier, not a thread type |
 
 ---
 
 ## System Architecture
 
 ```text
-[ fabric CLI ] ----WebSocket----> [ fabric-server Gateway ] <----WebSocket---- [ fabric-agent Daemon ]
-(Exec/CP/Port)                           (Relay & DNS)                             (Thread / Host Control)
-                                               ▲
-                                               │ Yamux Peering
-                                               ▼
-                                  [ fabric-server Peer/Leaf ]
+[ fabric CLI ] ----WebSocket----> [ fabric-server ] <----WebSocket---- [ fabric-thread Daemon ]
+(Exec/CP/Port)                   (Relay & DNS)                             (Thread Host Control)
+                                        ▲
+                                        │ Yamux Peering (Federation)
+                                        ▼
+                                 [ fabric-server Peer ]
 ```
 
-- **Protocol**: Bidirectional JSON envelopes over WebSocket (`TypeHandshake`, `TypeExecRequest`, `TypeExecStream`, `TypeCopyRequest`, `TypeDNSQuery`, `TypeNodeSync`, `TypeGatewayHello`, `TypeThreadAdvertise`).
+- **Protocol**: Bidirectional JSON envelopes over WebSocket (`TypeHandshake`, `TypeExecRequest`, `TypeExecStream`, `TypeCopyRequest`, `TypeDNSQuery`, `TypeNodeSync`, `TypeServerHello`, `TypeThreadAdvertise`).
 - **Binary Data**: Tar archives, raw TTY I/O, and DNS query payloads are Base64 encoded inside stream envelopes.
 
 ---
 
 ## Invariants & Design Rules
 
-1. **Outbound Only**: Threads generally never require inbound firewall holes; communication originates outbound from agents to the Fabric Server, and from Leaf gateways to Core gateways.
-2. **Deterministic Teardown**: DNS hooks (`/etc/hosts` modifications) and PTY processes must be cleanly cleaned up on agent shutdown or disconnect.
-3. **Streaming Transfers**: File copies (`cp`) and execution streams must operate incrementally over chunked tar/stream envelopes without holding unbounded memory buffers.
-4. **Obvious Verbs & Personality Nouns**: Keep standard system commands obvious (`ps`, `exec`, `cp`, `port`, `stitch`, `peer`) and conceptual nouns focused (`thread`, `Fabric`).
+1. **One Concept, One Name**: Eliminate synonyms and ambiguous terms across CLI, docs, logs, and APIs.
+2. **Mode Governs Execution, Not Identity**: `local` and `remote` modify how an operation executes; they do not define distinct thread types and are not inferred from metadata tags.
+3. **Outbound Only**: Threads generally never require inbound firewall holes; communication originates outbound from threads to the Fabric Server, and from Leaf servers to Core servers.
+4. **Deterministic Teardown**: DNS hooks (`/etc/hosts` modifications) and PTY processes must be cleanly cleaned up on daemon shutdown or disconnect.
+5. **Streaming Transfers**: File copies (`cp`) and execution streams must operate incrementally over chunked tar/stream envelopes without holding unbounded memory buffers.
+6. **Obvious Verbs & Personality Nouns**: Keep standard system commands obvious (`ps`, `exec`, `cp`, `port`, `stitch`, `peer`, `init`) and conceptual nouns focused (`thread`, `Fabric`, `Server`).
 
 ---
 
@@ -69,21 +91,22 @@ fabric
 ├── port <thread> [local:remote]            # Forward/proxy TCP ports across the Fabric
 ├── peer <action>                           # Manage server-to-server federation peers
 │   ├── ls                                  # List connected server peers and regions
-│   ├── add <endpoint>                      # Connect to a remote gateway peer
-│   ├── rm <gateway-id>                     # Disconnect a gateway peer
-│   └── inspect <gateway-id>                # Telemetry & routing table for peer
+│   ├── add <endpoint>                      # Connect to a remote server peer
+│   ├── rm <server-id>                      # Disconnect a server peer
+│   └── inspect <server-id>                 # Telemetry & routing table for peer
 ├── thread                                  # Manage Fabric threads
 │   ├── ls [flags]                          # List all connected online threads
-│   └── inspect <thread...>                 # Show detailed metadata and telemetry for threads
-├── stitch [flags] [TARGET | CIDR]          # Bootstrap host over SSH or scan subnet into Fabric
-├── init [flags]                            # Interactive CLI and configuration onboarding wizard
-├── agent <action>                          # Manage background fabric-agent systemd service
-│   ├── install                             # Install fabric-agent as a systemd service
-│   ├── start                               # Start the agent service
-│   ├── stop                                # Stop the agent service
-│   ├── restart                             # Restart the agent service
-│   ├── status                              # Inspect agent service status
-│   └── uninstall                           # Remove the agent systemd service
+│   ├── inspect <thread...>                 # Show detailed metadata and telemetry for threads
+│   └── service <action>                    # Manage local fabric-thread daemon service unit
+│       ├── install                         # Install fabric-thread as a systemd service
+│       ├── start                           # Start the thread daemon service
+│       ├── stop                            # Stop the thread daemon service
+│       ├── restart                         # Restart the thread daemon service
+│       ├── status                          # Inspect thread daemon service status
+│       └── uninstall                       # Remove the thread daemon service
+├── stitch [flags] [TARGET | CIDR]          # Bootstrap host over SSH or scan subnet into Fabric (--mode=local|remote)
+├── init [flags]                            # Initialize Fabric functionality (--role=server|thread|both --mode=local|remote)
+├── agent <action>                          # [Deprecated] Alias for 'fabric thread service'
 ├── version                                 # Print version, build commit, and date
 ├── update                                  # Self-update Fabric binaries to latest release
 ├── uninstall                               # Completely remove Fabric, its services, and config
@@ -98,12 +121,13 @@ fabric
 | `fabric exec <thread> [cmd]` | Run commands or attach an interactive PTY session |
 | `fabric cp <src> <dst>` | Stream Tar-chunked files/directories (`thread:/path`) |
 | `fabric port <thread> [local:remote]` | TCP port forwarding across the Fabric |
+| `fabric peer <ls\|add\|rm\|inspect>` | Server-to-Server federation peer management |
 | `fabric thread ls` | List connected threads with uptime, tags, and OS |
 | `fabric thread inspect <thread>` | Detailed thread inspect output (JSON/table) |
-| `fabric stitch <host>` | SSH provision and join a remote host as a thread |
-| `fabric stitch [CIDR]` | Subnet scan and batch SSH provisioning |
-| `fabric init` | Interactive setup helper for local operator config/keys |
-| `fabric agent <action>` | Manage local `fabric-agent` systemd service unit |
+| `fabric thread service <action>` | Manage local `fabric-thread` systemd service unit |
+| `fabric stitch <host\|CIDR>` | SSH provision and join machine as a thread (`--mode=local\|remote`) |
+| `fabric init` | Initialize Fabric functionality (`--role=server\|thread\|both`) |
+| `fabric agent <action>` | Deprecated alias for `fabric thread service` |
 | `fabric version` | Display version info |
 | `fabric update` | Self-update Fabric CLI binary |
 | `fabric uninstall` | Completely remove Fabric, its services, and configuration |

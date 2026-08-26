@@ -22,18 +22,20 @@ Components:
      - Embeds an RFC 1035 Fabric DNS server responding to queries for the mesh domain.
      - Routes TCP proxy traffic and synchronizes cluster thread state.
 
-  2. fabric-agent (Host Agent Daemon)
-     - Runs as a persistent agent on managed machines (threads).
-     - Initiates OUTBOUND-ONLY WebSocket connections to fabric-server.
+  2. fabric-thread (Host Thread Daemon)
+     - Runs as a persistent daemon on managed machines (threads).
+     - Operating Modes:
+       * local mode: Initiates outbound-only WebSocket connections to fabric-server.
+       * remote mode: Listens with mutual TLS (mTLS) for direct peer/CLI access.
      - Spawns PTY sessions, streams tar archives for file copies, and manages local OS DNS.
 
   3. fabric (Operator CLI)
-     - Connects to fabric-server over WebSocket to interact with any registered thread.
+     - Connects to fabric-server or direct remote threads to interact with any registered thread.
      - Executes commands (exec), transfers files (cp), inspects threads (thread/ps), forwards ports (port),
        and discovers/provisions new machines (stitch).
 
 Communication Flow:
-  [ fabric CLI ] ----WebSocket----> [ fabric-server ] <----WebSocket---- [ fabric-agent ]
+  [ fabric CLI ] ----WebSocket----> [ fabric-server ] <----WebSocket---- [ fabric-thread ]
    (Operator)                         (Server & DNS)                       (Managed Thread)
 `,
 		Run: func(cmd *cobra.Command, args []string) {
@@ -47,19 +49,22 @@ Communication Flow:
 		GroupID: "topics",
 		Long: `Fabric Networking & Fabric DNS:
 
-1. Outbound-Only WebSockets:
+1. Outbound-Only WebSockets (Local Mode):
    Threads connect outbound to the central Fabric server. Firewalls on target hosts
    do not require inbound open ports or port-forwarding rules.
 
-2. Fabric DNS (.mesh):
+2. Direct Mutual TLS (Remote Mode):
+   Threads listen on a dedicated mTLS port for direct connection verification and control.
+
+3. Fabric DNS (.mesh):
    - fabric-server embeds a DNS server handling queries for the mesh domain
      (default: fabric.mesh or *.fabric.mesh).
-   - Agent daemons configure local system routing (via systemd-resolved or /etc/hosts)
+   - Thread daemons configure local system routing (via systemd-resolved or /etc/hosts)
      so applications on any thread can resolve fellow threads by hostname:
        curl http://api-server.fabric.mesh/
-   - DNS state is deterministically cleaned up on agent shutdown or disconnect.
+   - DNS state is deterministically cleaned up on thread shutdown or disconnect.
 
-3. TCP Port Forwarding:
+4. TCP Port Forwarding:
    - Use 'fabric port <thread> <local_port:remote_port>' to bridge local TCP ports
      directly to services running on remote threads through the multiplexed WebSocket stream.
 `,
@@ -75,13 +80,13 @@ Communication Flow:
 		Long: `Fabric Security & Operational Invariants:
 
 1. Zero Inbound Exposure:
-   Threads maintain persistent outbound tunnels. Attack surface on target machines
+   Local mode threads maintain persistent outbound tunnels. Attack surface on target machines
    is minimized since no listening public ports are opened for thread control.
 
-2. Pre-Shared Token Authentication:
-   - All connections (both threads and CLIs) authenticate with FABRIC_TOKEN during
-     the WebSocket handshake.
-   - Unauthorized handshakes are rejected immediately before relay registration.
+2. Pre-Shared Token & Mutual TLS Authentication:
+   - All connections authenticate with FABRIC_TOKEN during the WebSocket handshake
+     or mutual TLS certificate verification in remote mode.
+   - Unauthorized handshakes are rejected immediately before registration.
 
 3. Safe Streaming & Process Teardown:
    - Command streams and file transfers operate over chunked Base64 buffers.
@@ -142,7 +147,7 @@ Communication Flow:
 		GroupID: "topics",
 		Long: `Fabric Thread Management:
 
-A Thread is any managed host or compute environment running the 'fabric-agent'
+A Thread is any managed host or compute environment running the 'fabric-thread'
 daemon connected to the central Fabric server.
 
 1. Listing Active Threads:
@@ -173,7 +178,7 @@ daemon connected to the central Fabric server.
 
 1. Polymorphic Target Resolution:
    - Single Host: 'fabric stitch user@192.168.1.50'
-     Connects over SSH, installs fabric-agent, and brings the machine online as a thread.
+     Connects over SSH, installs fabric-thread, and brings the machine online as a thread.
    - CIDR Subnet: 'fabric stitch 192.168.1.0/24'
      Scans the entire subnet for open SSH ports and prompts for interactive or batch onboarding.
    - Default Local Subnet: 'fabric stitch'
@@ -182,7 +187,7 @@ daemon connected to the central Fabric server.
 2. Batch Mode:
    $ fabric stitch --batch --user ubuntu 10.0.0.0/24
 
-3. Remote / Direct mTLS Mode:
+3. Remote Mode:
    $ fabric stitch --remote --listen-port 8443 ubuntu@10.0.0.12
 `,
 		Run: func(cmd *cobra.Command, args []string) {

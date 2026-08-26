@@ -93,8 +93,8 @@ func TestGenerateStitchScript_ZeroInternetAndTags(t *testing.T) {
 	envStr := extractDecodedEnv(script)
 
 	// Verify environment variables and tags
-	if !strings.Contains(envStr, "FABRIC_SOCKET_URL=ws://192.168.1.1:8080/ws") {
-		t.Errorf("Script missing socket URL: %s", envStr)
+	if !strings.Contains(envStr, "FABRIC_SERVER_URL=ws://192.168.1.1:8080/ws") {
+		t.Errorf("Script missing server URL: %s", envStr)
 	}
 	if !strings.Contains(envStr, "FABRIC_TOKEN=test-secret-token") {
 		t.Errorf("Script missing token: %s", envStr)
@@ -107,7 +107,7 @@ func TestGenerateStitchScript_ZeroInternetAndTags(t *testing.T) {
 	}
 
 	// Verify payload embedding and extraction
-	if !strings.Contains(script, "Unpacking injected fabric-node binary") {
+	if !strings.Contains(script, "Unpacking injected fabric-thread binary") {
 		t.Errorf("Script missing payload unpacking logic: %s", script)
 	}
 	if !strings.Contains(script, "Validated binary integrity") {
@@ -127,12 +127,12 @@ func TestGenerateStitchScript_MultiTierInit(t *testing.T) {
 	script := GenerateStitchScript(opts, "ws://10.0.0.1:8080/ws")
 
 	// Tier 1: Root / system systemd
-	if !strings.Contains(script, "/etc/systemd/system/fabric-node.service") {
+	if !strings.Contains(script, "/etc/systemd/system/fabric-thread.service") {
 		t.Errorf("Script missing Tier 1 systemd unit path")
 	}
 
 	// Tier 2: Non-root user systemd
-	if !strings.Contains(script, ".config/systemd/user/fabric-node.service") {
+	if !strings.Contains(script, ".config/systemd/user/fabric-thread.service") {
 		t.Errorf("Script missing Tier 2 user unit path")
 	}
 	if !strings.Contains(script, "loginctl enable-linger") {
@@ -143,10 +143,10 @@ func TestGenerateStitchScript_MultiTierInit(t *testing.T) {
 	}
 
 	// Tier 3: Standalone supervisor daemon & PID locking
-	if !strings.Contains(script, "fabric-node-supervisor.sh") {
+	if !strings.Contains(script, "fabric-thread-supervisor.sh") {
 		t.Errorf("Script missing Tier 3 standalone supervisor script")
 	}
-	if !strings.Contains(script, "fabric-node.pid") {
+	if !strings.Contains(script, "fabric-thread.pid") {
 		t.Errorf("Script missing PID file management")
 	}
 }
@@ -180,7 +180,7 @@ func TestExecuteStitchHostWithMock(t *testing.T) {
 		t.Errorf("Expected tag ingress, got: %v", node.Tags)
 	}
 	mockEnv := extractDecodedEnv(mockExec.LastScript())
-	if !strings.Contains(mockEnv, "FABRIC_SOCKET_URL=ws://10.0.0.1:8080/ws") {
+	if !strings.Contains(mockEnv, "FABRIC_SERVER_URL=ws://10.0.0.1:8080/ws") {
 		t.Errorf("Script was not passed correctly to mock executor: %s", mockEnv)
 	}
 	if !strings.Contains(mockEnv, "FABRIC_TAGS=ingress") {
@@ -242,10 +242,10 @@ func TestGenerateStitchScript_MTLSPayloads(t *testing.T) {
 	if !strings.Contains(script, "Unpacking Root CA certificate") {
 		t.Errorf("missing CA unpacking in script: %s", script)
 	}
-	if !strings.Contains(script, "Unpacking node leaf certificate") {
+	if !strings.Contains(script, "Unpacking thread leaf certificate") {
 		t.Errorf("missing leaf cert unpacking in script: %s", script)
 	}
-	if !strings.Contains(script, "Unpacking node leaf private key") {
+	if !strings.Contains(script, "Unpacking thread leaf private key") {
 		t.Errorf("missing private key unpacking in script: %s", script)
 	}
 }

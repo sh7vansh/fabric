@@ -28,6 +28,7 @@ var (
 	stitchModeFlag       string
 	stitchRemoteFlag     bool
 	stitchInvertedFlag   bool
+	stitchDirectFlag     bool
 	stitchListenPortFlag string
 	stitchNoFallback     bool
 
@@ -100,6 +101,7 @@ func init() {
 	stitchCmd.Flags().StringVar(&stitchModeFlag, "mode", "", "Connection mode topology: 'local' or 'remote'")
 	stitchCmd.Flags().BoolVar(&stitchRemoteFlag, "remote", false, "Direct remote mode (thread listens with mTLS)")
 	stitchCmd.Flags().BoolVar(&stitchInvertedFlag, "inverted", false, "Alias for --remote (deprecated, use --remote)")
+	stitchCmd.Flags().BoolVar(&stitchDirectFlag, "direct", false, "Alias for --remote (deprecated, use --remote)")
 	stitchCmd.Flags().StringVar(&stitchListenPortFlag, "listen-port", "8443", "Port for remote mode thread to listen on")
 	stitchCmd.Flags().BoolVar(&stitchNoFallback, "no-fallback", false, "Disable automatic fallback to remote mode if normal verification times out")
 
@@ -132,6 +134,7 @@ func init() {
 	stitchDiscoverCmd.Flags().StringVar(&stitchModeFlag, "mode", "", "Connection mode topology: 'local' or 'remote'")
 	stitchDiscoverCmd.Flags().BoolVar(&stitchRemoteFlag, "remote", false, "Direct remote mode")
 	stitchDiscoverCmd.Flags().BoolVar(&stitchInvertedFlag, "inverted", false, "Alias for --remote (deprecated, use --remote)")
+	stitchDiscoverCmd.Flags().BoolVar(&stitchDirectFlag, "direct", false, "Alias for --remote (deprecated, use --remote)")
 	stitchDiscoverCmd.Flags().StringVar(&stitchListenPortFlag, "listen-port", "8443", "Port for remote mode threads to listen on")
 	stitchDiscoverCmd.Flags().BoolVar(&stitchNoFallback, "no-fallback", false, "Disable automatic fallback to remote mode")
 }
@@ -176,24 +179,27 @@ func promptTopology(isBatch bool) string {
 	reader := bufio.NewReader(os.Stdin)
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(strings.ToLower(input))
-	if input == "2" || input == "remote" || input == "inverted" {
+	if input == "2" || input == "remote" || input == "inverted" || input == "direct" {
 		return "inverted"
 	}
 	return "normal"
 }
 
-func resolveStitchMode(modeFlag string, remoteFlag, invertedFlag bool) (string, error) {
+func resolveStitchMode(modeFlag string, remoteFlag, invertedFlag, directFlag bool) (string, error) {
 	if invertedFlag {
-		WarnDeprecated("--inverted", "--remote")
+		WarnDeprecated("--inverted", "--mode=remote' or '--remote")
+	}
+	if directFlag {
+		WarnDeprecated("--direct", "--mode=remote' or '--remote")
 	}
 	mode := strings.ToLower(strings.TrimSpace(modeFlag))
-	if remoteFlag || invertedFlag {
+	if remoteFlag || invertedFlag || directFlag {
 		mode = "remote"
 	}
-	if mode != "" && mode != "local" && mode != "remote" && mode != "normal" && mode != "inverted" {
+	if mode != "" && mode != "local" && mode != "remote" && mode != "normal" && mode != "inverted" && mode != "direct" {
 		return "", fmt.Errorf("invalid mode %q: must be 'local' or 'remote'", modeFlag)
 	}
-	if mode == "remote" || mode == "inverted" {
+	if mode == "remote" || mode == "inverted" || mode == "direct" {
 		return "inverted", nil
 	}
 	if mode == "local" || mode == "normal" {
@@ -280,7 +286,7 @@ func runStitchSingle(cmd *cobra.Command, rawTarget string) error {
 		}
 	}
 
-	mode, err := resolveStitchMode(stitchModeFlag, stitchRemoteFlag, stitchInvertedFlag)
+	mode, err := resolveStitchMode(stitchModeFlag, stitchRemoteFlag, stitchInvertedFlag, stitchDirectFlag)
 	if err != nil {
 		return err
 	}
@@ -438,7 +444,7 @@ func runStitchScan(cmd *cobra.Command, rawCIDR string) error {
 		}
 	}
 
-	mode, err := resolveStitchMode(stitchModeFlag, stitchRemoteFlag, stitchInvertedFlag)
+	mode, err := resolveStitchMode(stitchModeFlag, stitchRemoteFlag, stitchInvertedFlag, stitchDirectFlag)
 	if err != nil {
 		return err
 	}

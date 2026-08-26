@@ -23,14 +23,14 @@ var peerCmd = &cobra.Command{
 	Example: `  # List all connected server peers
   fabric peer ls
 
-  # Connect to a remote gateway peer
+  # Connect to a remote server peer
   fabric peer add wss://core-eu.fabric.io:443
 
-  # Disconnect a gateway peer
-  fabric peer rm gw-eu-west
+  # Disconnect a server peer
+  fabric peer rm srv-eu-west
 
   # Inspect detailed telemetry for a peer
-  fabric peer inspect gw-eu-west`,
+  fabric peer inspect srv-eu-west`,
 }
 
 var peerLsCmd = &cobra.Command{
@@ -42,19 +42,19 @@ var peerLsCmd = &cobra.Command{
   # Output in JSON format
   fabric peer ls --format json
 
-  # Display only peer gateway IDs
+  # Display only peer server IDs
   fabric peer ls -q`,
 	RunE: runPeerLs,
 }
 
 var peerAddCmd = &cobra.Command{
 	Use:   "add <endpoint>",
-	Short: "Connect to a remote gateway peer",
+	Short: "Connect to a remote server peer",
 	Args:  cobra.ExactArgs(1),
-	Example: `  # Connect to a core gateway
+	Example: `  # Connect to a core server
   fabric peer add wss://core-hub.fabric.io:443
 
-  # Connect to an on-premise gateway over TLS
+  # Connect to an on-premise server over TLS
   fabric peer add 192.168.1.50:8443`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		endpoint := args[0]
@@ -68,33 +68,33 @@ var peerAddCmd = &cobra.Command{
 }
 
 var peerRmCmd = &cobra.Command{
-	Use:     "rm <gateway-id>",
+	Use:     "rm <server-id>",
 	Aliases: []string{"remove", "disconnect"},
-	Short:   "Disconnect and remove a gateway peer",
+	Short:   "Disconnect and remove a server peer",
 	Args:    cobra.ExactArgs(1),
-	Example: `  # Disconnect peer gw-eu-west
-  fabric peer rm gw-eu-west`,
+	Example: `  # Disconnect peer srv-eu-west
+  fabric peer rm srv-eu-west`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		gatewayID := args[0]
+		serverID := args[0]
 		client := NewClient(GetConfig())
-		if err := client.RemovePeer(gatewayID); err != nil {
+		if err := client.RemovePeer(serverID); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Removed peer gateway %s\n", gatewayID)
+		fmt.Fprintf(cmd.OutOrStdout(), "Removed peer server %s\n", serverID)
 		return nil
 	},
 }
 
 var peerInspectCmd = &cobra.Command{
-	Use:   "inspect <gateway-id>",
+	Use:   "inspect <server-id>",
 	Short: "Detailed telemetry and routing table for a peer",
 	Args:  cobra.ExactArgs(1),
 	Example: `  # Inspect peer telemetry
-  fabric peer inspect gw-eu-west`,
+  fabric peer inspect srv-eu-west`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		gatewayID := args[0]
+		serverID := args[0]
 		client := NewClient(GetConfig())
-		info, err := client.GetPeer(gatewayID)
+		info, err := client.GetPeer(serverID)
 		if err != nil {
 			return err
 		}
@@ -117,7 +117,7 @@ var peerInspectCmd = &cobra.Command{
 }
 
 func init() {
-	peerLsCmd.Flags().BoolVarP(&peerQuietFlag, "quiet", "q", false, "Only display peer gateway IDs")
+	peerLsCmd.Flags().BoolVarP(&peerQuietFlag, "quiet", "q", false, "Only display peer server IDs")
 	peerLsCmd.Flags().StringVar(&peerLsFormatFlag, "format", "", "Pretty-print peers using a Go template or json")
 	peerInspectCmd.Flags().StringVar(&peerInspectFormatFlag, "format", "", "Pretty-print peer using a Go template or json")
 
@@ -163,14 +163,22 @@ func runPeerLs(cmd *cobra.Command, args []string) error {
 
 	if peerQuietFlag {
 		for _, p := range peers {
-			fmt.Fprintln(out, p.GatewayID)
+			sID := p.ServerID
+			if sID == "" {
+				sID = p.GatewayID
+			}
+			fmt.Fprintln(out, sID)
 		}
 		return nil
 	}
 
 	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "GATEWAY\tREGION\tTOPOLOGY\tRTT\tTHREADS\tSTATUS\tENDPOINT")
+	fmt.Fprintln(w, "SERVER ID\tREGION\tTOPOLOGY\tRTT\tTHREADS\tSTATUS\tENDPOINT")
 	for _, p := range peers {
+		sID := p.ServerID
+		if sID == "" {
+			sID = p.GatewayID
+		}
 		topoStr := strings.ToUpper(p.Topology)
 		if topoStr == "" {
 			topoStr = "CORE"
@@ -187,7 +195,7 @@ func runPeerLs(cmd *cobra.Command, args []string) error {
 		if epStr == "" {
 			epStr = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", p.GatewayID, regStr, topoStr, rttStr, p.ThreadCount, p.Status, epStr)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n", sID, regStr, topoStr, rttStr, p.ThreadCount, p.Status, epStr)
 	}
 	w.Flush()
 	return nil

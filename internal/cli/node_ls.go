@@ -152,7 +152,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 	}
 
 	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "THREAD\tHOSTNAME\tGATEWAY\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
+	fmt.Fprintln(w, "THREAD\tHOSTNAME\tSERVER\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
 	for _, n := range nodes {
 		uptime := ""
 		if t, err := time.Parse(time.RFC3339, n.ConnectedAt); err == nil {
@@ -173,7 +173,10 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 		if displayName == "" {
 			displayName = n.ID
 		}
-		gwStr := n.GatewayID
+		gwStr := n.ServerID
+		if gwStr == "" {
+			gwStr = n.GatewayID
+		}
 		if gwStr == "" {
 			gwStr = "local"
 		}

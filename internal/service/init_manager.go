@@ -22,8 +22,10 @@ const (
 
 // BootstrapScriptOptions holds parameters needed to render the remote air-gapped bootstrap shell script.
 type BootstrapScriptOptions struct {
+	ServerURL   string
 	SocketURL   string
 	ListenAddr  string
+	Mode        string
 	Token       string
 	Domain      string
 	Tags        []string
@@ -85,12 +87,10 @@ func (m *InitManager) IsPrivileged() bool {
 // GenerateSystemdSystemUnit renders the systemd system service unit file content.
 func (m *InitManager) GenerateSystemdSystemUnit(role, binPath string) string {
 	roleDisplay := "Server"
-	if role == "agent" {
-		roleDisplay = "Agent"
-	} else if role == "node" {
-		roleDisplay = "Node"
+	if role == "thread" || role == "agent" || role == "node" {
+		roleDisplay = "Thread"
 	} else if role == "socket" {
-		roleDisplay = "Socket"
+		roleDisplay = "Server"
 	}
 	home, _ := os.UserHomeDir()
 	userEnvPath := ""
@@ -98,7 +98,7 @@ func (m *InitManager) GenerateSystemdSystemUnit(role, binPath string) string {
 		userEnvPath = fmt.Sprintf("EnvironmentFile=-%s\n", filepath.Join(home, ".fabric", role+".env"))
 	}
 	execStopPost := ""
-	if role == "agent" || role == "node" {
+	if role == "thread" || role == "agent" || role == "node" {
 		execStopPost = "ExecStopPost=-/usr/bin/resolvectl revert lo\n"
 	}
 
@@ -123,12 +123,10 @@ WantedBy=multi-user.target
 // GenerateSystemdUserUnit renders the systemd user service unit file content.
 func (m *InitManager) GenerateSystemdUserUnit(role, userBinPath, userEnvPath string) string {
 	roleDisplay := "Server"
-	if role == "agent" {
-		roleDisplay = "Agent"
-	} else if role == "node" {
-		roleDisplay = "Node"
+	if role == "thread" || role == "agent" || role == "node" {
+		roleDisplay = "Thread"
 	} else if role == "socket" {
-		roleDisplay = "Socket"
+		roleDisplay = "Server"
 	}
 
 	return fmt.Sprintf(`[Unit]
@@ -177,17 +175,27 @@ func (m *InitManager) GetStandalonePaths(role string) (runDir, pidFile, supervis
 	} else {
 		runDir = filepath.Join(home, ".fabric")
 	}
-	pidFile = filepath.Join(runDir, fmt.Sprintf("fabric-%s.pid", role))
-	supervisorScript = filepath.Join(runDir, fmt.Sprintf("fabric-%s-supervisor.sh", role))
 
-	binaryName := "fabric-" + role
-	if role == "agent" {
-		if _, err := exec.LookPath("fabric-agent"); err != nil {
-			if _, err2 := exec.LookPath("fabric-node"); err2 == nil {
+	canonicalRole := role
+	if role == "agent" || role == "node" {
+		canonicalRole = "thread"
+	} else if role == "socket" {
+		canonicalRole = "server"
+	}
+
+	pidFile = filepath.Join(runDir, fmt.Sprintf("fabric-%s.pid", canonicalRole))
+	supervisorScript = filepath.Join(runDir, fmt.Sprintf("fabric-%s-supervisor.sh", canonicalRole))
+
+	binaryName := "fabric-" + canonicalRole
+	if canonicalRole == "thread" {
+		if _, err := exec.LookPath("fabric-thread"); err != nil {
+			if _, err2 := exec.LookPath("fabric-agent"); err2 == nil {
+				binaryName = "fabric-agent"
+			} else if _, err3 := exec.LookPath("fabric-node"); err3 == nil {
 				binaryName = "fabric-node"
 			}
 		}
-	} else if role == "server" {
+	} else if canonicalRole == "server" {
 		if _, err := exec.LookPath("fabric-server"); err != nil {
 			if _, err2 := exec.LookPath("fabric-socket"); err2 == nil {
 				binaryName = "fabric-socket"
@@ -209,20 +217,29 @@ func (m *InitManager) GetStandalonePaths(role string) (runDir, pidFile, supervis
 
 // InstallService installs and starts the service according to the detected host init tier.
 func (m *InitManager) InstallService(role string) error {
-	if role != "agent" && role != "node" && role != "server" && role != "socket" {
-		return fmt.Errorf("invalid role: %s (must be 'agent', 'server', 'node', or 'socket')", role)
+	if role != "thread" && role != "agent" && role != "node" && role != "server" && role != "socket" {
+		return fmt.Errorf("invalid role: %s (must be 'thread', 'agent', 'server', 'node', or 'socket')", role)
+	}
+
+	canonicalRole := role
+	if role == "agent" || role == "node" {
+		canonicalRole = "thread"
+	} else if role == "socket" {
+		canonicalRole = "server"
 	}
 
 	tier := m.DetectTier()
-	serviceName := "fabric-" + role
-	binaryName := "fabric-" + role
-	if role == "agent" {
-		if _, err := exec.LookPath("fabric-agent"); err != nil {
-			if _, err2 := exec.LookPath("fabric-node"); err2 == nil {
+	serviceName := "fabric-" + canonicalRole
+	binaryName := "fabric-" + canonicalRole
+	if canonicalRole == "thread" {
+		if _, err := exec.LookPath("fabric-thread"); err != nil {
+			if _, err2 := exec.LookPath("fabric-agent"); err2 == nil {
+				binaryName = "fabric-agent"
+			} else if _, err3 := exec.LookPath("fabric-node"); err3 == nil {
 				binaryName = "fabric-node"
 			}
 		}
-	} else if role == "server" {
+	} else if canonicalRole == "server" {
 		if _, err := exec.LookPath("fabric-server"); err != nil {
 			if _, err2 := exec.LookPath("fabric-socket"); err2 == nil {
 				binaryName = "fabric-socket"
@@ -248,26 +265,55 @@ func (m *InitManager) InstallService(role string) error {
 			}
 		}
 
+		// Seamless migration of legacy service units
+		if canonicalRole == "thread" {
+			for _, legacySvc := range []string{"fabric-agent", "fabric-node"} {
+				legacyUnit := filepath.Join("/etc/systemd/system", legacySvc+".service")
+				if _, err := os.Stat(legacyUnit); err == nil {
+					_ = m.RunPrivileged("systemctl", "stop", legacySvc)
+					_ = m.RunPrivileged("systemctl", "disable", legacySvc)
+					_ = m.RunPrivileged("rm", "-f", legacyUnit)
+				}
+			}
+		} else if canonicalRole == "server" {
+			legacyUnit := "/etc/systemd/system/fabric-socket.service"
+			if _, err := os.Stat(legacyUnit); err == nil {
+				_ = m.RunPrivileged("systemctl", "stop", "fabric-socket")
+				_ = m.RunPrivileged("systemctl", "disable", "fabric-socket")
+				_ = m.RunPrivileged("rm", "-f", legacyUnit)
+			}
+		}
+
 		_ = m.RunPrivileged("mkdir", "-p", "/etc/fabric")
 		userEnvCandidates := []string{
+			filepath.Join(home, ".fabric", canonicalRole+".env"),
+			filepath.Join(home, ".config", "fabric", canonicalRole+".env"),
 			filepath.Join(home, ".fabric", role+".env"),
 			filepath.Join(home, ".config", "fabric", role+".env"),
 		}
+		if canonicalRole == "thread" {
+			userEnvCandidates = append(userEnvCandidates,
+				filepath.Join(home, ".fabric", "agent.env"),
+				filepath.Join(home, ".config", "fabric", "agent.env"),
+				filepath.Join(home, ".fabric", "node.env"),
+				filepath.Join(home, ".config", "fabric", "node.env"),
+			)
+		}
 		for _, uEnv := range userEnvCandidates {
 			if data, err := os.ReadFile(uEnv); err == nil && len(data) > 0 {
-				tmpEnv, tmpErr := os.CreateTemp("", role+"-*.env")
+				tmpEnv, tmpErr := os.CreateTemp("", canonicalRole+"-*.env")
 				if tmpErr == nil {
 					_, _ = tmpEnv.Write(data)
 					tmpEnv.Close()
-					_ = m.RunPrivileged("cp", tmpEnv.Name(), filepath.Join("/etc/fabric", role+".env"))
-					_ = m.RunPrivileged("chmod", "600", filepath.Join("/etc/fabric", role+".env"))
+					_ = m.RunPrivileged("cp", tmpEnv.Name(), filepath.Join("/etc/fabric", canonicalRole+".env"))
+					_ = m.RunPrivileged("chmod", "600", filepath.Join("/etc/fabric", canonicalRole+".env"))
 					_ = os.Remove(tmpEnv.Name())
 					break
 				}
 			}
 		}
 
-		unitContent := m.GenerateSystemdSystemUnit(role, systemBinPath)
+		unitContent := m.GenerateSystemdSystemUnit(canonicalRole, systemBinPath)
 		unitPath := filepath.Join("/etc/systemd/system", serviceName+".service")
 
 		tmpFile, err := os.CreateTemp("", serviceName+"-*.service")
@@ -301,13 +347,38 @@ func (m *InitManager) InstallService(role string) error {
 		userUnitDir := filepath.Join(home, ".config", "systemd", "user")
 		_ = os.MkdirAll(userUnitDir, 0755)
 
-		userEnvPath := filepath.Join(home, ".config", "fabric", role+".env")
+		// Seamless migration of user service units
+		if canonicalRole == "thread" {
+			for _, legacySvc := range []string{"fabric-agent", "fabric-node"} {
+				legacyUnit := filepath.Join(userUnitDir, legacySvc+".service")
+				if _, err := os.Stat(legacyUnit); err == nil {
+					_ = exec.Command("systemctl", "--user", "stop", legacySvc).Run()
+					_ = exec.Command("systemctl", "--user", "disable", legacySvc).Run()
+					_ = os.Remove(legacyUnit)
+				}
+			}
+		} else if canonicalRole == "server" {
+			legacyUnit := filepath.Join(userUnitDir, "fabric-socket.service")
+			if _, err := os.Stat(legacyUnit); err == nil {
+				_ = exec.Command("systemctl", "--user", "stop", "fabric-socket").Run()
+				_ = exec.Command("systemctl", "--user", "disable", "fabric-socket").Run()
+				_ = os.Remove(legacyUnit)
+			}
+		}
+
+		userEnvPath := filepath.Join(home, ".config", "fabric", canonicalRole+".env")
+		if _, err := os.Stat(userEnvPath); err != nil {
+			if _, err2 := os.Stat(filepath.Join(home, ".fabric", canonicalRole+".env")); err2 == nil {
+				userEnvPath = filepath.Join(home, ".fabric", canonicalRole+".env")
+			}
+		}
+
 		userBinPath := filepath.Join(home, ".local", "bin", binaryName)
 		if binPath != "" && binPath != "/usr/local/bin/"+binaryName {
 			userBinPath = binPath
 		}
 
-		unitContent := m.GenerateSystemdUserUnit(role, userBinPath, userEnvPath)
+		unitContent := m.GenerateSystemdUserUnit(canonicalRole, userBinPath, userEnvPath)
 		unitPath := filepath.Join(userUnitDir, serviceName+".service")
 		if err := os.WriteFile(unitPath, []byte(unitContent), 0644); err != nil {
 			return fmt.Errorf("writing user unit file: %w", err)
@@ -324,10 +395,10 @@ func (m *InitManager) InstallService(role string) error {
 		return nil
 
 	default:
-		runDir, pidFile, supervisorScript, targetBin := m.GetStandalonePaths(role)
+		runDir, pidFile, supervisorScript, targetBin := m.GetStandalonePaths(canonicalRole)
 		_ = os.MkdirAll(runDir, 0755)
 
-		envFile := filepath.Join(runDir, role+".env")
+		envFile := filepath.Join(runDir, canonicalRole+".env")
 		supervisorContent := m.GenerateSupervisorScript(pidFile, envFile, targetBin)
 
 		if err := os.WriteFile(supervisorScript, []byte(supervisorContent), 0755); err != nil {
@@ -335,21 +406,17 @@ func (m *InitManager) InstallService(role string) error {
 		}
 
 		fmt.Printf("[+] Installed supervisor script %s\n", supervisorScript)
-		return m.StartStandalone(role)
+		return m.StartStandalone(canonicalRole)
 	}
 }
 
 // HandleAction performs start, stop, restart, or status on the service.
 func (m *InitManager) HandleAction(action, role string) error {
 	serviceNames := []string{"fabric-" + role}
-	if role == "agent" {
-		serviceNames = append(serviceNames, "fabric-node")
-	} else if role == "node" {
-		serviceNames = append(serviceNames, "fabric-agent")
-	} else if role == "server" {
-		serviceNames = append(serviceNames, "fabric-socket")
-	} else if role == "socket" {
-		serviceNames = append(serviceNames, "fabric-server")
+	if role == "thread" || role == "agent" || role == "node" {
+		serviceNames = []string{"fabric-thread", "fabric-agent", "fabric-node"}
+	} else if role == "server" || role == "socket" {
+		serviceNames = []string{"fabric-server", "fabric-socket"}
 	}
 
 	home, _ := os.UserHomeDir()
@@ -369,22 +436,29 @@ func (m *InitManager) HandleAction(action, role string) error {
 		}
 	}
 
+	canonicalRole := role
+	if role == "agent" || role == "node" {
+		canonicalRole = "thread"
+	} else if role == "socket" {
+		canonicalRole = "server"
+	}
+
 	// Standalone daemon handling
 	switch action {
 	case "start":
-		return m.StartStandalone(role)
+		return m.StartStandalone(canonicalRole)
 	case "stop":
-		m.StopStandalone(role)
-		fmt.Printf("[+] fabric-%s stopped\n", role)
+		m.StopStandalone(canonicalRole)
+		fmt.Printf("[+] fabric-%s stopped\n", canonicalRole)
 		return nil
 	case "restart":
-		m.StopStandalone(role)
-		return m.StartStandalone(role)
+		m.StopStandalone(canonicalRole)
+		return m.StartStandalone(canonicalRole)
 	case "status":
-		return m.CheckStandaloneStatus(role)
+		return m.CheckStandaloneStatus(canonicalRole)
 	default:
 		if m.IsSystemdAvailable() {
-			return m.RunPrivileged("systemctl", action, "fabric-"+role)
+			return m.RunPrivileged("systemctl", action, "fabric-"+canonicalRole)
 		}
 		return fmt.Errorf("unknown action %s", action)
 	}
@@ -393,14 +467,10 @@ func (m *InitManager) HandleAction(action, role string) error {
 // UninstallService removes system, user, or standalone services for the given role.
 func (m *InitManager) UninstallService(role string) error {
 	serviceNames := []string{"fabric-" + role}
-	if role == "agent" {
-		serviceNames = append(serviceNames, "fabric-node")
-	} else if role == "node" {
-		serviceNames = append(serviceNames, "fabric-agent")
-	} else if role == "server" {
-		serviceNames = append(serviceNames, "fabric-socket")
-	} else if role == "socket" {
-		serviceNames = append(serviceNames, "fabric-server")
+	if role == "thread" || role == "agent" || role == "node" {
+		serviceNames = []string{"fabric-thread", "fabric-agent", "fabric-node"}
+	} else if role == "server" || role == "socket" {
+		serviceNames = []string{"fabric-server", "fabric-socket"}
 	}
 
 	home, _ := os.UserHomeDir()
@@ -427,13 +497,18 @@ func (m *InitManager) UninstallService(role string) error {
 		}
 
 		// 3. Standalone cleanup
-		m.StopStandalone(role)
-		runDir, _, supervisorScript, _ := m.GetStandalonePaths(role)
+		canonicalRole := strings.TrimPrefix(sName, "fabric-")
+		m.StopStandalone(canonicalRole)
+		runDir, _, supervisorScript, _ := m.GetStandalonePaths(canonicalRole)
 		_ = os.Remove(supervisorScript)
-		_ = os.Remove(filepath.Join(runDir, role+".env"))
+		_ = os.Remove(filepath.Join(runDir, canonicalRole+".env"))
 	}
 
-	fmt.Printf("[+] Uninstalled service fabric-%s\n", role)
+	canonicalRole := role
+	if role == "agent" || role == "node" {
+		canonicalRole = "thread"
+	}
+	fmt.Printf("[+] Uninstalled service fabric-%s\n", canonicalRole)
 	return nil
 }
 
@@ -515,8 +590,21 @@ func (m *InitManager) RunPrivileged(name string, args ...string) error {
 func (m *InitManager) RenderBootstrapScript(opts BootstrapScriptOptions) string {
 	tagsJoined := strings.Join(opts.Tags, ",")
 
-	rawEnv := fmt.Sprintf("FABRIC_SOCKET_URL=%s\nFABRIC_LISTEN=%s\nFABRIC_TOKEN=%s\nFABRIC_DOMAIN=%s\nFABRIC_TAGS=%s\n",
-		opts.SocketURL, opts.ListenAddr, opts.Token, opts.Domain, tagsJoined)
+	serverURL := opts.ServerURL
+	if serverURL == "" {
+		serverURL = opts.SocketURL
+	}
+	mode := opts.Mode
+	if mode == "" {
+		if opts.ListenAddr != "" {
+			mode = "remote"
+		} else {
+			mode = "local"
+		}
+	}
+
+	rawEnv := fmt.Sprintf("FABRIC_SERVER_URL=%s\nFABRIC_SOCKET_URL=%s\nFABRIC_MODE=%s\nFABRIC_LISTEN=%s\nFABRIC_TOKEN=%s\nFABRIC_DOMAIN=%s\nFABRIC_TAGS=%s\n",
+		serverURL, serverURL, mode, opts.ListenAddr, opts.Token, opts.Domain, tagsJoined)
 	envB64 := base64.StdEncoding.EncodeToString([]byte(rawEnv))
 
 	return fmt.Sprintf(`#!/usr/bin/env bash
@@ -553,13 +641,13 @@ else
     mkdir -p "$INSTALL_BIN_DIR" "$CONFIG_DIR" "$RUN_DIR"
 fi
 
-TARGET_BIN="$INSTALL_BIN_DIR/fabric-node"
-ENV_FILE="$CONFIG_DIR/node.env"
+TARGET_BIN="$INSTALL_BIN_DIR/fabric-thread"
+ENV_FILE="$CONFIG_DIR/thread.env"
 
 # 4. Extract Injected Self-Contained Binary Payload
 PAYLOAD="%s"
 if [ -n "$PAYLOAD" ]; then
-    echo "[+] Unpacking injected fabric-node binary to $TARGET_BIN..."
+    echo "[+] Unpacking injected fabric-thread binary to $TARGET_BIN..."
     if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
         (echo "$PAYLOAD" | base64 -d | gzip -d | $SUDO tee "$TARGET_BIN" > /dev/null 2>&1) || (echo "$PAYLOAD" | base64 -d | gunzip | $SUDO tee "$TARGET_BIN" > /dev/null 2>&1)
         $SUDO chmod 755 "$TARGET_BIN"
@@ -585,7 +673,11 @@ fi
 
 # Validate binary integrity and executable permissions
 if [ ! -s "$TARGET_BIN" ] || [ ! -x "$TARGET_BIN" ]; then
-    if command -v fabric-node >/dev/null 2>&1; then
+    if command -v fabric-thread >/dev/null 2>&1; then
+        TARGET_BIN="$(command -v fabric-thread)"
+    elif [ -x "/usr/local/bin/fabric-thread" ]; then
+        TARGET_BIN="/usr/local/bin/fabric-thread"
+    elif command -v fabric-node >/dev/null 2>&1; then
         TARGET_BIN="$(command -v fabric-node)"
     elif [ -x "/usr/local/bin/fabric-node" ]; then
         TARGET_BIN="/usr/local/bin/fabric-node"
@@ -611,7 +703,7 @@ fi
 
 CERT_PAYLOAD="%s"
 if [ -n "$CERT_PAYLOAD" ]; then
-    echo "[+] Unpacking node leaf certificate to $CONFIG_DIR/client.crt..."
+    echo "[+] Unpacking thread leaf certificate to $CONFIG_DIR/client.crt..."
     if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
         echo "$CERT_PAYLOAD" | base64 -d | $SUDO tee "$CONFIG_DIR/client.crt" > /dev/null
         $SUDO chmod 644 "$CONFIG_DIR/client.crt"
@@ -623,7 +715,7 @@ fi
 
 KEY_PAYLOAD="%s"
 if [ -n "$KEY_PAYLOAD" ]; then
-    echo "[+] Unpacking node leaf private key to $CONFIG_DIR/client.key..."
+    echo "[+] Unpacking thread leaf private key to $CONFIG_DIR/client.key..."
     if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
         echo "$KEY_PAYLOAD" | base64 -d | $SUDO tee "$CONFIG_DIR/client.key" > /dev/null
         $SUDO chmod 600 "$CONFIG_DIR/client.key"
@@ -638,25 +730,33 @@ ENV_B64="%s"
 if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
     echo "$ENV_B64" | base64 -d | $SUDO tee "$ENV_FILE" > /dev/null
     $SUDO chmod 600 "$ENV_FILE"
+    # Legacy fallback link
+    $SUDO cp -f "$ENV_FILE" "$CONFIG_DIR/node.env" 2>/dev/null || true
 else
     echo "$ENV_B64" | base64 -d > "$ENV_FILE"
     chmod 600 "$ENV_FILE"
+    cp -f "$ENV_FILE" "$CONFIG_DIR/node.env" 2>/dev/null || true
 fi
 
 # 7. Multi-Tier Init Selection & Service Activation
 if [ "$IS_ROOT" -eq 1 ] && [ "$HAS_SYSTEMD" -eq 1 ]; then
+    # Disable any legacy units
+    $SUDO systemctl stop fabric-node fabric-agent 2>/dev/null || true
+    $SUDO systemctl disable fabric-node fabric-agent 2>/dev/null || true
+    $SUDO rm -f /etc/systemd/system/fabric-node.service /etc/systemd/system/fabric-agent.service
+
     # Tier 1: Root / Sudo with systemd (System service)
-    echo "[+] Configuring systemd system service (/etc/systemd/system/fabric-node.service)..."
-    cat << 'UNIT_EOF' | $SUDO tee /etc/systemd/system/fabric-node.service > /dev/null
+    echo "[+] Configuring systemd system service (/etc/systemd/system/fabric-thread.service)..."
+    cat << 'UNIT_EOF' | $SUDO tee /etc/systemd/system/fabric-thread.service > /dev/null
 [Unit]
-Description=Fabric Mesh Network Node
+Description=Fabric Mesh Network Thread
 After=network.target network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=-/etc/fabric/node.env
-ExecStart=/usr/local/bin/fabric-node
+EnvironmentFile=-/etc/fabric/thread.env
+ExecStart=/usr/local/bin/fabric-thread
 Restart=always
 RestartSec=3s
 LimitNOFILE=65536
@@ -666,24 +766,28 @@ ExecStopPost=-/usr/bin/resolvectl revert lo
 WantedBy=multi-user.target
 UNIT_EOF
 
-    $SUDO chmod 644 /etc/systemd/system/fabric-node.service
+    $SUDO chmod 644 /etc/systemd/system/fabric-thread.service
     $SUDO systemctl daemon-reload
-    $SUDO systemctl restart fabric-node || true
-    $SUDO systemctl enable fabric-node || true
+    $SUDO systemctl restart fabric-thread || true
+    $SUDO systemctl enable fabric-thread || true
     echo "[+] Systemd system service enabled and active."
 
 elif [ "$IS_ROOT" -eq 0 ] && [ "$HAS_SYSTEMD" -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
     # Tier 2: Non-root with systemd (User service)
-    echo "[+] Configuring systemd user service (~/.config/systemd/user/fabric-node.service)..."
+    systemctl --user stop fabric-node fabric-agent 2>/dev/null || true
+    systemctl --user disable fabric-node fabric-agent 2>/dev/null || true
+    rm -f "$HOME/.config/systemd/user/fabric-node.service" "$HOME/.config/systemd/user/fabric-agent.service"
+
+    echo "[+] Configuring systemd user service (~/.config/systemd/user/fabric-thread.service)..."
     mkdir -p "$HOME/.config/systemd/user"
-    cat << UNIT_EOF > "$HOME/.config/systemd/user/fabric-node.service"
+    cat << UNIT_EOF > "$HOME/.config/systemd/user/fabric-thread.service"
 [Unit]
-Description=Fabric Mesh Network Node (User)
+Description=Fabric Mesh Network Thread (User)
 After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=-$HOME/.config/fabric/node.env
+EnvironmentFile=-$HOME/.config/fabric/thread.env
 ExecStart=$TARGET_BIN
 Restart=always
 RestartSec=3s
@@ -693,18 +797,18 @@ LimitNOFILE=65536
 WantedBy=default.target
 UNIT_EOF
 
-    chmod 644 "$HOME/.config/systemd/user/fabric-node.service"
+    chmod 644 "$HOME/.config/systemd/user/fabric-thread.service"
     loginctl enable-linger "$(whoami)" 2>/dev/null || true
     systemctl --user daemon-reload || true
-    systemctl --user restart fabric-node || true
-    systemctl --user enable fabric-node || true
+    systemctl --user restart fabric-thread || true
+    systemctl --user enable fabric-thread || true
     echo "[+] Systemd user service enabled and active."
 
 else
     # Tier 3: Non-systemd / Edge / Container (Supervised background daemon)
     echo "[+] Configuring standalone supervisor daemon in $RUN_DIR..."
-    PIDFILE="$RUN_DIR/fabric-node.pid"
-    SUPERVISOR="$RUN_DIR/fabric-node-supervisor.sh"
+    PIDFILE="$RUN_DIR/fabric-thread.pid"
+    SUPERVISOR="$RUN_DIR/fabric-thread-supervisor.sh"
 
     if [ -f "$PIDFILE" ]; then
         OLD_PID=$(cat "$PIDFILE" 2>/dev/null || true)
@@ -720,13 +824,13 @@ else
 
     chmod 755 "$SUPERVISOR"
     nohup "$SUPERVISOR" > /dev/null 2>&1 &
-    echo $! > "$RUN_DIR/fabric-node-supervisor.pid"
+    echo $! > "$RUN_DIR/fabric-thread-supervisor.pid"
     echo "[+] Supervised background daemon started (PID file: $PIDFILE)."
 fi
 `, opts.NodePayload, opts.CliPayload, opts.CAPayload, opts.CertPayload, opts.KeyPayload, envB64)
 }
 
-// RenderInvertedSwitchScript renders a lightweight SSH command to switch an existing node to Inverted Mode.
+// RenderInvertedSwitchScript renders a lightweight SSH command to switch an existing thread to remote mode.
 func (m *InitManager) RenderInvertedSwitchScript(listenPort string) string {
 	if !strings.HasPrefix(listenPort, ":") {
 		listenPort = ":" + listenPort
@@ -738,8 +842,12 @@ set -e
 PORT="%s"
 
 # Locate environment file
-ENV_FILE="/etc/fabric/node.env"
-if [ ! -f "$ENV_FILE" ] && [ -f "$HOME/.config/fabric/node.env" ]; then
+ENV_FILE="/etc/fabric/thread.env"
+if [ ! -f "$ENV_FILE" ] && [ -f "$HOME/.config/fabric/thread.env" ]; then
+    ENV_FILE="$HOME/.config/fabric/thread.env"
+elif [ ! -f "$ENV_FILE" ] && [ -f "/etc/fabric/node.env" ]; then
+    ENV_FILE="/etc/fabric/node.env"
+elif [ ! -f "$ENV_FILE" ] && [ -f "$HOME/.config/fabric/node.env" ]; then
     ENV_FILE="$HOME/.config/fabric/node.env"
 fi
 
@@ -747,17 +855,23 @@ if [ -f "$ENV_FILE" ]; then
     if grep -q "FABRIC_LISTEN=" "$ENV_FILE" 2>/dev/null; then
         if [ "$EUID" -eq 0 ]; then
             sed -i "s|^FABRIC_LISTEN=.*|FABRIC_LISTEN=$PORT|" "$ENV_FILE"
+            sed -i "s|^FABRIC_MODE=.*|FABRIC_MODE=remote|" "$ENV_FILE" 2>/dev/null || true
         elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
             sudo sed -i "s|^FABRIC_LISTEN=.*|FABRIC_LISTEN=$PORT|" "$ENV_FILE"
+            sudo sed -i "s|^FABRIC_MODE=.*|FABRIC_MODE=remote|" "$ENV_FILE" 2>/dev/null || true
         else
             sed -i "s|^FABRIC_LISTEN=.*|FABRIC_LISTEN=$PORT|" "$ENV_FILE"
+            sed -i "s|^FABRIC_MODE=.*|FABRIC_MODE=remote|" "$ENV_FILE" 2>/dev/null || true
         fi
     else
         if [ "$EUID" -eq 0 ]; then
+            echo "FABRIC_MODE=remote" >> "$ENV_FILE"
             echo "FABRIC_LISTEN=$PORT" >> "$ENV_FILE"
         elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            echo "FABRIC_MODE=remote" | sudo tee -a "$ENV_FILE" > /dev/null
             echo "FABRIC_LISTEN=$PORT" | sudo tee -a "$ENV_FILE" > /dev/null
         else
+            echo "FABRIC_MODE=remote" >> "$ENV_FILE"
             echo "FABRIC_LISTEN=$PORT" >> "$ENV_FILE"
         fi
     fi
@@ -765,19 +879,25 @@ fi
 
 # Restart service across tiers
 if [ "$EUID" -eq 0 ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-    systemctl restart fabric-node || true
+    systemctl restart fabric-thread 2>/dev/null || systemctl restart fabric-node || true
 elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
-    sudo systemctl restart fabric-node || true
+    sudo systemctl restart fabric-thread 2>/dev/null || sudo systemctl restart fabric-node || true
 fi
 
 if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user restart fabric-node 2>/dev/null || true
+    systemctl --user restart fabric-thread 2>/dev/null || systemctl --user restart fabric-node 2>/dev/null || true
 fi
 
 # Standalone supervisor daemon check
 RUN_DIR="/var/run/fabric"
+[ -f "$HOME/.fabric/fabric-thread.pid" ] && RUN_DIR="$HOME/.fabric"
 [ -f "$HOME/.fabric/fabric-node.pid" ] && RUN_DIR="$HOME/.fabric"
-if [ -f "$RUN_DIR/fabric-node.pid" ]; then
+if [ -f "$RUN_DIR/fabric-thread.pid" ]; then
+    PID=$(cat "$RUN_DIR/fabric-thread.pid" 2>/dev/null || true)
+    if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+        kill "$PID" 2>/dev/null || true
+    fi
+elif [ -f "$RUN_DIR/fabric-node.pid" ]; then
     PID=$(cat "$RUN_DIR/fabric-node.pid" 2>/dev/null || true)
     if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
         kill "$PID" 2>/dev/null || true
