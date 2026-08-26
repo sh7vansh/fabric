@@ -16,6 +16,7 @@ import (
 	"fabric/internal/pki"
 	"fabric/internal/relay"
 	"fabric/internal/tlsengine"
+	"fabric/internal/version"
 )
 
 func main() {
@@ -41,6 +42,7 @@ func main() {
 	httpPortFlag := flag.Int("http-port", 80, "Port for HTTP / ACME HTTP-01 challenge listener (0 to disable)")
 	caDirFlag := flag.String("ca-dir", "", "Directory to store internal Root CA")
 	tokenFlag := flag.String("token", os.Getenv("FABRIC_TOKEN"), "Pre-shared token for authentication")
+	adminTokenFlag := flag.String("admin-token", os.Getenv("FABRIC_ADMIN_TOKEN"), "Pre-shared token for administrative control plane operations (defaults to token)")
 	gatewayIDFlag := flag.String("gateway-id", os.Getenv("FABRIC_GATEWAY_ID"), "Unique gateway identifier for federation")
 	regionFlag := flag.String("region", os.Getenv("FABRIC_REGION"), "Geographic region for this gateway (e.g. us-east, eu-west)")
 	federationCAFlag := flag.String("federation-ca", os.Getenv("FABRIC_FEDERATION_CA"), "Path to shared Federation Root CA certificate")
@@ -66,6 +68,7 @@ func main() {
 	meshRelay := relay.New(relay.Config{
 		Domain:       *domainFlag,
 		Token:        token,
+		AdminToken:   *adminTokenFlag,
 		PingFreq:     5 * time.Second,
 		GatewayID:    *gatewayIDFlag,
 		Region:       *regionFlag,
@@ -210,14 +213,29 @@ func main() {
 		return true
 	}
 
+	authenticateAdmin := func(w http.ResponseWriter, r *http.Request) bool {
+		provided := extractBearerToken(r)
+		if !meshRelay.ValidateAdminToken(provided) {
+			http.Error(w, "Unauthorized: Admin token required", http.StatusUnauthorized)
+			return false
+		}
+		return true
+	}
+
 	http.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"version":    "2.4.1",
-			"domain":     *domainFlag,
-			"role":       "server",
-			"gateway_id": meshRelay.GatewayID(),
-			"region":     meshRelay.Region(),
+		bInfo := version.GetBuildInfo()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"version":          bInfo.Version,
+			"git_commit":       bInfo.GitCommit,
+			"build_date":       bInfo.BuildDate,
+			"go_version":       bInfo.GoVersion,
+			"protocol_version": bInfo.ProtocolVersion,
+			"domain":           *domainFlag,
+			"role":             "server",
+			"gateway_id":       meshRelay.GatewayID(),
+			"server_id":        meshRelay.ServerID(),
+			"region":           meshRelay.Region(),
 		})
 	})
 
@@ -244,15 +262,18 @@ func main() {
 	})
 
 	http.HandleFunc("/peers", func(w http.ResponseWriter, r *http.Request) {
-		if !authenticate(w, r) {
-			return
-		}
 		if r.Method == http.MethodGet {
+			if !authenticate(w, r) {
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(meshRelay.ListPeers())
 			return
 		}
 		if r.Method == http.MethodPost {
+			if !authenticateAdmin(w, r) {
+				return
+			}
 			var body struct {
 				Endpoint string `json:"endpoint"`
 			}
@@ -272,11 +293,11 @@ func main() {
 	})
 
 	http.HandleFunc("/peers/", func(w http.ResponseWriter, r *http.Request) {
-		if !authenticate(w, r) {
-			return
-		}
 		peerID := r.URL.Path[len("/peers/"):]
 		if r.Method == http.MethodGet {
+			if !authenticate(w, r) {
+				return
+			}
 			info, ok := meshRelay.GetPeer(peerID)
 			if !ok {
 				http.Error(w, "Peer not found", http.StatusNotFound)
@@ -287,6 +308,9 @@ func main() {
 			return
 		}
 		if r.Method == http.MethodDelete {
+			if !authenticateAdmin(w, r) {
+				return
+			}
 			if err := meshRelay.RemovePeer(peerID); err != nil {
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return

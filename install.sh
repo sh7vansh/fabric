@@ -80,12 +80,10 @@ trap cleanup EXIT
 # If running within the fabric source tree, build locally
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
 if [ -n "$REPO_DIR" ] && [ -f "$REPO_DIR/go.mod" ] && command -v go >/dev/null 2>&1; then
-    echo "[+] Building Fabric binaries from source..."
+    echo "[+] Building canonical Fabric binaries from source..."
     (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric" ./cmd/cli)
     (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric-server" ./cmd/server)
-    (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric-agent" ./cmd/agent)
-    (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric-socket" ./cmd/socket)
-    (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric-node" ./cmd/node)
+    (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric-thread" ./cmd/thread)
 else
     # Check if download URL or release is configured
     RELEASE_TAG="${FABRIC_VERSION:-latest}"
@@ -97,11 +95,39 @@ else
     
     echo "[+] Attempting to download Fabric ($RELEASE_TAG) for linux/$FABRIC_ARCH..."
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric" 2>/dev/null || true
-        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-server-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-server" 2>/dev/null || true
-        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-agent-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-agent" 2>/dev/null || true
-        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-socket-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-socket" 2>/dev/null || true
-        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-node-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-node" 2>/dev/null || true
+        # Download checksum manifest first
+        curl -fsSL "$DOWNLOAD_URL_PREFIX/checksums.txt" -o "$TMP_DIR/checksums.txt" 2>/dev/null || true
+
+        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-linux-$FABRIC_ARCH" 2>/dev/null || true
+        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-server-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-server-linux-$FABRIC_ARCH" 2>/dev/null || true
+        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-thread-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-thread-linux-$FABRIC_ARCH" 2>/dev/null || true
+    fi
+
+    # Verify SHA-256 checksums if manifest is available
+    if [ -f "$TMP_DIR/checksums.txt" ] && command -v sha256sum >/dev/null 2>&1; then
+        echo "[+] Verifying cryptographic SHA-256 checksums..."
+        (
+            cd "$TMP_DIR"
+            for role in "fabric" "fabric-server" "fabric-thread"; do
+                asset="${role}-linux-${FABRIC_ARCH}"
+                if [ -f "$asset" ]; then
+                    expected="$(grep -E "[[:space:]]\*?${asset}$" checksums.txt | awk '{print $1}' || true)"
+                    if [ -n "$expected" ]; then
+                        actual="$(sha256sum "$asset" | awk '{print $1}')"
+                        if [ "$expected" != "$actual" ]; then
+                            echo "[-] Error: Security checksum mismatch for $asset (expected $expected, got $actual)"
+                            exit 1
+                        fi
+                    fi
+                    mv "$asset" "$role"
+                fi
+            done
+        )
+    else
+        # Move without verification if checksum manifest unavailable
+        [ -f "$TMP_DIR/fabric-linux-$FABRIC_ARCH" ] && mv "$TMP_DIR/fabric-linux-$FABRIC_ARCH" "$TMP_DIR/fabric" || true
+        [ -f "$TMP_DIR/fabric-server-linux-$FABRIC_ARCH" ] && mv "$TMP_DIR/fabric-server-linux-$FABRIC_ARCH" "$TMP_DIR/fabric-server" || true
+        [ -f "$TMP_DIR/fabric-thread-linux-$FABRIC_ARCH" ] && mv "$TMP_DIR/fabric-thread-linux-$FABRIC_ARCH" "$TMP_DIR/fabric-thread" || true
     fi
 
     # Fallback to Go build if binaries were not downloaded and Go is available
@@ -109,30 +135,25 @@ else
         echo "[+] Building Fabric binaries using Go toolchain..."
         GOBIN="$TMP_DIR" go install fabric/cmd/cli@latest 2>/dev/null || true
         GOBIN="$TMP_DIR" go install fabric/cmd/server@latest 2>/dev/null || true
-        GOBIN="$TMP_DIR" go install fabric/cmd/agent@latest 2>/dev/null || true
-        GOBIN="$TMP_DIR" go install fabric/cmd/socket@latest 2>/dev/null || true
-        GOBIN="$TMP_DIR" go install fabric/cmd/node@latest 2>/dev/null || true
+        GOBIN="$TMP_DIR" go install fabric/cmd/thread@latest 2>/dev/null || true
+        [ -f "$TMP_DIR/cli" ] && mv "$TMP_DIR/cli" "$TMP_DIR/fabric" || true
+        [ -f "$TMP_DIR/server" ] && mv "$TMP_DIR/server" "$TMP_DIR/fabric-server" || true
+        [ -f "$TMP_DIR/thread" ] && mv "$TMP_DIR/thread" "$TMP_DIR/fabric-thread" || true
     fi
 fi
 
 # Ensure binaries exist
 if [ -f "$TMP_DIR/fabric" ]; then
-    echo "[+] Installing binaries into $INSTALL_DIR..."
+    echo "[+] Installing canonical binaries into $INSTALL_DIR..."
     $SUDO install -m 0755 "$TMP_DIR/fabric" "$INSTALL_DIR/fabric"
     if [ -f "$TMP_DIR/fabric-server" ]; then
         $SUDO install -m 0755 "$TMP_DIR/fabric-server" "$INSTALL_DIR/fabric-server"
     fi
-    if [ -f "$TMP_DIR/fabric-agent" ]; then
-        $SUDO install -m 0755 "$TMP_DIR/fabric-agent" "$INSTALL_DIR/fabric-agent"
-    fi
-    if [ -f "$TMP_DIR/fabric-socket" ]; then
-        $SUDO install -m 0755 "$TMP_DIR/fabric-socket" "$INSTALL_DIR/fabric-socket"
-    fi
-    if [ -f "$TMP_DIR/fabric-node" ]; then
-        $SUDO install -m 0755 "$TMP_DIR/fabric-node" "$INSTALL_DIR/fabric-node"
+    if [ -f "$TMP_DIR/fabric-thread" ]; then
+        $SUDO install -m 0755 "$TMP_DIR/fabric-thread" "$INSTALL_DIR/fabric-thread"
     fi
 else
-    echo "[-] Error: Binaries could not be compiled or downloaded."
+    echo "[-] Error: Canonical Fabric binaries could not be compiled or downloaded."
     exit 1
 fi
 

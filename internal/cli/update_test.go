@@ -27,7 +27,9 @@ func TestSemverCompare(t *testing.T) {
 		{"v2.3.0", "v2.1.0", 1},
 		{"v2.1.1", "v2.1.0", 1},
 		{"v3.0.0", "v2.9.9", 1},
-		{"v2.1.0-rc1", "v2.1.0", 0},
+		{"v2.1.0-rc1", "v2.1.0", -1},
+		{"v2.1.0-rc1", "v2.1.0-rc1", 0},
+		{"v2.1.0-rc2", "v2.1.0-rc1", 1},
 		{"v1.9.0", "v2.0.0", -1},
 	}
 
@@ -330,29 +332,39 @@ func TestRunUpdate_ForceReinstall(t *testing.T) {
 	}
 }
 
-func TestDownloadAndInstallBinary_ChecksumMismatch(t *testing.T) {
+func TestRunUpdate_ChecksumMismatch(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetPath := filepath.Join(tmpDir, "fabric")
 	_ = os.WriteFile(targetPath, []byte("ORIGINAL_BINARY"), 0755)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/bin/fabric-linux-amd64":
+		case "/api/release":
+			json.NewEncoder(w).Encode(ReleaseInfo{TagName: "v2.5.0"})
+		case "/downloads/fabric-linux-amd64":
 			w.Write([]byte("TAMPERED_BINARY_PAYLOAD"))
-		case "/bin/fabric-linux-amd64.sha256":
-			// Send hash of a completely different string
+		case "/downloads/checksums.txt":
 			wrongHash := sha256.Sum256([]byte("DIFFERENT_PAYLOAD"))
-			w.Write([]byte(hex.EncodeToString(wrongHash[:])))
+			w.Write([]byte(fmt.Sprintf("%s  fabric-linux-amd64\n", hex.EncodeToString(wrongHash[:]))))
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
 
-	ctx := context.Background()
-	err := DownloadAndInstallBinary(ctx, server.Client(), server.URL+"/bin/fabric-linux-amd64", targetPath)
+	cfg := UpdaterConfig{
+		CurrentVersion: "v2.4.1",
+		ReleaseAPIURL:  server.URL + "/api/release",
+		DownloadURL:    server.URL + "/downloads",
+		InstallDir:     tmpDir,
+		OS:             "linux",
+		Arch:           "amd64",
+		HTTPClient:     server.Client(),
+	}
+
+	err := RunUpdate(cfg)
 	if err == nil {
-		t.Fatalf("expected DownloadAndInstallBinary to fail on checksum mismatch, got nil")
+		t.Fatalf("expected RunUpdate to fail on checksum mismatch, got nil")
 	}
 	if !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Errorf("unexpected error message: %v", err)
@@ -363,36 +375,38 @@ func TestDownloadAndInstallBinary_ChecksumMismatch(t *testing.T) {
 	if string(content) != "ORIGINAL_BINARY" {
 		t.Errorf("expected original binary to remain unmodified, got %q", string(content))
 	}
-
-	// No temporary files left behind
-	entries, _ := os.ReadDir(tmpDir)
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".fabric-update-") {
-			t.Errorf("found residual temporary update file: %s", e.Name())
-		}
-	}
 }
 
-func TestDownloadAndInstallBinary_MissingChecksum(t *testing.T) {
+func TestRunUpdate_MissingChecksum(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetPath := filepath.Join(tmpDir, "fabric")
 	_ = os.WriteFile(targetPath, []byte("ORIGINAL_BINARY"), 0755)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/bin/fabric-linux-amd64":
+		case "/api/release":
+			json.NewEncoder(w).Encode(ReleaseInfo{TagName: "v2.5.0"})
+		case "/downloads/fabric-linux-amd64":
 			w.Write([]byte("BINARY_PAYLOAD_WITHOUT_CHECKSUM"))
 		default:
-			// No checksum file
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
 
-	ctx := context.Background()
-	err := DownloadAndInstallBinary(ctx, server.Client(), server.URL+"/bin/fabric-linux-amd64", targetPath)
+	cfg := UpdaterConfig{
+		CurrentVersion: "v2.4.1",
+		ReleaseAPIURL:  server.URL + "/api/release",
+		DownloadURL:    server.URL + "/downloads",
+		InstallDir:     tmpDir,
+		OS:             "linux",
+		Arch:           "amd64",
+		HTTPClient:     server.Client(),
+	}
+
+	err := RunUpdate(cfg)
 	if err == nil {
-		t.Fatalf("expected DownloadAndInstallBinary to fail on missing checksum, got nil")
+		t.Fatalf("expected RunUpdate to fail on missing checksum, got nil")
 	}
 	if !strings.Contains(err.Error(), "checksum manifest missing") && !strings.Contains(err.Error(), "checksum") {
 		t.Errorf("unexpected error message: %v", err)

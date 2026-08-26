@@ -22,6 +22,7 @@ import (
 	"fabric/internal/meshdns"
 	"fabric/internal/pki"
 	"fabric/internal/protocol"
+	"fabric/internal/version"
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
@@ -32,18 +33,51 @@ var (
 	validEnvKeyRegex   = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 )
 
+var blockedEnvKeys = map[string]bool{
+	"LD_PRELOAD":      true,
+	"LD_LIBRARY_PATH": true,
+	"LD_AUDIT":        true,
+	"IFS":             true,
+	"BASH_ENV":        true,
+	"ENV":             true,
+	"PYTHONPATH":      true,
+	"PERL5LIB":        true,
+	"PERL5OPT":        true,
+	"RUBYOPT":         true,
+	"NODE_OPTIONS":    true,
+}
+
+// SanitizeEnv filters and validates environment variables against injection attacks and poisoned keys.
+func SanitizeEnv(env []string) []string {
+	var clean []string
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		key := strings.TrimSpace(parts[0])
+		if !validEnvKeyRegex.MatchString(key) {
+			continue
+		}
+		if blockedEnvKeys[strings.ToUpper(key)] {
+			continue
+		}
+		if len(parts) == 2 {
+			clean = append(clean, fmt.Sprintf("%s=%s", key, parts[1]))
+		} else {
+			clean = append(clean, key)
+		}
+	}
+	return clean
+}
+
 func quoteShellArg(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func formatEnvExports(env []string) string {
+	sanitized := SanitizeEnv(env)
 	var envPrefix strings.Builder
-	for _, e := range env {
+	for _, e := range sanitized {
 		parts := strings.SplitN(e, "=", 2)
 		key := parts[0]
-		if !validEnvKeyRegex.MatchString(key) {
-			continue
-		}
 		if len(parts) == 2 {
 			envPrefix.WriteString(fmt.Sprintf("export %s=%s\n", key, quoteShellArg(parts[1])))
 		} else {
@@ -80,10 +114,10 @@ type Agent struct {
 // New creates and initializes a new NodeAgent.
 func New(cfg Config) *Agent {
 	if cfg.Domain == "" {
-		cfg.Domain = "fabric.mesh"
+		cfg.Domain = version.DefaultDomain
 	}
 	if cfg.Version == "" {
-		cfg.Version = "2.4.1"
+		cfg.Version = version.Version
 	}
 	if cfg.Hostname == "" {
 		h, _ := os.Hostname()
@@ -314,15 +348,16 @@ func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) 
 	}
 
 	hs := protocol.Handshake{
-		Type:      protocol.TypeHandshake,
-		SessionID: sessionID,
-		Hostname:  a.cfg.Hostname,
-		Domain:    a.cfg.Domain,
-		Token:     a.cfg.Token,
-		OS:        runtime.GOOS,
-		Arch:      runtime.GOARCH,
-		Version:   a.cfg.Version,
-		Tags:      a.cfg.Tags,
+		Type:            protocol.TypeHandshake,
+		SessionID:       sessionID,
+		Hostname:        a.cfg.Hostname,
+		Domain:          a.cfg.Domain,
+		Token:           a.cfg.Token,
+		OS:              runtime.GOOS,
+		Arch:            runtime.GOARCH,
+		Version:         a.cfg.Version,
+		ProtocolVersion: version.ProtocolVersion,
+		Tags:            a.cfg.Tags,
 	}
 
 	b, _ := json.Marshal(hs)
@@ -374,9 +409,9 @@ func killProcessGroup(pid int) {
 	if pid <= 0 {
 		return
 	}
-	pgid, err := syscall.Getpgid(pid)
+
 	targetPGID := pid
-	if err == nil && pgid > 0 {
+	if pgid, err := syscall.Getpgid(pid); err == nil {
 		targetPGID = pgid
 	}
 
@@ -429,8 +464,9 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 	if req.WorkDir != "" {
 		cmd.Dir = req.WorkDir
 	}
-	if len(req.Env) > 0 {
-		cmd.Env = append(os.Environ(), req.Env...)
+	sanitizedEnv := SanitizeEnv(req.Env)
+	if len(sanitizedEnv) > 0 {
+		cmd.Env = append(os.Environ(), sanitizedEnv...)
 	}
 
 	// Process group isolation
@@ -442,7 +478,15 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 			return
 		}
 		go func() {
-			cmd.Wait()
+			if req.TimeoutSeconds > 0 {
+				timer := time.AfterFunc(time.Duration(req.TimeoutSeconds)*time.Second, func() {
+					if cmd.Process != nil {
+						killProcessGroup(cmd.Process.Pid)
+					}
+				})
+				defer timer.Stop()
+			}
+			_ = cmd.Wait()
 		}()
 		protocol.WriteFrame(stream, protocol.StreamExit, []byte("0"))
 		return
@@ -457,6 +501,14 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		})
 	}
 	defer killCmd()
+
+	if req.TimeoutSeconds > 0 {
+		timeoutTimer := time.AfterFunc(time.Duration(req.TimeoutSeconds)*time.Second, func() {
+			protocol.WriteFrame(stream, protocol.StreamStderr, []byte(fmt.Sprintf("\n[!] Execution timed out after %d seconds\n", req.TimeoutSeconds)))
+			killCmd()
+		})
+		defer timeoutTimer.Stop()
+	}
 
 	if req.AllocatePTY {
 		ptmx, err := pty.Start(cmd)

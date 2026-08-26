@@ -26,15 +26,16 @@ const (
 )
 
 type Handshake struct {
-	Type      EnvelopeType `json:"type"`
-	SessionID string       `json:"session_id,omitempty"`
-	Hostname  string       `json:"hostname"`
-	Domain    string       `json:"domain,omitempty"`
-	Token     string       `json:"token"`
-	OS        string       `json:"os,omitempty"`
-	Arch      string       `json:"arch,omitempty"`
-	Version   string       `json:"version,omitempty"`
-	Tags      []string     `json:"tags,omitempty"`
+	Type            EnvelopeType `json:"type"`
+	SessionID       string       `json:"session_id,omitempty"`
+	Hostname        string       `json:"hostname"`
+	Domain          string       `json:"domain,omitempty"`
+	Token           string       `json:"token"`
+	OS              string       `json:"os,omitempty"`
+	Arch            string       `json:"arch,omitempty"`
+	Version         string       `json:"version,omitempty"`
+	ProtocolVersion string       `json:"protocol_version,omitempty"`
+	Tags            []string     `json:"tags,omitempty"`
 }
 
 type ExecRequest struct {
@@ -50,6 +51,7 @@ type ExecRequest struct {
 	User           string       `json:"user,omitempty"`
 	Path           []string     `json:"path,omitempty"`
 	Hops           int          `json:"hops,omitempty"`
+	TimeoutSeconds int          `json:"timeout_seconds,omitempty"`
 }
 
 type NodeMetadata struct {
@@ -141,14 +143,16 @@ type CopyRequest struct {
 }
 
 type ServerHello struct {
-	Type         EnvelopeType `json:"type"` // "server_hello" or "gateway_hello"
-	ServerID     string       `json:"server_id,omitempty"`
-	GatewayID    string       `json:"gateway_id,omitempty"`
-	Domain       string       `json:"domain,omitempty"`
-	Region       string       `json:"region,omitempty"`
-	Capabilities []string     `json:"capabilities,omitempty"`
-	Token        string       `json:"token,omitempty"`
-	IsLeaf       bool         `json:"is_leaf,omitempty"`
+	Type            EnvelopeType `json:"type"` // "server_hello" or "gateway_hello"
+	ServerID        string       `json:"server_id,omitempty"`
+	GatewayID       string       `json:"gateway_id,omitempty"`
+	Domain          string       `json:"domain,omitempty"`
+	Region          string       `json:"region,omitempty"`
+	Capabilities    []string     `json:"capabilities,omitempty"`
+	Token           string       `json:"token,omitempty"`
+	IsLeaf          bool         `json:"is_leaf,omitempty"`
+	Version         string       `json:"version,omitempty"`
+	ProtocolVersion string       `json:"protocol_version,omitempty"`
 }
 
 type GatewayHello = ServerHello

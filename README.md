@@ -16,7 +16,7 @@ Fabric connects distributed servers, edge devices, and virtual machines behind f
 |---|---|---|
 | **CLI** | `fabric` | Operator tool on your laptop/workstation to run commands and manage the mesh. |
 | **Server** | `fabric-server` | Central control plane and relay daemon (usually runs on a VPS or cloud server). |
-| **Agent (Thread)** | `fabric-agent` | Background daemon running on managed worker machines. |
+| **Thread** | `fabric-thread` | Background daemon running on managed thread machines. |
 
 ---
 
@@ -39,10 +39,9 @@ fabric init
 ```
 
 The wizard prompts you to select how this machine participates:
-- **`[1] CLI only`**: Operator workstation (runs commands, no background daemons).
+- **`[1] Thread`**: Joins this machine as a Thread (`fabric-thread`).
 - **`[2] Server`**: Sets up and starts the central control plane (`fabric-server`).
-- **`[3] Agent`**: Joins this machine to a remote Fabric Server (`fabric-agent`).
-- **`[4] Both`**: Runs both Server and local Agent thread (single-node/testing).
+- **`[3] Both`**: Runs both Server and local Thread on this host.
 
 ---
 
@@ -100,11 +99,11 @@ fabric stitch user@192.168.1.50
 fabric stitch discover 192.168.1.0/24
 ```
 
-### Agent Daemon Management
+### Thread Daemon Service Management
 ```bash
-fabric agent status       # Inspect local agent daemon status
-fabric agent restart      # Restart local agent daemon
-fabric agent uninstall    # Stop and cleanly remove background service
+fabric thread service status       # Inspect local thread daemon status
+fabric thread service restart      # Restart local thread daemon
+fabric thread service uninstall    # Stop and cleanly remove background service
 ```
 
 ---
@@ -112,7 +111,7 @@ fabric agent uninstall    # Stop and cleanly remove background service
 ## Architecture Overview
 
 ```text
-[ fabric CLI ] ────── WebSocket / Yamux ─────► [ fabric-server ] ◄───── Persistent Outbound WS ───── [ fabric-agent ]
+[ fabric CLI ] ────── WebSocket / Yamux ─────► [ fabric-server ] ◄───── Persistent Outbound WS ───── [ fabric-thread ]
  (Exec / CP / Port)                             (Relay & DNS)                                         (Managed Thread)
 ```
 

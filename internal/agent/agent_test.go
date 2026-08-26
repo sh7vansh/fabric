@@ -482,6 +482,8 @@ func TestFormatEnvExports(t *testing.T) {
 		"INVALID-KEY=blocked",
 		"INJECTION=val; rm -rf /",
 		"JUST_KEY",
+		"LD_PRELOAD=/tmp/evil.so",
+		"IFS=:",
 	}
 
 	result := formatEnvExports(env)
@@ -490,6 +492,83 @@ func TestFormatEnvExports(t *testing.T) {
 		t.Fatalf("expected:\n%q\ngot:\n%q", expected, result)
 	}
 }
+
+func TestSanitizeEnv_BlockedKeys(t *testing.T) {
+	input := []string{
+		"SAFE_VAR=value",
+		"LD_PRELOAD=/malicious.so",
+		"LD_LIBRARY_PATH=/tmp/lib",
+		"IFS=\t",
+		"BASH_ENV=/tmp/exec",
+		"ENV=/tmp/exec",
+		"NODE_OPTIONS=--require /tmp/malicious.js",
+		"BAD.KEY=123",
+		"123BAD=456",
+		"ANOTHER_GOOD=789",
+	}
+
+	cleaned := SanitizeEnv(input)
+	if len(cleaned) != 2 {
+		t.Fatalf("expected 2 sanitized vars, got %d: %v", len(cleaned), cleaned)
+	}
+	if cleaned[0] != "SAFE_VAR=value" || cleaned[1] != "ANOTHER_GOOD=789" {
+		t.Errorf("unexpected sanitized output: %v", cleaned)
+	}
+}
+
+func TestHandleExec_TimeoutBoundary(t *testing.T) {
+	ag := New(Config{
+		Domain:   "fabric.mesh",
+		Hostname: "test-node",
+	})
+
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	req := protocol.ExecRequest{
+		Command:        "sleep 10",
+		TimeoutSeconds: 1, // 1 second timeout
+	}
+	env, _ := json.Marshal(req)
+
+	doneCh := make(chan struct{})
+	go func() {
+		ag.HandleExec(serverConn, env)
+		close(doneCh)
+	}()
+
+	start := time.Now()
+	// Read frames until exit or EOF
+	var stderrBuf bytes.Buffer
+	for {
+		frame, err := protocol.ReadFrame(clientConn)
+		if err != nil {
+			break
+		}
+		if frame.Type == protocol.StreamStderr {
+			stderrBuf.Write(frame.Payload)
+		}
+		if frame.Type == protocol.StreamExit {
+			break
+		}
+	}
+
+	select {
+	case <-doneCh:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("HandleExec did not terminate within timeout window")
+	}
+
+	elapsed := time.Since(start)
+	if elapsed > 2500*time.Millisecond {
+		t.Errorf("HandleExec took too long: %v (expected ~1s)", elapsed)
+	}
+	if !strings.Contains(stderrBuf.String(), "timed out") {
+		t.Errorf("expected timeout notice in stderr, got: %q", stderrBuf.String())
+	}
+}
+
 
 
 

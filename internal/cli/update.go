@@ -2,21 +2,12 @@ package cli
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"runtime"
-	"strconv"
-	"strings"
 	"time"
 
-	"fabric/internal/service"
+	"fabric/internal/updater"
+	"fabric/internal/version"
 
 	"github.com/spf13/cobra"
 )
@@ -53,7 +44,7 @@ daemons (fabric-server, fabric-thread) installed in the same binary directory.`,
   # Update all binaries in /usr/local/bin and restart active services
   fabric update --all --restart`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg := UpdaterConfig{
+		cfg := updater.Config{
 			CurrentVersion: Version,
 			TargetVersion:  updateTargetVersion,
 			InstallDir:     updateInstallDir,
@@ -66,7 +57,8 @@ daemons (fabric-server, fabric-thread) installed in the same binary directory.`,
 			HTTPClient:     &http.Client{Timeout: 60 * time.Second},
 			Out:            cmd.OutOrStdout(),
 		}
-		return RunUpdate(cfg)
+		u := updater.New(cfg)
+		return u.Run(context.Background())
 	},
 }
 
@@ -81,430 +73,32 @@ func init() {
 	rootCmd.AddCommand(updateCmd)
 }
 
-// UpdaterConfig holds configuration parameters for the update operation.
-type UpdaterConfig struct {
-	CurrentVersion string
-	TargetVersion  string
-	DownloadURL    string
-	ReleaseAPIURL  string
-	InstallDir     string
-	Force          bool
-	CheckOnly      bool
-	UpdateAll      bool
-	RestartService bool
-	OS             string
-	Arch           string
-	HTTPClient     *http.Client
-	Out            io.Writer
-}
+// Backward-compatible type aliases and helpers for cli package consumers.
+type UpdaterConfig = updater.Config
+type ReleaseInfo = updater.ReleaseInfo
+type ReleaseAsset = updater.ReleaseAsset
 
-// ReleaseAsset represents a single downloadable binary asset from a release.
-type ReleaseAsset struct {
-	Name               string `json:"name"`
-	BrowserDownloadURL string `json:"browser_download_url"`
-	Size               int64  `json:"size"`
-}
-
-// ReleaseInfo encapsulates GitHub release metadata.
-type ReleaseInfo struct {
-	TagName     string         `json:"tag_name"`
-	Name        string         `json:"name"`
-	PublishedAt string         `json:"published_at"`
-	Assets      []ReleaseAsset `json:"assets"`
-	Prerelease  bool           `json:"prerelease"`
-}
-
-// SemverCompare compares two semantic version strings (e.g., "v2.1.0" and "2.2.0").
-// Returns -1 if v1 < v2, 0 if v1 == v2, and 1 if v1 > v2.
+// SemverCompare compares two semantic version strings using the canonical version module.
 func SemverCompare(v1, v2 string) int {
-	clean1 := strings.TrimPrefix(strings.TrimSpace(v1), "v")
-	clean2 := strings.TrimPrefix(strings.TrimSpace(v2), "v")
-
-	parts1 := strings.Split(clean1, ".")
-	parts2 := strings.Split(clean2, ".")
-
-	maxLen := len(parts1)
-	if len(parts2) > maxLen {
-		maxLen = len(parts2)
-	}
-
-	for i := 0; i < maxLen; i++ {
-		var n1, n2 int
-		if i < len(parts1) {
-			// strip prerelease suffixes if any (e.g. 2.1.0-rc1)
-			sub := strings.Split(parts1[i], "-")[0]
-			n1, _ = strconv.Atoi(sub)
-		}
-		if i < len(parts2) {
-			sub := strings.Split(parts2[i], "-")[0]
-			n2, _ = strconv.Atoi(sub)
-		}
-
-		if n1 < n2 {
-			return -1
-		}
-		if n1 > n2 {
-			return 1
-		}
-	}
-
-	return 0
+	return version.Compare(v1, v2)
 }
 
-// NormalizeArch translates runtime.GOARCH into release asset arch names.
+// NormalizeArch translates architecture names using the canonical updater module.
 func NormalizeArch(arch string) string {
-	switch arch {
-	case "x86_64", "amd64":
-		return "amd64"
-	case "aarch64", "arm64":
-		return "arm64"
-	case "armv7l", "armhf", "arm":
-		return "arm"
-	default:
-		return arch
-	}
+	return updater.NormalizeArch(arch)
 }
 
-// FetchReleaseInfo fetches release metadata from GitHub or custom API endpoint.
+// RunUpdate delegates update execution to the updater domain module.
+func RunUpdate(cfg updater.Config) error {
+	u := updater.New(cfg)
+	return u.Run(context.Background())
+}
+
+// FetchReleaseInfo queries release metadata.
 func FetchReleaseInfo(ctx context.Context, client *http.Client, apiURL, targetVersion string) (*ReleaseInfo, error) {
-	if apiURL == "" {
-		if targetVersion == "" || targetVersion == "latest" {
-			apiURL = "https://api.github.com/repos/sh7vansh/fabric/releases/latest"
-		} else {
-			tag := targetVersion
-			if !strings.HasPrefix(tag, "v") {
-				tag = "v" + tag
-			}
-			apiURL = fmt.Sprintf("https://api.github.com/repos/sh7vansh/fabric/releases/tags/%s", tag)
-		}
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("User-Agent", "fabric-updater")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query release metadata: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("release %q not found", targetVersion)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("release API returned HTTP %s", resp.Status)
-	}
-
-	var info ReleaseInfo
-	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
-		return nil, fmt.Errorf("failed to parse release metadata: %w", err)
-	}
-
-	return &info, nil
-}
-
-// FindInstallPath discovers the active binary path or fallback destination.
-func FindInstallPath(customDir string) (string, error) {
-	if customDir != "" {
-		return filepath.Join(customDir, "fabric"), nil
-	}
-
-	execPath, err := os.Executable()
-	if err == nil {
-		if resolved, resolveErr := filepath.EvalSymlinks(execPath); resolveErr == nil {
-			execPath = resolved
-		}
-		// If running from /tmp, test directory, or go-build, fallback to standard locations
-		if !strings.Contains(execPath, "/tmp/") && !strings.Contains(execPath, "go-build") && !strings.HasSuffix(execPath, ".test") {
-			return execPath, nil
-		}
-	}
-
-	// Default fallback search
-	for _, candidate := range []string{"/usr/local/bin/fabric", filepath.Join(os.Getenv("HOME"), ".local/bin/fabric")} {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
-	}
-
-	return "/usr/local/bin/fabric", nil
-}
-
-func computeSHA256(filePath string) (string, error) {
-	f, err := os.Open(filePath)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
-
-func fetchExpectedChecksum(ctx context.Context, client *http.Client, downloadURL string) (string, error) {
-	// 1. Try direct <downloadURL>.sha256
-	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL+".sha256", nil)
-	if err == nil {
-		req.Header.Set("User-Agent", "fabric-updater")
-		resp, err := client.Do(req)
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				body, _ := io.ReadAll(resp.Body)
-				fields := strings.Fields(string(body))
-				if len(fields) > 0 && len(fields[0]) == 64 {
-					return strings.ToLower(fields[0]), nil
-				}
-			}
-		}
-	}
-
-	// 2. Try checksums.txt or SHA256SUMS in download directory
-	lastSlash := strings.LastIndex(downloadURL, "/")
-	if lastSlash > 0 {
-		baseURL := downloadURL[:lastSlash]
-		assetName := downloadURL[lastSlash+1:]
-
-		for _, manifestName := range []string{"checksums.txt", "SHA256SUMS", "checksums.sha256"} {
-			manifestURL := baseURL + "/" + manifestName
-			mReq, err := http.NewRequestWithContext(ctx, "GET", manifestURL, nil)
-			if err != nil {
-				continue
-			}
-			mReq.Header.Set("User-Agent", "fabric-updater")
-			mResp, err := client.Do(mReq)
-			if err != nil {
-				continue
-			}
-			defer mResp.Body.Close()
-
-			if mResp.StatusCode == http.StatusOK {
-				body, _ := io.ReadAll(mResp.Body)
-				for _, line := range strings.Split(string(body), "\n") {
-					line = strings.TrimSpace(line)
-					if line == "" || strings.HasPrefix(line, "#") {
-						continue
-					}
-					fields := strings.Fields(line)
-					if len(fields) >= 2 {
-						hash := strings.ToLower(fields[0])
-						name := strings.TrimPrefix(fields[1], "*")
-						if (name == assetName || filepath.Base(name) == assetName) && len(hash) == 64 {
-							return hash, nil
-						}
-					}
-				}
-			}
-		}
-	}
-
-	return "", fmt.Errorf("security error: checksum manifest missing for %s", filepath.Base(downloadURL))
-}
-
-// DownloadAndInstallBinary downloads a binary stream, verifies its SHA256 checksum, and atomically replaces targetPath.
-func DownloadAndInstallBinary(ctx context.Context, client *http.Client, downloadURL, targetPath string) error {
-	expectedChecksum, err := fetchExpectedChecksum(ctx, client, downloadURL)
-	if err != nil {
-		return fmt.Errorf("checksum verification aborted: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", "fabric-updater")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("download request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with HTTP %s", resp.Status)
-	}
-
-	targetDir := filepath.Dir(targetPath)
-	_ = os.MkdirAll(targetDir, 0755)
-
-	// Write to temporary file in target dir (or os.TempDir())
-	tmpFile, err := os.CreateTemp(targetDir, ".fabric-update-*")
-	if err != nil {
-		// Fallback to system temp directory if target directory is not directly writable
-		tmpFile, err = os.CreateTemp(os.TempDir(), ".fabric-update-*")
-		if err != nil {
-			return fmt.Errorf("failed to create temporary file: %w", err)
-		}
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("failed to write download payload: %w", err)
-	}
-	_ = tmpFile.Close()
-
-	// Verify SHA256 checksum
-	actualChecksum, err := computeSHA256(tmpPath)
-	if err != nil {
-		return fmt.Errorf("failed to compute binary checksum: %w", err)
-	}
-	if !strings.EqualFold(actualChecksum, expectedChecksum) {
-		return fmt.Errorf("security error: SHA256 checksum mismatch for %s (expected %s, got %s)", filepath.Base(downloadURL), expectedChecksum, actualChecksum)
-	}
-
-	if err := os.Chmod(tmpPath, 0755); err != nil {
-		return fmt.Errorf("failed to set executable permissions: %w", err)
-	}
-
-	// Attempt atomic rename
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		// If permission denied, attempt sudo installation
-		sudoCmd := exec.Command("sudo", "install", "-m", "0755", tmpPath, targetPath)
-		if sudoErr := sudoCmd.Run(); sudoErr != nil {
-			return fmt.Errorf("permission denied installing to %s: %w (try running 'sudo fabric update')", targetPath, err)
-		}
-	}
-
-	return nil
-}
-
-func resolveAssetDownloadURL(cfg UpdaterConfig, release *ReleaseInfo, latestTag, assetName string) string {
-	if cfg.DownloadURL != "" {
-		return fmt.Sprintf("%s/%s", strings.TrimRight(cfg.DownloadURL, "/"), assetName)
-	}
-	if envDownload := os.Getenv("FABRIC_DOWNLOAD_URL"); envDownload != "" {
-		return fmt.Sprintf("%s/%s", strings.TrimRight(envDownload, "/"), assetName)
-	}
-	if release != nil {
-		for _, asset := range release.Assets {
-			if asset.Name == assetName {
-				return asset.BrowserDownloadURL
-			}
-		}
-	}
-	return fmt.Sprintf("https://github.com/sh7vansh/fabric/releases/download/%s/%s", latestTag, assetName)
-}
-
-// RunUpdate performs the full update workflow according to the provided config.
-func RunUpdate(cfg UpdaterConfig) error {
-	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = &http.Client{Timeout: 60 * time.Second}
-	}
-	if cfg.Out == nil {
-		cfg.Out = os.Stdout
-	}
-	if cfg.OS == "" {
-		cfg.OS = runtime.GOOS
-	}
-	if cfg.Arch == "" {
-		cfg.Arch = runtime.GOARCH
-	}
-
-	normArch := NormalizeArch(cfg.Arch)
-	currentVer := cfg.CurrentVersion
-	if currentVer == "" {
-		currentVer = "dev"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	fmt.Fprintf(cfg.Out, "[+] Checking for Fabric updates (current: %s, os: %s, arch: %s)...\n", currentVer, cfg.OS, normArch)
-
-	release, err := FetchReleaseInfo(ctx, cfg.HTTPClient, cfg.ReleaseAPIURL, cfg.TargetVersion)
-	if err != nil {
-		return fmt.Errorf("failed to check for updates: %w", err)
-	}
-
-	latestTag := release.TagName
-	if latestTag == "" {
-		latestTag = release.Name
-	}
-
-	cmp := SemverCompare(currentVer, latestTag)
-
-	if cfg.CheckOnly {
-		if cmp < 0 {
-			fmt.Fprintf(cfg.Out, "\n📢 An update is available: %s -> %s\n", currentVer, latestTag)
-			fmt.Fprintf(cfg.Out, "Run 'fabric update' to install the latest version.\n")
-		} else {
-			fmt.Fprintf(cfg.Out, "\n✨ Fabric is already up to date (version %s).\n", currentVer)
-		}
-		return nil
-	}
-
-	if cmp >= 0 && !cfg.Force {
-		fmt.Fprintf(cfg.Out, "\n✨ Fabric is already up to date (version %s).\n", currentVer)
-		fmt.Fprintf(cfg.Out, "Use --force to re-install this version.\n")
-		return nil
-	}
-
-	// Determine install path for the primary CLI binary
-	installPath := ""
-	if cfg.InstallDir != "" {
-		installPath = filepath.Join(cfg.InstallDir, "fabric")
-	} else {
-		execPath, err := os.Executable()
-		if err != nil {
-			installPath = "/usr/local/bin/fabric"
-		} else {
-			installPath = execPath
-		}
-	}
-
-	binDir := filepath.Dir(installPath)
-
-	fmt.Fprintf(cfg.Out, "[+] Updating Fabric: v%s -> %s (linux/%s)...\n", strings.TrimPrefix(cfg.CurrentVersion, "v"), latestTag, normArch)
-
-	// Resolve download URL for CLI binary: fabric-linux-<arch>
-	assetName := fmt.Sprintf("fabric-%s-%s", cfg.OS, normArch)
-	downloadURL := resolveAssetDownloadURL(cfg, release, latestTag, assetName)
-
-	fmt.Fprintf(cfg.Out, "[+] Downloading %s...\n", assetName)
-	if err := DownloadAndInstallBinary(ctx, cfg.HTTPClient, downloadURL, installPath); err != nil {
-		return fmt.Errorf("failed to update %s: %w", installPath, err)
-	}
-	fmt.Fprintf(cfg.Out, "[+] Installed %s to %s\n", assetName, installPath)
-
-	// Update companion binaries if requested or if already present in the target directory
-	companionRoles := []string{"server", "thread"}
-	for _, role := range companionRoles {
-		binName := "fabric-" + role
-		targetBinPath := filepath.Join(binDir, binName)
-		_, statErr := os.Stat(targetBinPath)
-
-		if cfg.UpdateAll || statErr == nil {
-			compAssetName := fmt.Sprintf("fabric-%s-%s-%s", role, cfg.OS, normArch)
-			compDownloadURL := resolveAssetDownloadURL(cfg, release, latestTag, compAssetName)
-
-			fmt.Fprintf(cfg.Out, "[+] Updating companion binary %s...\n", compAssetName)
-			if err := DownloadAndInstallBinary(ctx, cfg.HTTPClient, compDownloadURL, targetBinPath); err != nil {
-				fmt.Fprintf(cfg.Out, "[!] Warning: Failed to update %s: %v\n", binName, err)
-			} else {
-				fmt.Fprintf(cfg.Out, "[+] Installed %s to %s\n", compAssetName, targetBinPath)
-			}
-		}
-	}
-
-	// Restart active services if requested
-	if cfg.RestartService {
-		mgr := service.NewInitManager()
-		for _, role := range []string{"server", "thread"} {
-			if err := mgr.HandleAction("restart", role); err == nil {
-				fmt.Fprintf(cfg.Out, "[+] Restarted background %s service.\n", role)
-			}
-		}
-	}
-
-	fmt.Fprintf(cfg.Out, "\n[+] Successfully updated Fabric to %s!\n", latestTag)
-	return nil
+	u := updater.New(updater.Config{
+		ReleaseAPIURL: apiURL,
+		HTTPClient:    client,
+	})
+	return u.FetchReleaseInfo(ctx, targetVersion)
 }

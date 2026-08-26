@@ -14,6 +14,7 @@ import (
 
 	"fabric/internal/pki"
 	"fabric/internal/protocol"
+	"fabric/internal/version"
 
 	"github.com/gorilla/websocket"
 )
@@ -423,13 +424,16 @@ func (r *Relay) dialAndRunPeerSession(rawEndpoint string, isLeaf bool) error {
 	}
 
 	hello := protocol.GatewayHello{
-		Type:         protocol.TypeGatewayHello,
-		GatewayID:    r.gatewayID,
-		Domain:       r.domain,
-		Region:       r.region,
-		Capabilities: []string{"exec", "cp", "proxy", "dns"},
-		Token:        r.token,
-		IsLeaf:       isLeaf,
+		Type:            protocol.TypeGatewayHello,
+		GatewayID:       r.gatewayID,
+		ServerID:        r.gatewayID,
+		Domain:          r.domain,
+		Region:          r.region,
+		Capabilities:    []string{"exec", "cp", "proxy", "dns"},
+		Token:           r.token,
+		IsLeaf:          isLeaf,
+		Version:         version.Version,
+		ProtocolVersion: version.ProtocolVersion,
 	}
 	b, _ := json.Marshal(hello)
 	if _, err := stream.Write(b); err != nil {
@@ -445,6 +449,10 @@ func (r *Relay) dialAndRunPeerSession(rawEndpoint string, isLeaf bool) error {
 		return fmt.Errorf("failed to read remote peer hello: %w", err)
 	}
 	stream.Close()
+
+	if remoteHello.ProtocolVersion != "" && !version.IsProtocolCompatible(remoteHello.ProtocolVersion, version.ProtocolVersion) {
+		return fmt.Errorf("incompatible remote peer protocol version %q (local protocol: %s)", remoteHello.ProtocolVersion, version.ProtocolVersion)
+	}
 
 	topology := "core"
 	if isLeaf || remoteHello.IsLeaf {
@@ -547,6 +555,12 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 			return
 		}
 
+		if hello.ProtocolVersion != "" && !version.IsProtocolCompatible(hello.ProtocolVersion, version.ProtocolVersion) {
+			log.Printf("[Relay/Peering] Incompatible peer protocol version %q from %s (server protocol: %s)\n", hello.ProtocolVersion, hello.ServerID, version.ProtocolVersion)
+			mux.Session.Close()
+			return
+		}
+
 		if hello.ServerID == "" {
 			mux.Session.Close()
 			return
@@ -554,13 +568,15 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 
 		// Reply with local ServerHello
 		myHello := protocol.ServerHello{
-			Type:         protocol.TypeServerHello,
-			ServerID:     r.gatewayID,
-			GatewayID:    r.gatewayID,
-			Domain:       r.domain,
-			Region:       r.region,
-			Capabilities: []string{"exec", "cp", "proxy", "dns"},
-			IsLeaf:       isLeaf,
+			Type:            protocol.TypeServerHello,
+			ServerID:        r.gatewayID,
+			GatewayID:       r.gatewayID,
+			Domain:          r.domain,
+			Region:          r.region,
+			Capabilities:    []string{"exec", "cp", "proxy", "dns"},
+			IsLeaf:          isLeaf,
+			Version:         version.Version,
+			ProtocolVersion: version.ProtocolVersion,
 		}
 		replyBytes, _ := json.Marshal(myHello)
 		_, _ = stream.Write(replyBytes)

@@ -725,7 +725,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 				if !opts.SilentOutput {
 					fmt.Println(" (timeout)")
 					fmt.Println("[!] Warning: Thread did not show up in the Fabric within 15 seconds.")
-					fmt.Println("    Check target logs via SSH: ssh " + opts.Target + " journalctl -u fabric-agent -n 20")
+					fmt.Println("    Check target logs via SSH: ssh " + opts.Target + " journalctl -u fabric-thread -n 20")
 				}
 				return nil, fmt.Errorf("thread connection verification timed out after %v", verifyTimeout)
 			}
@@ -785,7 +785,7 @@ func verifyDirectInvertedProbe(proberFn DirectProberFunc, targetProbeAddr, caCer
 			fmt.Printf("\n[!] %s mTLS probe failed to connect to %s: %v\n", prefix, targetProbeAddr, err)
 			fmt.Println("\nTroubleshooting Suggestions:")
 			fmt.Printf("  1. Verify incoming TCP port %s is open: ssh %s 'sudo ufw allow %s/tcp'\n", listenPort, opts.Target, listenPort)
-			fmt.Printf("  2. Check agent service logs: ssh %s journalctl -u fabric-agent -n 30 --no-pager\n", opts.Target)
+			fmt.Printf("  2. Check thread service logs: ssh %s journalctl -u fabric-thread -n 30 --no-pager\n", opts.Target)
 			fmt.Printf("  3. Verify port is listening: ssh %s 'ss -tulpn | grep %s'\n\n", opts.Target, listenPort)
 		}
 		return nil, fmt.Errorf("%s remote direct mTLS probe failed: %w", strings.ToLower(prefix), err)

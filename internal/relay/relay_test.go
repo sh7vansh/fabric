@@ -2,6 +2,7 @@ package relay
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"net"
 	"strings"
 	"sync"
@@ -445,5 +446,77 @@ func TestRelayPingLoopConcurrentTelemetryReadWrite(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	close(stopCh)
 	wg.Wait()
+}
+
+func TestRelayAdminTokenRoleSeparation(t *testing.T) {
+	r := New(Config{
+		Domain:     "fabric.mesh",
+		Token:      "worker-token-xyz",
+		AdminToken: "admin-secret-999",
+	})
+	defer r.Close()
+
+	// 1. Worker token validates under general ValidateToken
+	if !r.ValidateToken("worker-token-xyz") {
+		t.Errorf("expected worker token to pass ValidateToken")
+	}
+
+	// 2. Admin token also validates under general ValidateToken
+	if !r.ValidateToken("admin-secret-999") {
+		t.Errorf("expected admin token to pass ValidateToken")
+	}
+
+	// 3. Worker token FAILS ValidateAdminToken
+	if r.ValidateAdminToken("worker-token-xyz") {
+		t.Errorf("worker token should NOT pass ValidateAdminToken")
+	}
+
+	// 4. Admin token PASSES ValidateAdminToken
+	if !r.ValidateAdminToken("admin-secret-999") {
+		t.Errorf("admin token must pass ValidateAdminToken")
+	}
+
+	// 5. Random token fails both
+	if r.ValidateToken("unauthorized") || r.ValidateAdminToken("unauthorized") {
+		t.Errorf("unauthorized token must fail both validations")
+	}
+}
+
+func TestRelayHandshakeProtocolVersionRejection(t *testing.T) {
+	r := New(Config{
+		Domain: "fabric.mesh",
+		Token:  "test-token",
+	})
+	defer r.Close()
+
+	sMux, cMux := createMockMultiplexers(t)
+	defer sMux.Session.Close()
+	defer cMux.Session.Close()
+
+	go r.ServeMux(sMux, "127.0.0.1:12345", "127.0.0.1")
+
+	// Send handshake with incompatible major protocol version (e.g. "99.0.0")
+	stream, err := cMux.Session.Open()
+	if err != nil {
+		t.Fatalf("failed to open stream: %v", err)
+	}
+
+	hs := protocol.Handshake{
+		Type:            protocol.TypeHandshake,
+		Hostname:        "incompatible-node",
+		Token:           "test-token",
+		ProtocolVersion: "99.0.0",
+	}
+	b, _ := json.Marshal(hs)
+	_, _ = stream.Write(b)
+	_ = stream.Close()
+
+	// Wait briefly for relay to process and close session
+	time.Sleep(50 * time.Millisecond)
+
+	// Node should NOT be registered
+	if _, ok := r.GetNode("incompatible-node"); ok {
+		t.Errorf("incompatible protocol version node should NOT be registered")
+	}
 }
 

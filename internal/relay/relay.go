@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"fabric/internal/protocol"
+	"fabric/internal/version"
 
 	"github.com/gorilla/websocket"
 	"github.com/miekg/dns"
@@ -28,6 +29,7 @@ type NodeSession struct {
 type Config struct {
 	Domain       string
 	Token        string
+	AdminToken   string
 	PingFreq     time.Duration
 	GatewayID    string
 	Region       string
@@ -41,6 +43,7 @@ type Config struct {
 type Relay struct {
 	domain       string
 	token        string
+	adminToken   string
 	nodes        map[string]*NodeSession
 	mu           sync.RWMutex
 	closeCh      chan struct{}
@@ -73,9 +76,15 @@ func New(cfg Config) *Relay {
 		region = "default"
 	}
 
+	adminToken := cfg.AdminToken
+	if adminToken == "" {
+		adminToken = cfg.Token
+	}
+
 	r := &Relay{
 		domain:       domain,
 		token:        cfg.Token,
+		adminToken:   adminToken,
 		nodes:        make(map[string]*NodeSession),
 		closeCh:      make(chan struct{}),
 		gatewayID:    gatewayID,
@@ -196,6 +205,12 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 
 		if !r.ValidateToken(hs.Token) {
 			log.Println("[Server] Unauthorized connection attempt from:", hs.Hostname)
+			mux.Session.Close()
+			return
+		}
+
+		if hs.ProtocolVersion != "" && !version.IsProtocolCompatible(hs.ProtocolVersion, version.ProtocolVersion) {
+			log.Printf("[Server] Handshake rejected: incompatible protocol version %q from %s (server protocol: %s)\n", hs.ProtocolVersion, hs.Hostname, version.ProtocolVersion)
 			mux.Session.Close()
 			return
 		}
@@ -331,9 +346,26 @@ func (r *Relay) Domain() string {
 	return r.domain
 }
 
-// ValidateToken verifies the provided token against the relay pre-shared token.
+// ValidateToken verifies the provided token against the relay pre-shared token or admin token.
 func (r *Relay) ValidateToken(provided string) bool {
-	return protocol.ValidateToken(provided, r.token)
+	if protocol.ValidateToken(provided, r.token) {
+		return true
+	}
+	if r.adminToken != "" && protocol.ValidateToken(provided, r.adminToken) {
+		return true
+	}
+	return false
+}
+
+// ValidateAdminToken verifies the provided token against the administrative token.
+func (r *Relay) ValidateAdminToken(provided string) bool {
+	if r.adminToken != "" && protocol.ValidateToken(provided, r.adminToken) {
+		return true
+	}
+	if r.adminToken == "" && protocol.ValidateToken(provided, r.token) {
+		return true
+	}
+	return false
 }
 
 // RegisterNode registers an active node connection, displacing any existing session for the hostname.

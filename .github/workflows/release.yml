@@ -19,21 +19,30 @@ jobs:
         with:
           go-version: 'stable'
 
-      - name: Build Binaries
+      - name: Build Canonical Binaries
         run: |
           mkdir -p dist
           
-          # We build for the three architectures supported in install.sh
+          # Build canonical binaries across supported Linux architectures
           ARCHS=("amd64" "arm64" "arm")
+          TAG_VERSION="${{ github.ref_name }}"
+          COMMIT_SHA="${{ github.sha }}"
+          BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          
+          LDFLAGS="-s -w -X fabric/internal/version.Version=${TAG_VERSION} -X fabric/internal/version.GitCommit=${COMMIT_SHA} -X fabric/internal/version.BuildDate=${BUILD_DATE}"
           
           for ARCH in "${ARCHS[@]}"; do
-            echo "Building for linux/$ARCH..."
-            GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-linux-$ARCH" ./cmd/cli
-            GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-server-linux-$ARCH" ./cmd/server
-            GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-agent-linux-$ARCH" ./cmd/agent
-            GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-socket-linux-$ARCH" ./cmd/socket
-            GOOS=linux GOARCH=$ARCH go build -ldflags="-s -w" -o "dist/fabric-node-linux-$ARCH" ./cmd/node
+            echo "Building canonical binaries for linux/$ARCH..."
+            GOOS=linux GOARCH=$ARCH go build -ldflags="${LDFLAGS}" -o "dist/fabric-linux-$ARCH" ./cmd/cli
+            GOOS=linux GOARCH=$ARCH go build -ldflags="${LDFLAGS}" -o "dist/fabric-server-linux-$ARCH" ./cmd/server
+            GOOS=linux GOARCH=$ARCH go build -ldflags="${LDFLAGS}" -o "dist/fabric-thread-linux-$ARCH" ./cmd/thread
           done
+
+      - name: Generate Checksum Manifest
+        run: |
+          cd dist
+          sha256sum fabric* > checksums.txt
+          cat checksums.txt
 
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v2

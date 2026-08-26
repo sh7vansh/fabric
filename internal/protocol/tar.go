@@ -52,36 +52,99 @@ func SanitizeExtractPath(destDir, entryName string) (string, error) {
 	return cleanTarget, nil
 }
 
-var protectedSystemPrefixes = []string{
-	"/etc",
-	"/root",
-	"/sys",
-	"/proc",
-	"/boot",
-	"/dev",
-	"/run",
-	"/sbin",
-	"/usr/sbin",
-	"/lib",
-	"/lib64",
+var defaultAuthorizedRoots = []string{
+	"/home",
+	"/tmp",
+	"/var/tmp",
+	"/var/www",
+	"/var/log",
+	"/opt",
+	"/srv",
+	"/mnt",
+	"/media",
+	"/data",
+	"/usr/local",
 }
 
-// ValidateDestinationPath ensures a file transfer target is not an unauthorized protected system directory.
-func ValidateDestinationPath(path string) error {
-	clean := filepath.Clean(path)
-	if !filepath.IsAbs(clean) {
-		if strings.HasPrefix(clean, "..") {
-			return fmt.Errorf("path traversal: destination path %q escapes root", path)
-		}
-		return nil
+// AuthorizeDestinationPath verifies that a target destination path strictly resides
+// within authorized capability roots without path traversal, escaping relative components,
+// or intermediate/leaf symlink dereferencing to unauthorized locations.
+func AuthorizeDestinationPath(targetPath string, allowedRoots ...string) (string, error) {
+	if strings.ContainsRune(targetPath, 0) {
+		return "", fmt.Errorf("invalid path: contains null bytes")
 	}
 
-	for _, prefix := range protectedSystemPrefixes {
-		if clean == prefix || strings.HasPrefix(clean, prefix+string(filepath.Separator)) {
-			return fmt.Errorf("access denied: destination %q is a protected system directory", path)
+	rawClean := filepath.Clean(targetPath)
+	if !filepath.IsAbs(rawClean) {
+		if strings.HasPrefix(rawClean, "..") || strings.HasPrefix(rawClean, "/..") {
+			return "", fmt.Errorf("path traversal: destination path %q escapes root", targetPath)
+		}
+		return rawClean, nil
+	}
+
+	clean := rawClean
+	if clean == "/" {
+		return "", fmt.Errorf("access denied: destination %q is the filesystem root", targetPath)
+	}
+
+	roots := allowedRoots
+	if len(roots) == 0 {
+		roots = defaultAuthorizedRoots
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			roots = append(roots, home)
 		}
 	}
-	return nil
+
+	// Evaluate symlinks on deepest existing ancestor to ensure symlink dereferencing stays within authorized roots
+	checkPath := clean
+	for {
+		if fi, err := os.Lstat(checkPath); err == nil {
+			if fi.Mode()&os.ModeSymlink != 0 {
+				eval, err := filepath.EvalSymlinks(checkPath)
+				if err != nil {
+					return "", fmt.Errorf("access denied: broken or invalid symlink in path %q: %w", targetPath, err)
+				}
+				rel, _ := filepath.Rel(checkPath, clean)
+				if rel == "." {
+					clean = eval
+				} else {
+					clean = filepath.Join(eval, rel)
+				}
+			}
+			break
+		}
+		parent := filepath.Dir(checkPath)
+		if parent == checkPath || parent == "/" || parent == "." {
+			break
+		}
+		checkPath = parent
+	}
+
+	isAuthorized := false
+	for _, root := range roots {
+		cleanRoot := filepath.Clean(root)
+		if clean == cleanRoot {
+			isAuthorized = true
+			break
+		}
+		rel, err := filepath.Rel(cleanRoot, clean)
+		if err == nil && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".." {
+			isAuthorized = true
+			break
+		}
+	}
+
+	if !isAuthorized {
+		return "", fmt.Errorf("access denied: destination %q is not within authorized roots", targetPath)
+	}
+
+	return clean, nil
+}
+
+// ValidateDestinationPath ensures a file transfer target is within authorized capability roots.
+func ValidateDestinationPath(path string) error {
+	_, err := AuthorizeDestinationPath(path)
+	return err
 }
 
 // ExtractTar reads a tar stream from r and unpacks it safely inside destDir with default limits.
@@ -174,6 +237,24 @@ func ExtractTarWithLimits(r io.Reader, destDir string, maxBytes int64, maxEntrie
 			totalDecompressedBytes += copied
 			if totalDecompressedBytes > maxBytes {
 				return fmt.Errorf("tar extraction exceeded maximum decompressed size limit of %d bytes", maxBytes)
+			}
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+				return err
+			}
+			linkTarget := header.Linkname
+			if filepath.IsAbs(linkTarget) || strings.HasPrefix(linkTarget, "/") || strings.HasPrefix(linkTarget, "\\") {
+				return fmt.Errorf("tar extraction rejected unsafe absolute symlink %q -> %q", header.Name, linkTarget)
+			}
+			resolvedLink := filepath.Join(filepath.Dir(targetPath), linkTarget)
+			cleanResolved := filepath.Clean(resolvedLink)
+			relToStaging, err := filepath.Rel(stagingDir, cleanResolved)
+			if err != nil || strings.HasPrefix(relToStaging, "..") || relToStaging == ".." {
+				return fmt.Errorf("tar extraction rejected escaping symlink %q -> %q", header.Name, linkTarget)
+			}
+			_ = os.Remove(targetPath)
+			if err := os.Symlink(linkTarget, targetPath); err != nil {
+				return fmt.Errorf("failed to create extracted symlink: %w", err)
 			}
 		}
 	}
