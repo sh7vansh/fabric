@@ -340,3 +340,41 @@ func TestInitRequiresRootPrivileges(t *testing.T) {
 		t.Errorf("expected 'requires root privileges' error, got: %v", err)
 	}
 }
+
+func TestInitThreadInteractiveRequiresServerAndToken(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	input := "1\n1\n\nwss://192.168.1.50:8443/ws\n\nremote-cluster-tok\nfabric.mesh\nN\n"
+
+	oldStdin := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdin = r
+	defer func() { os.Stdin = oldStdin }()
+
+	go func() {
+		defer w.Close()
+		_, _ = w.Write([]byte(input))
+	}()
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	rootCmd.SetOut(&stdoutBuf)
+	rootCmd.SetErr(&stderrBuf)
+	rootCmd.SetArgs([]string{"init"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("fabric init failed: %v", err)
+	}
+
+	cfg := LoadConfig("", "", "")
+	if cfg.Host != "wss://192.168.1.50:8443/ws" {
+		t.Errorf("expected host wss://192.168.1.50:8443/ws, got %s", cfg.Host)
+	}
+	if cfg.Token != "remote-cluster-tok" {
+		t.Errorf("expected token remote-cluster-tok, got %s", cfg.Token)
+	}
+}

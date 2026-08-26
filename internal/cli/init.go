@@ -199,10 +199,22 @@ func runInit(cmd *cobra.Command, args []string) error {
 		defaultSrv := "wss://localhost:8443/ws"
 		if initNonInteract {
 			serverURL = defaultSrv
-		} else if role == "server" {
+		} else if role == "server" || role == "both" {
 			serverURL = prompt(reader, "Fabric Server listen URL", defaultSrv)
 		} else {
-			serverURL = prompt(reader, "Fabric Server WebSocket URL (e.g. wss://192.168.1.50:8443/ws)", defaultSrv)
+			// Thread only role: Require active Server URL
+			fmt.Println("\n--------------------------------------------------")
+			fmt.Println("  Joining as a Thread requires an active Fabric Server.")
+			fmt.Println("  If this machine should host the Server instead, re-run")
+			fmt.Println("  'sudo fabric init' and select option [2] Server or [3] Both.")
+			fmt.Println("--------------------------------------------------")
+			for {
+				serverURL = prompt(reader, "Fabric Server WebSocket URL (e.g. wss://192.168.1.50:8443/ws)", "")
+				if serverURL != "" {
+					break
+				}
+				fmt.Println("[!] Server URL is required to join the mesh. Please enter the WebSocket URL of your Fabric Server.")
+			}
 		}
 	}
 
@@ -221,7 +233,15 @@ func runInit(cmd *cobra.Command, args []string) error {
 				token = prompt(reader, "Enter cluster token", "default-secret")
 			}
 		} else {
-			token = prompt(reader, "Cluster Token", "default-secret")
+			// Thread only role: Require Server Cluster Token
+			fmt.Println("\nEnter the pre-shared Cluster Token from your Fabric Server:")
+			for {
+				token = prompt(reader, "Cluster Token", "")
+				if token != "" {
+					break
+				}
+				fmt.Println("[!] Cluster Token is required to authenticate with the Fabric Server.")
+			}
 		}
 	}
 
