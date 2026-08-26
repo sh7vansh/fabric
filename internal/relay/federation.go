@@ -166,6 +166,9 @@ func (r *Relay) unregisterPeerSession(peer *GatewayPeerSession) {
 				delete(r.remoteNodes, host)
 			}
 		}
+		if r.reconciler != nil {
+			r.reconciler.ResetPeer(peer.GatewayID)
+		}
 		peer.mu.Lock()
 		if !peer.closed {
 			peer.closed = true
@@ -187,6 +190,9 @@ func (r *Relay) UnregisterPeer(gatewayID string) {
 			if entry.GatewayID == gatewayID {
 				delete(r.remoteNodes, host)
 			}
+		}
+		if r.reconciler != nil {
+			r.reconciler.ResetPeer(gatewayID)
 		}
 	}
 	r.peerMu.Unlock()
@@ -613,6 +619,17 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 			return
 		}
 
+		if r.reconciler != nil && adv.Epoch > 0 {
+			isNewer, needsSync := r.reconciler.ValidateAndRecordEpoch(adv.GatewayID, adv.Epoch, adv.Checksum)
+			if !isNewer {
+				log.Printf("[Relay/Peering] Discarding stale ThreadAdvertise (epoch %d < latest) from %s\n", adv.Epoch, adv.GatewayID)
+				return
+			}
+			if needsSync {
+				log.Printf("[Relay/Peering] Checksum mismatch from %s, triggering delta synchronization\n", adv.GatewayID)
+			}
+		}
+
 		for _, node := range adv.Nodes {
 			r.RegisterRemoteNode(node, adv.GatewayID)
 		}
@@ -627,7 +644,53 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 			return
 		}
 
+		if r.reconciler != nil && with.Epoch > 0 {
+			isNewer, _ := r.reconciler.ValidateAndRecordEpoch(with.GatewayID, with.Epoch, with.Checksum)
+			if !isNewer {
+				log.Printf("[Relay/Peering] Discarding stale ThreadWithdraw (epoch %d < latest) from %s\n", with.Epoch, with.GatewayID)
+				return
+			}
+		}
+
 		r.UnregisterRemoteNode(with.Hostname, with.GatewayID)
+	}))
+
+	// Heartbeats and keepalives with topology checksum comparison
+	handleHeartbeat := func(stream net.Conn, env []byte) {
+		defer stream.Close()
+		var hb protocol.ServerHeartbeat
+		if err := json.Unmarshal(env, &hb); err != nil {
+			return
+		}
+		if r.reconciler != nil && hb.Epoch > 0 {
+			isNewer, needsSync := r.reconciler.ValidateAndRecordEpoch(hb.GatewayID, hb.Epoch, hb.Checksum)
+			if isNewer && needsSync {
+				log.Printf("[Relay/Peering] Topology checksum mismatch with peer %s; requesting delta synchronization\n", hb.GatewayID)
+				r.peerMu.RLock()
+				peer := r.peers[hb.GatewayID]
+				r.peerMu.RUnlock()
+				if peer != nil {
+					go r.sendLocalThreadAdvertisementsToPeer(peer)
+				}
+			}
+		}
+	}
+	router.HandleFunc(string(protocol.TypeServerHeartbeat), requirePeerAuth("ServerHeartbeat", handleHeartbeat))
+	router.HandleFunc(string(protocol.TypeGatewayHeartbeat), requirePeerAuth("GatewayHeartbeat", handleHeartbeat))
+
+	// Topology delta synchronization request
+	router.HandleFunc(string(protocol.TypeTopologySyncRequest), requirePeerAuth("TopologySyncRequest", func(stream net.Conn, env []byte) {
+		defer stream.Close()
+		var syncReq protocol.TopologySyncRequest
+		if err := json.Unmarshal(env, &syncReq); err != nil {
+			return
+		}
+		r.peerMu.RLock()
+		peer := r.peers[syncReq.GatewayID]
+		r.peerMu.RUnlock()
+		if peer != nil {
+			go r.sendLocalThreadAdvertisementsToPeer(peer)
+		}
 	}))
 
 	// 4. Cross-gateway ExecRequest
@@ -748,10 +811,19 @@ func (r *Relay) sendLocalThreadAdvertisementsToPeer(peer *GatewayPeerSession) {
 		return
 	}
 
+	var epoch uint64
+	var checksum uint32
+	if r.reconciler != nil {
+		epoch = r.reconciler.Epoch()
+		checksum = r.reconciler.ComputeChecksum(localNodes)
+	}
+
 	adv := protocol.ThreadAdvertise{
 		Type:      protocol.TypeThreadAdvertise,
 		GatewayID: r.gatewayID,
 		Nodes:     localNodes,
+		Epoch:     epoch,
+		Checksum:  checksum,
 	}
 	b, err := json.Marshal(adv)
 	if err != nil {
@@ -780,10 +852,22 @@ func (r *Relay) BroadcastThreadAdvertise(nodes []protocol.NodeMetadata) {
 		return
 	}
 
+	var epoch uint64
+	var checksum uint32
+	if r.reconciler != nil {
+		epoch = r.reconciler.Epoch()
+		r.mu.RLock()
+		allLocal := r.listNodesLocked()
+		r.mu.RUnlock()
+		checksum = r.reconciler.ComputeChecksum(allLocal)
+	}
+
 	adv := protocol.ThreadAdvertise{
 		Type:      protocol.TypeThreadAdvertise,
 		GatewayID: r.gatewayID,
 		Nodes:     nodes,
+		Epoch:     epoch,
+		Checksum:  checksum,
 	}
 	b, err := json.Marshal(adv)
 	if err != nil {
@@ -814,10 +898,22 @@ func (r *Relay) BroadcastThreadWithdraw(hostname string) {
 		return
 	}
 
+	var epoch uint64
+	var checksum uint32
+	if r.reconciler != nil {
+		epoch = r.reconciler.Epoch()
+		r.mu.RLock()
+		allLocal := r.listNodesLocked()
+		r.mu.RUnlock()
+		checksum = r.reconciler.ComputeChecksum(allLocal)
+	}
+
 	with := protocol.ThreadWithdraw{
 		Type:      protocol.TypeThreadWithdraw,
 		GatewayID: r.gatewayID,
 		Hostname:  hostname,
+		Epoch:     epoch,
+		Checksum:  checksum,
 	}
 	b, err := json.Marshal(with)
 	if err != nil {

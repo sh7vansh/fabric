@@ -2,10 +2,8 @@ package protocol
 
 import (
 	"fmt"
-	"io"
 	"net"
 	"strings"
-	"sync"
 )
 
 const (
@@ -46,26 +44,8 @@ func ValidateProxyDestination(host string, port int) (string, error) {
 	return fmt.Sprintf("%s:%d", trimmedHost, port), nil
 }
 
+// Proxy establishes a flow-controlled bidirectional bridge between a and b using StreamManager.
 func Proxy(a, b net.Conn) {
-	var once sync.Once
-	closeBoth := func() {
-		a.Close()
-		b.Close()
-	}
-	defer closeBoth()
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		io.Copy(a, b)
-		once.Do(closeBoth)
-	}()
-	go func() {
-		defer wg.Done()
-		io.Copy(b, a)
-		once.Do(closeBoth)
-	}()
-	wg.Wait()
+	_, _ = DefaultStreamManager.Bridge(a, b)
 }
 

@@ -11,12 +11,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"fabric/internal/meshdns"
@@ -27,65 +25,6 @@ import (
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 )
-
-var (
-	validUsernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_.][a-zA-Z0-9_.-]*$`)
-	validEnvKeyRegex   = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
-)
-
-var blockedEnvKeys = map[string]bool{
-	"LD_PRELOAD":      true,
-	"LD_LIBRARY_PATH": true,
-	"LD_AUDIT":        true,
-	"IFS":             true,
-	"BASH_ENV":        true,
-	"ENV":             true,
-	"PYTHONPATH":      true,
-	"PERL5LIB":        true,
-	"PERL5OPT":        true,
-	"RUBYOPT":         true,
-	"NODE_OPTIONS":    true,
-}
-
-// SanitizeEnv filters and validates environment variables against injection attacks and poisoned keys.
-func SanitizeEnv(env []string) []string {
-	var clean []string
-	for _, e := range env {
-		parts := strings.SplitN(e, "=", 2)
-		key := strings.TrimSpace(parts[0])
-		if !validEnvKeyRegex.MatchString(key) {
-			continue
-		}
-		if blockedEnvKeys[strings.ToUpper(key)] {
-			continue
-		}
-		if len(parts) == 2 {
-			clean = append(clean, fmt.Sprintf("%s=%s", key, parts[1]))
-		} else {
-			clean = append(clean, key)
-		}
-	}
-	return clean
-}
-
-func quoteShellArg(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
-}
-
-func formatEnvExports(env []string) string {
-	sanitized := SanitizeEnv(env)
-	var envPrefix strings.Builder
-	for _, e := range sanitized {
-		parts := strings.SplitN(e, "=", 2)
-		key := parts[0]
-		if len(parts) == 2 {
-			envPrefix.WriteString(fmt.Sprintf("export %s=%s\n", key, quoteShellArg(parts[1])))
-		} else {
-			envPrefix.WriteString(fmt.Sprintf("export %s\n", key))
-		}
-	}
-	return envPrefix.String()
-}
 
 // Config configures the ThreadDaemon.
 type Config struct {
@@ -98,6 +37,7 @@ type Config struct {
 	Version       string
 	Tags          []string
 	DNSManager    *meshdns.SystemDNSManager
+	Sandbox       ExecutionSandbox
 	MaxBackoff    time.Duration
 	InitialRetry  time.Duration
 }
@@ -107,6 +47,7 @@ type Config struct {
 type Agent struct {
 	cfg              Config
 	dnsMgr           *meshdns.SystemDNSManager
+	sandbox          ExecutionSandbox
 	mu               sync.RWMutex
 	actualListenAddr string
 }
@@ -135,10 +76,21 @@ func New(cfg Config) *Agent {
 		dnsMgr = meshdns.NewSystemDNSManager(cfg.Domain)
 	}
 
-	return &Agent{
-		cfg:    cfg,
-		dnsMgr: dnsMgr,
+	sandbox := cfg.Sandbox
+	if sandbox == nil {
+		sandbox = NewExecutionSandbox(SandboxConfig{})
 	}
+
+	return &Agent{
+		cfg:     cfg,
+		dnsMgr:  dnsMgr,
+		sandbox: sandbox,
+	}
+}
+
+// Sandbox returns the attached ExecutionSandbox.
+func (a *Agent) Sandbox() ExecutionSandbox {
+	return a.sandbox
 }
 
 // DNSManager returns the attached SystemDNSManager.
@@ -317,8 +269,13 @@ func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) 
 		return fmt.Errorf("failed to build secure TLS dialer: %w", err)
 	}
 
+	header := http.Header{}
+	if a.cfg.Token != "" {
+		header.Add("Authorization", "Bearer "+a.cfg.Token)
+	}
+
 	log.Printf("[Agent] Connecting to %s (mTLS enabled)...", u.String())
-	conn, _, err := dialer.DialContext(ctx, u.String(), nil)
+	conn, _, err := dialer.DialContext(ctx, u.String(), header)
 	if err != nil {
 		return err
 	}
@@ -400,40 +357,6 @@ func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) 
 	}
 }
 
-func killProcessGroup(pid int) {
-	if pid <= 0 {
-		return
-	}
-
-	targetPGID := pid
-	if pgid, err := syscall.Getpgid(pid); err == nil {
-		targetPGID = pgid
-	}
-
-	// Send SIGTERM to entire process group
-	_ = syscall.Kill(-targetPGID, syscall.SIGTERM)
-
-	// Monitor if process group exits within 500ms grace period; if not, enforce SIGKILL
-	done := make(chan struct{})
-	go func() {
-		for i := 0; i < 10; i++ {
-			time.Sleep(50 * time.Millisecond)
-			if err := syscall.Kill(pid, 0); err != nil {
-				close(done)
-				return
-			}
-		}
-		_ = syscall.Kill(-targetPGID, syscall.SIGKILL)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(600 * time.Millisecond):
-		_ = syscall.Kill(-targetPGID, syscall.SIGKILL)
-	}
-}
-
 // HandleExec executes an incoming command or interactive PTY session and streams stdio frames.
 func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 	defer stream.Close()
@@ -443,29 +366,12 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		return
 	}
 
-	var cmd *exec.Cmd
-	if req.User != "" {
-		if !validUsernameRegex.MatchString(req.User) {
-			protocol.WriteFrame(stream, protocol.StreamStderr, []byte(fmt.Sprintf("invalid username %q\n", req.User)))
-			protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
-			return
-		}
-		envPrefix := formatEnvExports(req.Env)
-		fullCmd := envPrefix + req.Command
-		cmd = exec.Command("su", "-", req.User, "-c", fullCmd)
-	} else {
-		cmd = exec.Command("sh", "-c", req.Command)
+	cmd, err := a.sandbox.PrepareCmd(req)
+	if err != nil {
+		protocol.WriteFrame(stream, protocol.StreamStderr, []byte(fmt.Sprintf("%v\n", err)))
+		protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
+		return
 	}
-	if req.WorkDir != "" {
-		cmd.Dir = req.WorkDir
-	}
-	sanitizedEnv := SanitizeEnv(req.Env)
-	if len(sanitizedEnv) > 0 {
-		cmd.Env = append(os.Environ(), sanitizedEnv...)
-	}
-
-	// Process group isolation
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	if req.Detached {
 		if err := cmd.Start(); err != nil {
@@ -476,7 +382,7 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 			if req.TimeoutSeconds > 0 {
 				timer := time.AfterFunc(time.Duration(req.TimeoutSeconds)*time.Second, func() {
 					if cmd.Process != nil {
-						killProcessGroup(cmd.Process.Pid)
+						_ = a.sandbox.KillProcessGroup(cmd.Process.Pid)
 					}
 				})
 				defer timer.Stop()
@@ -497,7 +403,7 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 			pid := procPid
 			procMu.Unlock()
 			if pid > 0 {
-				killProcessGroup(pid)
+				_ = a.sandbox.KillProcessGroup(pid)
 			}
 		})
 	}
@@ -633,7 +539,7 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		}()
 	}
 
-	err := cmd.Wait()
+	err = cmd.Wait()
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

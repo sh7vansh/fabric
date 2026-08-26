@@ -207,3 +207,88 @@ func TestServerCanonicalVocabularyRoutes(t *testing.T) {
 	}
 }
 
+func TestServerPreUpgradeAccessControlAndRateLimiting(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "fabric-server-auth-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	caDir := filepath.Join(tmpDir, "ca")
+	srv, err := server.New(server.Config{
+		Domain:     "fabric.test",
+		Port:       8443,
+		CADir:      caDir,
+		Token:      "cluster-secret-xyz",
+		AdminToken: "admin-secret-xyz",
+	})
+	if err != nil {
+		t.Fatalf("server.New failed: %v", err)
+	}
+	defer srv.Close()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		_ = srv.ServeTLS(ln)
+	}()
+
+	serverPort := ln.Addr().(*net.TCPAddr).Port
+	caCertPath := filepath.Join(caDir, "ca.crt")
+	dialer, err := pki.NewSecureDialer(caCertPath)
+	if err != nil {
+		t.Fatalf("NewSecureDialer failed: %v", err)
+	}
+
+	wssURL := fmt.Sprintf("wss://127.0.0.1:%d/ws", serverPort)
+
+	// 1. Connection without token: must be rejected with 401 Unauthorized before WebSocket upgrade
+	_, resp, err := dialer.Dial(wssURL, nil)
+	if err == nil {
+		t.Fatalf("expected dial without token to fail")
+	}
+	if resp != nil && resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized, got %d", resp.StatusCode)
+	}
+
+	// 2. Connection with wrong token: must be rejected with 401 Unauthorized
+	badHeader := http.Header{}
+	badHeader.Set("Authorization", "Bearer wrong-token")
+	_, respBad, err := dialer.Dial(wssURL, badHeader)
+	if err == nil {
+		t.Fatalf("expected dial with bad token to fail")
+	}
+	if respBad != nil && respBad.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized, got %d", respBad.StatusCode)
+	}
+
+	// 3. Rate limiting test on the server AccessController
+	for i := 0; i < 10; i++ {
+		_, _, _ = dialer.Dial(wssURL, badHeader)
+	}
+	// 11th attempt from same IP should get 429 Too Many Requests
+	_, respRate, err := dialer.Dial(wssURL, badHeader)
+	if err == nil {
+		t.Fatalf("expected dial to fail when rate limited")
+	}
+	if respRate != nil && respRate.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("expected 429 Too Many Requests, got %d", respRate.StatusCode)
+	}
+
+	// 4. Reset rate limiter for the test IP and verify valid token connects cleanly
+	srv.AccessController().RateLimiter().Reset("127.0.0.1")
+
+	goodHeader := http.Header{}
+	goodHeader.Set("Authorization", "Bearer cluster-secret-xyz")
+	conn, respGood, err := dialer.Dial(wssURL, goodHeader)
+	if err != nil {
+		t.Fatalf("expected valid token dial to succeed, got: %v (resp: %+v)", err, respGood)
+	}
+	defer conn.Close()
+}
+
+

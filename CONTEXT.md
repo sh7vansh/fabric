@@ -39,6 +39,10 @@ Fabric is a lightweight remote execution, service discovery, and networking plat
 - **InitManager**: A deep module in `internal/service` encapsulating multi-tier init rules (system systemd, user systemd, standalone supervisor), canonical unit/supervisor script definitions, and local lifecycle management.
 - **SecureServer (`fabric-server`)**: A deep control-plane module in `internal/server` encapsulating MeshRelay, dynamic in-process TLS certificate minting, ACME autocertification, and authenticated WebSocket listeners.
 - **SecureDialer**: A deep transport module in `internal/pki` encapsulating root CA auto-discovery, mTLS certificate discovery/auto-healing, and strict TLS 1.2+ encrypted WebSocket sessions.
+- **AccessController**: A deep security module in `internal/server` validating capability-scoped tokens, enforcing pre-upgrade HTTP authentication, and applying sliding-window IP rate limiting.
+- **ExecutionSandbox**: A deep isolation module in `internal/agent` providing POSIX credential dropping, environment variable sanitization, and deterministic process group termination.
+- **StreamManager**: A deep connection bridging module in `internal/protocol` encapsulating pooled 32KB memory buffers, configurable idle deadlines, concurrency quotas, half-close TCP socket propagation, and transfer telemetry.
+- **TopologyReconciler**: A deep federation module in `internal/relay` providing 64-bit monotonic generation epochs, deterministic CRC32 state checksums, and delta synchronization.
 
 ---
 

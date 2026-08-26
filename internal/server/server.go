@@ -8,7 +8,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -40,14 +39,15 @@ type Config struct {
 // Server is the deep control-plane domain module encapsulating MeshRelay,
 // dynamic Dual-Mode TLS Engine, and authenticated TLS WebSocket multiplexing.
 type Server struct {
-	cfg       Config
-	relay     *relay.Relay
-	tlsEngine *tlsengine.Engine
-	mux       *http.ServeMux
-	mu        sync.RWMutex
-	boundAddr string
-	closeCh   chan struct{}
-	closed    bool
+	cfg        Config
+	relay      *relay.Relay
+	tlsEngine  *tlsengine.Engine
+	accessCtrl *AccessController
+	mux        *http.ServeMux
+	mu         sync.RWMutex
+	boundAddr  string
+	closeCh    chan struct{}
+	closed     bool
 }
 
 // New constructs and initializes a new deep Server module.
@@ -97,12 +97,18 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to initialize TLS engine: %w", err)
 	}
 
+	accessCtrl := NewAccessController(AccessControllerConfig{
+		ClusterToken: cfg.Token,
+		AdminToken:   cfg.AdminToken,
+	})
+
 	s := &Server{
-		cfg:       cfg,
-		relay:     meshRelay,
-		tlsEngine: tlsEng,
-		mux:       http.NewServeMux(),
-		closeCh:   make(chan struct{}),
+		cfg:        cfg,
+		relay:      meshRelay,
+		tlsEngine:  tlsEng,
+		accessCtrl: accessCtrl,
+		mux:        http.NewServeMux(),
+		closeCh:    make(chan struct{}),
 	}
 
 	s.registerRoutes()
@@ -117,6 +123,11 @@ func (s *Server) Relay() *relay.Relay {
 // TLSEngine returns the attached Dual-Mode TLS Engine.
 func (s *Server) TLSEngine() *tlsengine.Engine {
 	return s.tlsEngine
+}
+
+// AccessController returns the attached AccessController module.
+func (s *Server) AccessController() *AccessController {
+	return s.accessCtrl
 }
 
 // Handler returns the HTTP handler with all registered endpoints.
@@ -134,36 +145,13 @@ func (s *Server) Addr() string {
 func (s *Server) registerRoutes() {
 	upgrader := s.relay.Upgrader()
 
-	extractBearerToken := func(r *http.Request) string {
-		authHeader := r.Header.Get("Authorization")
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			return strings.TrimPrefix(authHeader, "Bearer ")
-		}
-		return ""
-	}
-
-	authenticate := func(w http.ResponseWriter, r *http.Request) bool {
-		provided := extractBearerToken(r)
-		if !s.relay.ValidateToken(provided) {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return false
-		}
-		return true
-	}
-
-	authenticateAdmin := func(w http.ResponseWriter, r *http.Request) bool {
-		provided := extractBearerToken(r)
-		if !s.relay.ValidateAdminToken(provided) {
-			http.Error(w, "Unauthorized: Admin token required", http.StatusUnauthorized)
-			return false
-		}
-		return true
-	}
-
-	// Primary WebSocket endpoint for Thread daemons and CLI clients
+	// Primary WebSocket endpoint for Thread daemons and CLI clients (Pre-upgrade auth & rate-limiting)
 	s.mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		provided := extractBearerToken(r)
-		authenticated := s.relay.ValidateToken(provided)
+		ident, code, err := s.accessCtrl.AuthenticateRequest(r, CapabilityInspect)
+		if err != nil {
+			http.Error(w, err.Error(), code)
+			return
+		}
 
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -172,8 +160,8 @@ func (s *Server) registerRoutes() {
 		}
 
 		go func() {
-			if err := s.relay.ServeWSAuth(conn, r.RemoteAddr, authenticated); err != nil {
-				log.Printf("[Server] Session ended for %s: %v\n", r.RemoteAddr, err)
+			if err := s.relay.ServeWSAuth(conn, r.RemoteAddr, true); err != nil {
+				log.Printf("[Server] Session ended for %s (%s): %v\n", r.RemoteAddr, ident.Role, err)
 			}
 		}()
 	})
@@ -190,9 +178,9 @@ func (s *Server) registerRoutes() {
 				return
 			}
 		} else {
-			provided := extractBearerToken(r)
-			if !s.relay.ValidateToken(provided) {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			_, code, err := s.accessCtrl.AuthenticateRequest(r)
+			if err != nil {
+				http.Error(w, err.Error(), code)
 				return
 			}
 		}
@@ -233,7 +221,8 @@ func (s *Server) registerRoutes() {
 	})
 
 	threadsListHandler := func(w http.ResponseWriter, r *http.Request) {
-		if !authenticate(w, r) {
+		if _, code, err := s.accessCtrl.AuthenticateRequest(r, CapabilityInspect); err != nil {
+			http.Error(w, err.Error(), code)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -242,7 +231,8 @@ func (s *Server) registerRoutes() {
 
 	threadsGetHandler := func(prefix string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if !authenticate(w, r) {
+			if _, code, err := s.accessCtrl.AuthenticateRequest(r, CapabilityInspect); err != nil {
+				http.Error(w, err.Error(), code)
 				return
 			}
 			hostname := r.URL.Path[len(prefix):]
@@ -264,7 +254,8 @@ func (s *Server) registerRoutes() {
 
 	s.mux.HandleFunc("/peers", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			if !authenticate(w, r) {
+			if _, code, err := s.accessCtrl.AuthenticateRequest(r, CapabilityInspect); err != nil {
+				http.Error(w, err.Error(), code)
 				return
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -272,7 +263,8 @@ func (s *Server) registerRoutes() {
 			return
 		}
 		if r.Method == http.MethodPost {
-			if !authenticateAdmin(w, r) {
+			if _, code, err := s.accessCtrl.AuthenticateRequest(r, CapabilityAdmin); err != nil {
+				http.Error(w, err.Error(), code)
 				return
 			}
 			var body struct {
@@ -296,7 +288,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/peers/", func(w http.ResponseWriter, r *http.Request) {
 		peerID := r.URL.Path[len("/peers/"):]
 		if r.Method == http.MethodGet {
-			if !authenticate(w, r) {
+			if _, code, err := s.accessCtrl.AuthenticateRequest(r, CapabilityInspect); err != nil {
+				http.Error(w, err.Error(), code)
 				return
 			}
 			info, ok := s.relay.GetPeer(peerID)
@@ -309,7 +302,8 @@ func (s *Server) registerRoutes() {
 			return
 		}
 		if r.Method == http.MethodDelete {
-			if !authenticateAdmin(w, r) {
+			if _, code, err := s.accessCtrl.AuthenticateRequest(r, CapabilityAdmin); err != nil {
+				http.Error(w, err.Error(), code)
 				return
 			}
 			if err := s.relay.RemovePeer(peerID); err != nil {
@@ -419,6 +413,9 @@ func (s *Server) Close() error {
 	}
 	s.closed = true
 	close(s.closeCh)
+	if s.accessCtrl != nil {
+		s.accessCtrl.Close()
+	}
 	if s.relay != nil {
 		s.relay.Close()
 	}

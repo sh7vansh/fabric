@@ -190,11 +190,17 @@ func (s ServerHello) MarshalJSON() ([]byte, error) {
 	return json.Marshal(Alias(s))
 }
 
+const (
+	TypeTopologySyncRequest EnvelopeType = "topology_sync_request"
+)
+
 type ServerHeartbeat struct {
 	Type      EnvelopeType `json:"type"` // "server_heartbeat" or "gateway_heartbeat"
 	ServerID  string       `json:"server_id,omitempty"`
 	GatewayID string       `json:"gateway_id,omitempty"`
 	Timestamp string       `json:"timestamp"`
+	Epoch     uint64       `json:"epoch,omitempty"`
+	Checksum  uint32       `json:"checksum,omitempty"`
 }
 
 type GatewayHeartbeat = ServerHeartbeat
@@ -283,6 +289,8 @@ type ThreadAdvertise struct {
 	ServerID  string         `json:"server_id,omitempty"`
 	GatewayID string         `json:"gateway_id,omitempty"`
 	Nodes     []NodeMetadata `json:"nodes"`
+	Epoch     uint64         `json:"epoch,omitempty"`
+	Checksum  uint32         `json:"checksum,omitempty"`
 }
 
 func (a *ThreadAdvertise) UnmarshalJSON(data []byte) error {
@@ -323,6 +331,8 @@ type ThreadWithdraw struct {
 	ServerID  string       `json:"server_id,omitempty"`
 	GatewayID string       `json:"gateway_id,omitempty"`
 	Hostname  string       `json:"hostname"`
+	Epoch     uint64       `json:"epoch,omitempty"`
+	Checksum  uint32       `json:"checksum,omitempty"`
 }
 
 func (w *ThreadWithdraw) UnmarshalJSON(data []byte) error {
@@ -356,5 +366,44 @@ func (w ThreadWithdraw) MarshalJSON() ([]byte, error) {
 		w.GatewayID = w.ServerID
 	}
 	return json.Marshal(Alias(w))
+}
+
+type TopologySyncRequest struct {
+	Type      EnvelopeType `json:"type"` // "topology_sync_request"
+	ServerID  string       `json:"server_id,omitempty"`
+	GatewayID string       `json:"gateway_id,omitempty"`
+}
+
+func (t *TopologySyncRequest) UnmarshalJSON(data []byte) error {
+	type Alias TopologySyncRequest
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(t),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if t.ServerID == "" && t.GatewayID != "" {
+		t.ServerID = t.GatewayID
+	}
+	if t.GatewayID == "" && t.ServerID != "" {
+		t.GatewayID = t.ServerID
+	}
+	return nil
+}
+
+func (t TopologySyncRequest) MarshalJSON() ([]byte, error) {
+	type Alias TopologySyncRequest
+	if t.Type == "" {
+		t.Type = TypeTopologySyncRequest
+	}
+	if t.ServerID == "" && t.GatewayID != "" {
+		t.ServerID = t.GatewayID
+	}
+	if t.GatewayID == "" && t.ServerID != "" {
+		t.GatewayID = t.ServerID
+	}
+	return json.Marshal(Alias(t))
 }
 

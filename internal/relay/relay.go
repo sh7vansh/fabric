@@ -58,6 +58,7 @@ type Relay struct {
 	peers        map[string]*GatewayPeerSession
 	remoteNodes  map[string]RemoteNodeEntry
 	peerMu       sync.RWMutex
+	reconciler   *TopologyReconciler
 }
 
 // New creates and initializes a new MeshRelay instance.
@@ -94,6 +95,7 @@ func New(cfg Config) *Relay {
 		federationCA: cfg.FederationCA,
 		peers:        make(map[string]*GatewayPeerSession),
 		remoteNodes:  make(map[string]RemoteNodeEntry),
+		reconciler:   NewTopologyReconciler(serverID),
 	}
 
 	pingFreq := cfg.PingFreq
@@ -112,6 +114,11 @@ func New(cfg Config) *Relay {
 	}
 
 	return r
+}
+
+// Reconciler returns the attached TopologyReconciler.
+func (r *Relay) Reconciler() *TopologyReconciler {
+	return r.reconciler
 }
 
 // CheckOrigin validates the incoming WebSocket request Origin header.
@@ -405,6 +412,7 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 		Metadata: meta,
 	}
 	r.nodes[meta.Hostname] = sess
+	r.reconciler.IncrementEpoch()
 	r.mu.Unlock()
 
 	go r.BroadcastSync()
@@ -417,6 +425,7 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 			r.mu.Lock()
 			if curr, ok := r.nodes[meta.Hostname]; ok && curr.Mux == mux {
 				delete(r.nodes, meta.Hostname)
+				r.reconciler.IncrementEpoch()
 			}
 			r.mu.Unlock()
 			r.BroadcastSync()
@@ -430,7 +439,10 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 // UnregisterNode removes a node by hostname and triggers a sync broadcast.
 func (r *Relay) UnregisterNode(hostname string) {
 	r.mu.Lock()
-	delete(r.nodes, hostname)
+	if _, ok := r.nodes[hostname]; ok {
+		delete(r.nodes, hostname)
+		r.reconciler.IncrementEpoch()
+	}
 	r.mu.Unlock()
 	go r.BroadcastSync()
 	go r.BroadcastThreadWithdraw(hostname)
