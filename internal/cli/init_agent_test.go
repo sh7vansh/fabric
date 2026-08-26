@@ -8,6 +8,11 @@ import (
 	"testing"
 )
 
+func TestMain(m *testing.M) {
+	os.Setenv("FABRIC_INIT_ALLOW_NON_ROOT", "1")
+	os.Exit(m.Run())
+}
+
 func TestInitAndAgentCommands(t *testing.T) {
 	tempHome := t.TempDir()
 	os.Setenv("HOME", tempHome)
@@ -311,5 +316,27 @@ func TestInitSudoUserSync(t *testing.T) {
 	cfg := LoadConfig("", "", "")
 	if cfg.Token != "shared-secret-tok" {
 		t.Errorf("expected user cfg token %q, got %q", "shared-secret-tok", cfg.Token)
+	}
+}
+
+func TestInitRequiresRootPrivileges(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("skipping non-root check when running as root")
+	}
+	t.Setenv("FABRIC_INIT_ALLOW_NON_ROOT", "")
+	t.Setenv("PATH", t.TempDir()) // empty PATH ensures no sudo binary found
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	rootCmd.SetOut(&stdoutBuf)
+	rootCmd.SetErr(&stderrBuf)
+	rootCmd.SetArgs([]string{"init", "-y"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected fabric init to fail when non-root without sudo")
+	}
+	if !strings.Contains(err.Error(), "requires root privileges") {
+		t.Errorf("expected 'requires root privileges' error, got: %v", err)
 	}
 }

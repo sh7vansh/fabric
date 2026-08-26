@@ -212,10 +212,10 @@ if [ "$NO_SETUP" -eq 0 ]; then
     if [ -t 0 ] && command -v "$INSTALL_DIR/fabric" >/dev/null 2>&1; then
         echo ""
         echo "[+] Launching Fabric onboarding wizard..."
-        "$INSTALL_DIR/fabric" init || true
+        $SUDO "$INSTALL_DIR/fabric" init || true
     else
         echo ""
-        echo "[+] Installation complete! Run 'fabric init' to configure this machine."
+        echo "[+] Installation complete! Run 'sudo fabric init' to configure this machine."
     fi
 else
     echo "[+] Installation complete (setup skipped via --no-setup)."

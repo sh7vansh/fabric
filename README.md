@@ -32,10 +32,10 @@ curl -fsSL https://raw.githubusercontent.com/sh7vansh/fabric/main/install.sh | b
 
 ### 2. Initialization
 
-Run the onboarding wizard to configure the host:
+Run the onboarding wizard to configure the host (requires root privileges):
 
 ```bash
-fabric init
+sudo fabric init
 ```
 
 Choose how this machine participates:

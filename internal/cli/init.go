@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -120,6 +121,18 @@ func runInit(cmd *cobra.Command, args []string) error {
 		initTrustCA = false
 		initUntrustCA = false
 	}()
+
+	// Enforce administrative privileges for fabric init
+	if os.Geteuid() != 0 && os.Getenv("FABRIC_INIT_ALLOW_NON_ROOT") != "1" {
+		if sudoPath, err := exec.LookPath("sudo"); err == nil {
+			sudoCmd := exec.Command(sudoPath, os.Args...)
+			sudoCmd.Stdin = os.Stdin
+			sudoCmd.Stdout = os.Stdout
+			sudoCmd.Stderr = os.Stderr
+			return sudoCmd.Run()
+		}
+		return fmt.Errorf("'fabric init' requires root privileges (please run with 'sudo fabric init')")
+	}
 
 	reader := bufio.NewReader(os.Stdin)
 

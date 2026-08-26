@@ -11,7 +11,7 @@ import (
 // Build-time variables injected via -ldflags.
 var (
 	// Version is the semantic release version of Fabric.
-	Version = "1.2.7"
+	Version = "1.2.8"
 
 	// GitCommit is the Git commit SHA at build time.
 	GitCommit = "unknown"

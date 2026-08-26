@@ -133,7 +133,7 @@ fabric
 | `fabric thread inspect <thread>` | Detailed thread inspect output (JSON/table) |
 | `fabric thread service <action>` | Manage local `fabric-thread` systemd service unit |
 | `fabric stitch <host\|CIDR>` | SSH provision and join machine as a thread (`--mode=local\|remote`) |
-| `fabric init` | Initialize Fabric functionality (`--role=server\|thread\|both`) |
+| `fabric init` | Initialize Fabric functionality with root privileges (`sudo fabric init --role=server\|thread\|both`) |
 | `fabric agent <action>` | Deprecated alias for `fabric thread service` |
 | `fabric version` | Display version info |
 | `fabric update` | Self-update Fabric CLI binary |
