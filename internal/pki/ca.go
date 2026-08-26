@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -202,7 +203,11 @@ func ResolveCADir(customDir string) string {
 	}
 	for _, p := range DefaultCACandidatePaths() {
 		if _, err := os.Stat(p); err == nil {
-			return filepath.Dir(p)
+			dir := filepath.Dir(p)
+			if strings.HasPrefix(dir, "/etc/fabric") && os.Geteuid() != 0 {
+				continue
+			}
+			return dir
 		}
 	}
 	if home, err := os.UserHomeDir(); err == nil {
@@ -231,6 +236,32 @@ func BootstrapCA(caDir, domain string, opts ...Option) (*CA, string, error) {
 		if os.Geteuid() == 0 {
 			_ = os.MkdirAll("/etc/fabric", 0755)
 			_ = os.WriteFile("/etc/fabric/ca.crt", data, 0644)
+			_ = os.MkdirAll("/etc/fabric/ca", 0755)
+			_ = os.WriteFile("/etc/fabric/ca/ca.crt", data, 0644)
+		}
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
+			sudoHome := os.Getenv("SUDO_HOME")
+			if sudoHome == "" {
+				sudoHome = filepath.Join("/home", sudoUser)
+			}
+			userFabricDir := filepath.Join(sudoHome, ".fabric")
+			userCADir := filepath.Join(userFabricDir, "ca")
+			_ = os.MkdirAll(userCADir, 0755)
+			_ = os.WriteFile(filepath.Join(userCADir, "ca.crt"), data, 0644)
+			_ = os.WriteFile(filepath.Join(userFabricDir, "ca.crt"), data, 0644)
+			_ = ca.EnsureClientCertificate(userFabricDir)
+
+			if sudoUIDStr := os.Getenv("SUDO_UID"); sudoUIDStr != "" {
+				if uid, err := strconv.Atoi(sudoUIDStr); err == nil {
+					gid, _ := strconv.Atoi(os.Getenv("SUDO_GID"))
+					_ = os.Chown(userFabricDir, uid, gid)
+					_ = os.Chown(userCADir, uid, gid)
+					_ = os.Chown(filepath.Join(userCADir, "ca.crt"), uid, gid)
+					_ = os.Chown(filepath.Join(userFabricDir, "ca.crt"), uid, gid)
+					_ = os.Chown(filepath.Join(userFabricDir, "client.crt"), uid, gid)
+					_ = os.Chown(filepath.Join(userFabricDir, "client.key"), uid, gid)
+				}
+			}
 		}
 	}
 

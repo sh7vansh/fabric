@@ -60,6 +60,17 @@ func FindCACert(customPath string) (string, []byte, error) {
 		return customPath, data, nil
 	}
 
+	if envCACert := os.Getenv("FABRIC_CA_CERT"); envCACert != "" {
+		data, err := os.ReadFile(envCACert)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to read FABRIC_CA_CERT %s: %w", envCACert, err)
+		}
+		if len(data) == 0 {
+			return "", nil, fmt.Errorf("FABRIC_CA_CERT %s is empty", envCACert)
+		}
+		return envCACert, data, nil
+	}
+
 	for _, p := range DefaultCACandidatePaths() {
 		if data, err := os.ReadFile(p); err == nil && len(data) > 0 {
 			return p, data, nil

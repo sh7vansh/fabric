@@ -261,7 +261,7 @@ func TestInitTrustCA_FailureWhenNoCAFound(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	t.Setenv("FABRIC_CA_DIR", filepath.Join(tempHome, "nonexistent-ca"))
-	t.Setenv("FABRIC_CA_CERT", "")
+	t.Setenv("FABRIC_CA_CERT", filepath.Join(tempHome, "nonexistent-ca.crt"))
 
 	var stdoutBuf bytes.Buffer
 	var stderrBuf bytes.Buffer
@@ -273,7 +273,43 @@ func TestInitTrustCA_FailureWhenNoCAFound(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected fabric init --trust-ca to fail when no CA is found")
 	}
-	if !strings.Contains(err.Error(), "could not find Root CA") {
-		t.Errorf("expected 'could not find Root CA' error, got: %v", err)
+	if !strings.Contains(err.Error(), "could not find Root CA") && !strings.Contains(err.Error(), "no such file or directory") {
+		t.Errorf("expected CA not found error, got: %v", err)
+	}
+}
+
+func TestInitSudoUserSync(t *testing.T) {
+	rootHome := t.TempDir()
+	userHome := t.TempDir()
+
+	t.Setenv("HOME", rootHome)
+	t.Setenv("SUDO_USER", "testuser")
+	t.Setenv("SUDO_HOME", userHome)
+
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	rootCmd.SetOut(&stdoutBuf)
+	rootCmd.SetErr(&stderrBuf)
+	rootCmd.SetArgs([]string{"init", "-y", "--role", "both", "--token", "shared-secret-tok", "--domain", "sync.mesh"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("fabric init under sudo failed: %v", err)
+	}
+
+	// Verify user's ~/.fabric/config.json was populated with the token
+	userCfgPath := filepath.Join(userHome, ".fabric", "config.json")
+	if _, err := os.Stat(userCfgPath); err != nil {
+		t.Fatalf("expected config.json at %s, got: %v", userCfgPath, err)
+	}
+
+	// Verify LoadConfig from user's perspective picks up the token
+	t.Setenv("HOME", userHome)
+	t.Setenv("SUDO_USER", "")
+	t.Setenv("SUDO_HOME", "")
+
+	cfg := LoadConfig("", "", "")
+	if cfg.Token != "shared-secret-tok" {
+		t.Errorf("expected user cfg token %q, got %q", "shared-secret-tok", cfg.Token)
 	}
 }

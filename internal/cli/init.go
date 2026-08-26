@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -104,6 +105,22 @@ func parseRoleChoice(input string) string {
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
+	defer func() {
+		initRoleFlag = ""
+		initModeFlag = ""
+		initRemoteFlag = false
+		initServerFlag = ""
+		initHostFlag = ""
+		initTokenFlag = ""
+		initDomainFlag = "fabric.mesh"
+		initAutoToken = false
+		initNonInteract = false
+		initOpenFirewall = false
+		initACMEFlag = false
+		initTrustCA = false
+		initUntrustCA = false
+	}()
+
 	reader := bufio.NewReader(os.Stdin)
 
 	if initUntrustCA {
@@ -305,22 +322,37 @@ func formatRoleDisplay(role, mode string) string {
 }
 
 func writeRoleEnv(role, serverURL, token, domain, mode string) error {
+	var targetDirs []string
 	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
+	if err == nil {
+		targetDirs = append(targetDirs, filepath.Join(home, ".fabric"))
+		targetDirs = append(targetDirs, filepath.Join(home, ".config", "fabric"))
 	}
 
-	fabricDir := filepath.Join(home, ".fabric")
-	_ = os.MkdirAll(fabricDir, 0755)
-	configDir := filepath.Join(home, ".config", "fabric")
-	_ = os.MkdirAll(configDir, 0755)
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
+		sudoHome := os.Getenv("SUDO_HOME")
+		if sudoHome == "" {
+			sudoHome = filepath.Join("/home", sudoUser)
+		}
+		targetDirs = append(targetDirs, filepath.Join(sudoHome, ".fabric"))
+		targetDirs = append(targetDirs, filepath.Join(sudoHome, ".config", "fabric"))
+	}
+
+	if os.Geteuid() == 0 {
+		targetDirs = append(targetDirs, "/etc/fabric")
+	}
+
+	caDir := "/etc/fabric/ca"
+	if os.Geteuid() != 0 && home != "" {
+		caDir = filepath.Join(home, ".fabric", "ca")
+	}
 
 	var sb strings.Builder
 	if role == "server" {
 		sb.WriteString(fmt.Sprintf("FABRIC_TOKEN=%s\n", token))
 		sb.WriteString(fmt.Sprintf("FABRIC_DOMAIN=%s\n", domain))
 		sb.WriteString("FABRIC_PORT=8443\n")
-		sb.WriteString(fmt.Sprintf("FABRIC_CA_DIR=%s\n", filepath.Join(home, ".fabric", "ca")))
+		sb.WriteString(fmt.Sprintf("FABRIC_CA_DIR=%s\n", caDir))
 	} else if role == "thread" || role == "agent" {
 		sb.WriteString(fmt.Sprintf("FABRIC_SERVER_URL=%s\n", serverURL))
 		if mode == "" {
@@ -335,13 +367,23 @@ func writeRoleEnv(role, serverURL, token, domain, mode string) error {
 	}
 
 	content := []byte(sb.String())
-	_ = os.WriteFile(filepath.Join(fabricDir, role+".env"), content, 0600)
-	_ = os.WriteFile(filepath.Join(configDir, role+".env"), content, 0600)
+	for _, dir := range targetDirs {
+		_ = os.MkdirAll(dir, 0755)
+		_ = os.WriteFile(filepath.Join(dir, role+".env"), content, 0644)
+		if role == "thread" {
+			_ = os.WriteFile(filepath.Join(dir, "agent.env"), content, 0644)
+		}
 
-	// Write agent.env fallback if writing thread.env
-	if role == "thread" {
-		_ = os.WriteFile(filepath.Join(fabricDir, "agent.env"), content, 0600)
-		_ = os.WriteFile(filepath.Join(configDir, "agent.env"), content, 0600)
+		if sudoUIDStr := os.Getenv("SUDO_UID"); sudoUIDStr != "" {
+			if uid, err := strconv.Atoi(sudoUIDStr); err == nil {
+				gid, _ := strconv.Atoi(os.Getenv("SUDO_GID"))
+				_ = os.Chown(dir, uid, gid)
+				_ = os.Chown(filepath.Join(dir, role+".env"), uid, gid)
+				if role == "thread" {
+					_ = os.Chown(filepath.Join(dir, "agent.env"), uid, gid)
+				}
+			}
+		}
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -70,9 +71,20 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 		DirectNodes: make(map[string]DirectNodeEntry),
 	}
 
-	home, err := os.UserHomeDir()
-	if err == nil {
-		configPath := filepath.Join(home, ".fabric", "config.json")
+	var configFiles []string
+	if home, err := os.UserHomeDir(); err == nil {
+		configFiles = append(configFiles, filepath.Join(home, ".fabric", "config.json"))
+	}
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
+		sudoHome := os.Getenv("SUDO_HOME")
+		if sudoHome == "" {
+			sudoHome = filepath.Join("/home", sudoUser)
+		}
+		configFiles = append(configFiles, filepath.Join(sudoHome, ".fabric", "config.json"))
+	}
+	configFiles = append(configFiles, "/etc/fabric/config.json")
+
+	for _, configPath := range configFiles {
 		b, err := os.ReadFile(configPath)
 		if err == nil {
 			var fileCfg FileConfig
@@ -104,6 +116,7 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 						}
 					}
 				}
+				break
 			}
 		}
 	}
@@ -202,46 +215,75 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 }
 
 func SaveConfig(cfg *Config) error {
+	var targetDirs []string
 	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
+	if err == nil {
+		targetDirs = append(targetDirs, filepath.Join(home, ".fabric"))
 	}
 
-	fabricDir := filepath.Join(home, ".fabric")
-	if err := os.MkdirAll(fabricDir, 0755); err != nil {
-		return err
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
+		sudoHome := os.Getenv("SUDO_HOME")
+		if sudoHome == "" {
+			sudoHome = filepath.Join("/home", sudoUser)
+		}
+		targetDirs = append(targetDirs, filepath.Join(sudoHome, ".fabric"))
 	}
 
-	configPath := filepath.Join(fabricDir, "config.json")
-	var fileCfg FileConfig
-	if b, err := os.ReadFile(configPath); err == nil {
-		_ = json.Unmarshal(b, &fileCfg)
+	if os.Geteuid() == 0 {
+		targetDirs = append(targetDirs, "/etc/fabric")
 	}
 
-	if fileCfg.Contexts == nil {
-		fileCfg.Contexts = make(map[string]ContextConfig)
+	var firstErr error
+	for _, fabricDir := range targetDirs {
+		_ = os.MkdirAll(fabricDir, 0755)
+		configPath := filepath.Join(fabricDir, "config.json")
+		var fileCfg FileConfig
+		if b, err := os.ReadFile(configPath); err == nil {
+			_ = json.Unmarshal(b, &fileCfg)
+		}
+
+		if fileCfg.Contexts == nil {
+			fileCfg.Contexts = make(map[string]ContextConfig)
+		}
+
+		ctxName := fileCfg.CurrentContext
+		if ctxName == "" {
+			ctxName = "default"
+			fileCfg.CurrentContext = ctxName
+		}
+
+		ctx := fileCfg.Contexts[ctxName]
+		ctx.Host = cfg.Host
+		ctx.Token = cfg.Token
+		ctx.CACert = cfg.CACert
+		ctx.DirectNodes = cfg.DirectNodes
+		fileCfg.Contexts[ctxName] = ctx
+		fileCfg.DirectNodes = cfg.DirectNodes
+
+		b, err := json.MarshalIndent(fileCfg, "", "  ")
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+
+		if err := os.WriteFile(configPath, b, 0644); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+
+		if sudoUIDStr := os.Getenv("SUDO_UID"); sudoUIDStr != "" {
+			if uid, err := strconv.Atoi(sudoUIDStr); err == nil {
+				gid, _ := strconv.Atoi(os.Getenv("SUDO_GID"))
+				_ = os.Chown(fabricDir, uid, gid)
+				_ = os.Chown(configPath, uid, gid)
+			}
+		}
 	}
 
-	ctxName := fileCfg.CurrentContext
-	if ctxName == "" {
-		ctxName = "default"
-		fileCfg.CurrentContext = ctxName
-	}
-
-	ctx := fileCfg.Contexts[ctxName]
-	ctx.Host = cfg.Host
-	ctx.Token = cfg.Token
-	ctx.CACert = cfg.CACert
-	ctx.DirectNodes = cfg.DirectNodes
-	fileCfg.Contexts[ctxName] = ctx
-	fileCfg.DirectNodes = cfg.DirectNodes
-
-	b, err := json.MarshalIndent(fileCfg, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(configPath, b, 0600)
+	return firstErr
 }
 
 // RegisterDirectNode records an inverted mode node into local direct registry config.
