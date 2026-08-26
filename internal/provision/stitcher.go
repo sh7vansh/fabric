@@ -221,6 +221,44 @@ func ResolveReleaseBinaryName(role, osName, arch string) (string, error) {
 	}
 }
 
+type progressReader struct {
+	reader     io.Reader
+	total      int64
+	readSoFar  int64
+	name       string
+	lastUpdate time.Time
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	n, err := pr.reader.Read(p)
+	pr.readSoFar += int64(n)
+
+	now := time.Now()
+	if now.Sub(pr.lastUpdate) > 150*time.Millisecond || err == io.EOF {
+		pr.lastUpdate = now
+		if pr.total > 0 {
+			pct := float64(pr.readSoFar) / float64(pr.total) * 100.0
+			downloadedMB := float64(pr.readSoFar) / (1024 * 1024)
+			totalMB := float64(pr.total) / (1024 * 1024)
+			fmt.Printf("\r[+] Downloading %s: %.1f / %.1f MB (%.0f%%)...", pr.name, downloadedMB, totalMB, pct)
+		} else {
+			downloadedMB := float64(pr.readSoFar) / (1024 * 1024)
+			fmt.Printf("\r[+] Downloading %s: %.1f MB...", pr.name, downloadedMB)
+		}
+	}
+	return n, err
+}
+
+func (pr *progressReader) finish() {
+	if pr.total > 0 {
+		totalMB := float64(pr.total) / (1024 * 1024)
+		fmt.Printf("\r[+] Downloaded %s successfully (%.1f MB).           \n", pr.name, totalMB)
+	} else {
+		downloadedMB := float64(pr.readSoFar) / (1024 * 1024)
+		fmt.Printf("\r[+] Downloaded %s successfully (%.1f MB).           \n", pr.name, downloadedMB)
+	}
+}
+
 // FetchReleaseBinary downloads a specific release binary from GitHub.
 func FetchReleaseBinary(role, osName, arch string) ([]byte, error) {
 	binName, err := ResolveReleaseBinaryName(role, osName, arch)
@@ -229,17 +267,34 @@ func FetchReleaseBinary(role, osName, arch string) ([]byte, error) {
 	}
 
 	url := "https://github.com/sh7vansh/fabric/releases/latest/download/" + binName
+	fmt.Printf("[+] Fetching %s from GitHub releases (%s)...\n", binName, url)
+
 	resp, err := http.Get(url)
 	if err != nil {
+		fmt.Printf("[-] Failed to initiate download of %s: %v\n", binName, err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
+		fmt.Printf("[-] Failed to download %s: HTTP %d\n", binName, resp.StatusCode)
 		return nil, fmt.Errorf("failed to download %s: HTTP %d", url, resp.StatusCode)
 	}
 
-	return io.ReadAll(resp.Body)
+	pr := &progressReader{
+		reader: resp.Body,
+		total:  resp.ContentLength,
+		name:   binName,
+	}
+
+	data, err := io.ReadAll(pr)
+	if err != nil {
+		fmt.Printf("\n[-] Error downloading %s: %v\n", binName, err)
+		return nil, err
+	}
+
+	pr.finish()
+	return data, nil
 }
 
 // ResolveCrossPlatformBinaries returns thread and cli binaries matching the requested remote architecture.
@@ -667,6 +722,15 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 				fmt.Printf("[!] Warning: Could not resolve cross-platform binaries (%v). Falling back to local binaries...\n", resolveErr)
 			}
 		}
+	}
+
+	if !opts.SilentOutput {
+		totalBytes := len(opts.BinaryData) + len(opts.CliBinaryData)
+		if totalBytes > 0 {
+			totalMB := float64(totalBytes) / (1024 * 1024)
+			fmt.Printf("[+] Packaging inline binary payload (%.1f MB)...\n", totalMB)
+		}
+		fmt.Printf("[+] Streaming payload and executing bootstrap over SSH to %s...\n", opts.Target)
 	}
 
 	bootstrapScript := GenerateStitchScript(opts, socketURL)

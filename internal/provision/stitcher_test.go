@@ -427,4 +427,29 @@ func TestResolveReleaseBinaryName(t *testing.T) {
 	}
 }
 
+func TestProgressReader(t *testing.T) {
+	data := []byte("hello world 1234567890 test bytes for download progress")
+	r := strings.NewReader(string(data))
+	pr := &progressReader{
+		reader: r,
+		total:  int64(len(data)),
+		name:   "test-binary",
+	}
+
+	buf := make([]byte, 10)
+	totalRead := 0
+	for {
+		n, err := pr.Read(buf)
+		totalRead += n
+		if err != nil {
+			break
+		}
+	}
+	pr.finish()
+
+	if totalRead != len(data) {
+		t.Fatalf("expected totalRead %d, got %d", len(data), totalRead)
+	}
+}
+
 

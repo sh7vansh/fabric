@@ -96,11 +96,43 @@ else
     echo "[+] Attempting to download Fabric ($RELEASE_TAG) for linux/$FABRIC_ARCH..."
     if command -v curl >/dev/null 2>&1; then
         # Download checksum manifest first
+        echo "[+] Fetching checksums manifest..."
         curl -fsSL "$DOWNLOAD_URL_PREFIX/checksums.txt" -o "$TMP_DIR/checksums.txt" 2>/dev/null || true
 
-        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-linux-$FABRIC_ARCH" 2>/dev/null || true
-        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-server-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-server-linux-$FABRIC_ARCH" 2>/dev/null || true
-        curl -fsSL "$DOWNLOAD_URL_PREFIX/fabric-thread-linux-$FABRIC_ARCH" -o "$TMP_DIR/fabric-thread-linux-$FABRIC_ARCH" 2>/dev/null || true
+        for role in "fabric" "fabric-server" "fabric-thread"; do
+            asset="${role}-linux-${FABRIC_ARCH}"
+            echo "[+] Downloading $asset..."
+            if [ -t 1 ]; then
+                curl -fL --progress-bar "$DOWNLOAD_URL_PREFIX/$asset" -o "$TMP_DIR/$asset" 2>&1 || true
+            else
+                curl -fsSL "$DOWNLOAD_URL_PREFIX/$asset" -o "$TMP_DIR/$asset" || true
+            fi
+            if [ -f "$TMP_DIR/$asset" ]; then
+                size="$(du -h "$TMP_DIR/$asset" 2>/dev/null | awk '{print $1}' || echo "")"
+                if [ -n "$size" ]; then
+                    echo "[+] Downloaded $asset ($size)"
+                fi
+            fi
+        done
+    elif command -v wget >/dev/null 2>&1; then
+        echo "[+] Fetching checksums manifest..."
+        wget -q "$DOWNLOAD_URL_PREFIX/checksums.txt" -O "$TMP_DIR/checksums.txt" 2>/dev/null || true
+
+        for role in "fabric" "fabric-server" "fabric-thread"; do
+            asset="${role}-linux-${FABRIC_ARCH}"
+            echo "[+] Downloading $asset..."
+            if [ -t 1 ]; then
+                wget --show-progress -q -O "$TMP_DIR/$asset" "$DOWNLOAD_URL_PREFIX/$asset" || true
+            else
+                wget -q -O "$TMP_DIR/$asset" "$DOWNLOAD_URL_PREFIX/$asset" || true
+            fi
+            if [ -f "$TMP_DIR/$asset" ]; then
+                size="$(du -h "$TMP_DIR/$asset" 2>/dev/null | awk '{print $1}' || echo "")"
+                if [ -n "$size" ]; then
+                    echo "[+] Downloaded $asset ($size)"
+                fi
+            fi
+        done
     fi
 
     # Verify SHA-256 checksums if manifest is available
