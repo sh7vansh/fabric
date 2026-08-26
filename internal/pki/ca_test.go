@@ -64,6 +64,16 @@ func TestCAInitializationAndPersistence(t *testing.T) {
 		t.Errorf("expected reloaded CA to have same serial number, got %v vs %v",
 			ca1.RootCert().SerialNumber, ca2.RootCert().SerialNumber)
 	}
+
+	// 3. Non-existent nested directory creation without panic
+	nestedDir := filepath.Join(tmpDir, "deep", "nested", "ca")
+	ca3, err := pki.LoadOrInitCA(nestedDir, domain)
+	if err != nil {
+		t.Fatalf("LoadOrInitCA on non-existent nested dir failed: %v", err)
+	}
+	if ca3 == nil || ca3.RootCert() == nil {
+		t.Fatal("expected valid CA for nested dir")
+	}
 }
 
 func TestMintCertificateAndVerification(t *testing.T) {
