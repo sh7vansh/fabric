@@ -11,7 +11,7 @@ import (
 )
 
 // TopologyReconciler manages 64-bit monotonic generation epochs, deterministic state
-// checksums, and delta synchronization across federated peer gateways.
+// checksums, and delta synchronization across federated peer servers.
 type TopologyReconciler struct {
 	serverID   string
 	localEpoch atomic.Uint64
@@ -41,15 +41,15 @@ func (tr *TopologyReconciler) Epoch() uint64 {
 	return tr.localEpoch.Load()
 }
 
-// ComputeChecksum computes a deterministic 32-bit CRC32 checksum from a list of nodes.
-func (tr *TopologyReconciler) ComputeChecksum(nodes []protocol.NodeMetadata) uint32 {
-	if len(nodes) == 0 {
+// Checksum computes a deterministic 32-bit CRC32 checksum from a list of active threads.
+func (tr *TopologyReconciler) Checksum(threads []protocol.NodeMetadata) uint32 {
+	if len(threads) == 0 {
 		return 0
 	}
 
-	// Sort node representations for determinism
-	items := make([]string, len(nodes))
-	for i, n := range nodes {
+	// Sort thread representations for determinism
+	items := make([]string, len(threads))
+	for i, n := range threads {
 		items[i] = fmt.Sprintf("%s|%s|%s", n.Hostname, n.Domain, n.Status)
 	}
 	sort.Strings(items)
@@ -60,6 +60,11 @@ func (tr *TopologyReconciler) ComputeChecksum(nodes []protocol.NodeMetadata) uin
 		crc.Write([]byte{'\n'})
 	}
 	return crc.Sum32()
+}
+
+// ComputeChecksum is an alias for Checksum.
+func (tr *TopologyReconciler) ComputeChecksum(threads []protocol.NodeMetadata) uint32 {
+	return tr.Checksum(threads)
 }
 
 // ValidateAndRecordEpoch validates an incoming peer epoch.

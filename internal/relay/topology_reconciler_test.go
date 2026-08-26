@@ -41,8 +41,8 @@ func TestTopologyReconciler_ChecksumDeterminism(t *testing.T) {
 		{Hostname: "beta", Domain: "fabric.mesh", Status: "online"},
 	}
 
-	hash1 := rec.ComputeChecksum(nodesSet1)
-	hash2 := rec.ComputeChecksum(nodesSet2)
+	hash1 := rec.Checksum(nodesSet1)
+	hash2 := rec.Checksum(nodesSet2)
 
 	if hash1 == 0 {
 		t.Errorf("expected non-zero checksum for active nodes")
@@ -56,7 +56,7 @@ func TestTopologyReconciler_ChecksumDeterminism(t *testing.T) {
 		{Hostname: "alpha", Domain: "fabric.mesh", Status: "online"},
 		{Hostname: "beta", Domain: "fabric.mesh", Status: "online"},
 	}
-	hash3 := rec.ComputeChecksum(nodesSet3)
+	hash3 := rec.Checksum(nodesSet3)
 	if hash1 == hash3 {
 		t.Errorf("checksum collision between different node sets: %d", hash1)
 	}

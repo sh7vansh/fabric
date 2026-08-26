@@ -670,6 +670,7 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 				peer := r.peers[hb.GatewayID]
 				r.peerMu.RUnlock()
 				if peer != nil {
+					go r.sendTopologySyncRequestToPeer(peer)
 					go r.sendLocalThreadAdvertisementsToPeer(peer)
 				}
 			}
@@ -836,6 +837,25 @@ func (r *Relay) sendLocalThreadAdvertisementsToPeer(peer *GatewayPeerSession) {
 			_, _ = stream.Write(b)
 			stream.Close()
 		}
+	}
+}
+
+func (r *Relay) sendTopologySyncRequestToPeer(peer *GatewayPeerSession) {
+	if peer == nil || peer.Mux == nil || peer.Mux.Session == nil || peer.Mux.Session.IsClosed() {
+		return
+	}
+	syncReq := protocol.TopologySyncRequest{
+		Type:      protocol.TypeTopologySyncRequest,
+		GatewayID: r.gatewayID,
+	}
+	b, err := json.Marshal(syncReq)
+	if err != nil {
+		return
+	}
+	stream, err := peer.Mux.Session.Open()
+	if err == nil {
+		_, _ = stream.Write(b)
+		stream.Close()
 	}
 }
 

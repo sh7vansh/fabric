@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 
@@ -132,3 +133,47 @@ func TestExecutionSandbox_KillProcessGroup(t *testing.T) {
 		t.Fatalf("process group did not terminate within 2 seconds")
 	}
 }
+
+func TestExecutionSandbox_KillProcessGroup_OrphanedChildrenEscalation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping process group kill test on windows")
+	}
+
+	sandbox := agent.NewExecutionSandbox(agent.SandboxConfig{})
+
+	// Spawn a parent shell that exits immediately on SIGTERM, leaving a child sleep that ignores SIGTERM
+	cmd, err := sandbox.PrepareCmd(protocol.ExecRequest{
+		Command: "trap 'exit 0' TERM; (trap '' TERM; sleep 30) & wait",
+	})
+	if err != nil {
+		t.Fatalf("PrepareCmd failed: %v", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start cmd: %v", err)
+	}
+
+	pid := cmd.Process.Pid
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil {
+		t.Fatalf("failed to get pgid: %v", err)
+	}
+
+	go func() {
+		_ = cmd.Wait()
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// KillProcessGroup must ensure all processes in targetPGID are killed
+	if err := sandbox.KillProcessGroup(pid); err != nil {
+		t.Fatalf("KillProcessGroup failed: %v", err)
+	}
+
+	// In Linux, syscall.Kill(-pgid, 0) returns nil if any process exists in the PGID, or ESRCH if none exist.
+	if err := syscall.Kill(-pgid, 0); err == nil {
+		t.Fatalf("expected all processes in pgid %d to be dead, but pgid is still active", pgid)
+	}
+}
+
+

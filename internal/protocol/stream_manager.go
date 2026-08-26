@@ -133,81 +133,13 @@ func (sm *StreamManager) Bridge(a, b net.Conn) (*StreamTelemetry, error) {
 	// Direction A -> B
 	go func() {
 		defer wg.Done()
-		buf := sm.getBuffer()
-		defer sm.putBuffer(buf)
-
-		for {
-			if sm.cfg.IdleDeadline > 0 {
-				_ = a.SetReadDeadline(time.Now().Add(sm.cfg.IdleDeadline))
-				_ = b.SetWriteDeadline(time.Now().Add(sm.cfg.IdleDeadline))
-			}
-
-			n, rErr := a.Read(buf)
-			if n > 0 {
-				wn, wErr := b.Write(buf[:n])
-				if wn > 0 {
-					telem.BytesFromAToB += int64(wn)
-					sm.bytesAToB.Add(int64(wn))
-				}
-				if wErr != nil {
-					telem.ErrB = wErr
-					break
-				}
-			}
-			if rErr != nil {
-				if rErr != io.EOF {
-					telem.ErrA = rErr
-				}
-				break
-			}
-		}
-
-		// Half-close write on B if supported
-		if cw, ok := b.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		} else {
-			once.Do(closeBoth)
-		}
+		sm.transferUni(a, b, &telem.BytesFromAToB, &sm.bytesAToB, &telem.ErrA, &telem.ErrB, &once, closeBoth)
 	}()
 
 	// Direction B -> A
 	go func() {
 		defer wg.Done()
-		buf := sm.getBuffer()
-		defer sm.putBuffer(buf)
-
-		for {
-			if sm.cfg.IdleDeadline > 0 {
-				_ = b.SetReadDeadline(time.Now().Add(sm.cfg.IdleDeadline))
-				_ = a.SetWriteDeadline(time.Now().Add(sm.cfg.IdleDeadline))
-			}
-
-			n, rErr := b.Read(buf)
-			if n > 0 {
-				wn, wErr := a.Write(buf[:n])
-				if wn > 0 {
-					telem.BytesFromBToA += int64(wn)
-					sm.bytesBToA.Add(int64(wn))
-				}
-				if wErr != nil {
-					telem.ErrA = wErr
-					break
-				}
-			}
-			if rErr != nil {
-				if rErr != io.EOF {
-					telem.ErrB = rErr
-				}
-				break
-			}
-		}
-
-		// Half-close write on A if supported
-		if cw, ok := a.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		} else {
-			once.Do(closeBoth)
-		}
+		sm.transferUni(b, a, &telem.BytesFromBToA, &sm.bytesBToA, &telem.ErrB, &telem.ErrA, &once, closeBoth)
 	}()
 
 	wg.Wait()
@@ -218,7 +150,62 @@ func (sm *StreamManager) Bridge(a, b net.Conn) (*StreamTelemetry, error) {
 	return telem, nil
 }
 
+func (sm *StreamManager) transferUni(
+	src, dst net.Conn,
+	telemBytes *int64,
+	smBytes *atomic.Int64,
+	srcErr, dstErr *error,
+	once *sync.Once,
+	closeBoth func(),
+) {
+	buf := sm.getBuffer()
+	defer sm.putBuffer(buf)
+
+	for {
+		if sm.cfg.IdleDeadline > 0 {
+			_ = src.SetReadDeadline(time.Now().Add(sm.cfg.IdleDeadline))
+			_ = dst.SetWriteDeadline(time.Now().Add(sm.cfg.IdleDeadline))
+		}
+
+		n, rErr := src.Read(buf)
+		if n > 0 {
+			wn, wErr := dst.Write(buf[:n])
+			if wn > 0 {
+				*telemBytes += int64(wn)
+				smBytes.Add(int64(wn))
+			}
+			if wErr != nil {
+				*dstErr = wErr
+				break
+			}
+		}
+		if rErr != nil {
+			if rErr != io.EOF {
+				*srcErr = rErr
+			}
+			break
+		}
+	}
+
+	// Propagate half-close read on src if supported
+	if cr, ok := src.(interface{ CloseRead() error }); ok {
+		_ = cr.CloseRead()
+	}
+
+	// Propagate half-close write on dst if supported
+	if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+		_ = cw.CloseWrite()
+	} else if *srcErr != nil || *dstErr != nil {
+		once.Do(closeBoth)
+	}
+}
+
+// DefaultIdleDeadline is the default idle timeout applied to proxy streams (60s).
+const DefaultIdleDeadline = 60 * time.Second
+
 // DefaultStreamManager is the singleton StreamManager used by protocol.Proxy.
 var DefaultStreamManager = NewStreamManager(StreamManagerConfig{
-	BufferSize: DefaultBufferSize,
+	BufferSize:   DefaultBufferSize,
+	IdleDeadline: DefaultIdleDeadline,
 })
+

@@ -19,8 +19,8 @@ func quoteShellArg(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-func formatEnvExports(env []string) string {
-	sanitized := SanitizeEnv(env)
+func (s *NativeSandbox) formatEnvExports(env []string) string {
+	sanitized := s.SanitizeEnv(env)
 	var envPrefix strings.Builder
 	for _, e := range sanitized {
 		parts := strings.SplitN(e, "=", 2)
@@ -154,7 +154,7 @@ func (s *NativeSandbox) PrepareCmd(req protocol.ExecRequest) (*exec.Cmd, error) 
 		}
 
 		if cmd == nil {
-			envPrefix := formatEnvExports(req.Env)
+			envPrefix := s.formatEnvExports(req.Env)
 			fullCmd := envPrefix + req.Command
 			cmd = exec.Command("su", "-", targetUser, "-c", fullCmd)
 			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -190,24 +190,25 @@ func (s *NativeSandbox) KillProcessGroup(pid int) error {
 	// Send SIGTERM to entire process group
 	_ = syscall.Kill(-targetPGID, syscall.SIGTERM)
 
-	// Monitor if process group exits within 500ms grace period; if not, enforce SIGKILL
-	done := make(chan struct{})
-	go func() {
+	// Monitor if entire process group exits within 500ms grace period; if not, enforce SIGKILL
+	terminated := false
+	for i := 0; i < 10; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if err := syscall.Kill(-targetPGID, 0); err != nil {
+			terminated = true
+			break
+		}
+	}
+
+	if !terminated {
+		// Enforce SIGKILL on the stubborn process group
+		_ = syscall.Kill(-targetPGID, syscall.SIGKILL)
 		for i := 0; i < 10; i++ {
-			time.Sleep(50 * time.Millisecond)
-			if err := syscall.Kill(pid, 0); err != nil {
-				close(done)
-				return
+			time.Sleep(20 * time.Millisecond)
+			if err := syscall.Kill(-targetPGID, 0); err != nil {
+				break
 			}
 		}
-		_ = syscall.Kill(-targetPGID, syscall.SIGKILL)
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(600 * time.Millisecond):
-		_ = syscall.Kill(-targetPGID, syscall.SIGKILL)
 	}
 
 	return nil
@@ -218,6 +219,11 @@ var defaultSandbox = NewExecutionSandbox(SandboxConfig{})
 // SanitizeEnv filters environment variables using the default sandbox rules.
 func SanitizeEnv(env []string) []string {
 	return defaultSandbox.SanitizeEnv(env)
+}
+
+// formatEnvExports formats shell export statements using the default sandbox rules.
+func formatEnvExports(env []string) string {
+	return defaultSandbox.formatEnvExports(env)
 }
 
 // KillProcessGroup kills a process group using the default sandbox.

@@ -219,3 +219,89 @@ func TestStreamManager_IdleDeadline(t *testing.T) {
 		t.Fatalf("bridge did not timeout on idle deadline")
 	}
 }
+
+func TestStreamManager_HalfClose_Propagation(t *testing.T) {
+	sm := protocol.NewStreamManager(protocol.StreamManagerConfig{
+		BufferSize: 32 * 1024,
+	})
+
+	lnA, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lnA.Close()
+
+	lnB, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lnB.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		connA, errA := lnA.Accept()
+		if errA != nil {
+			return
+		}
+		connB, errB := lnB.Accept()
+		if errB != nil {
+			connA.Close()
+			return
+		}
+		_, _ = sm.Bridge(connA, connB)
+	}()
+
+	clientA, err := net.Dial("tcp", lnA.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientA.Close()
+
+	serverB, err := net.Dial("tcp", lnB.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverB.Close()
+
+	reqMsg := []byte("client request payload")
+	respMsg := []byte("server response after half-close")
+
+	// 1. Client A sends request
+	_, _ = clientA.Write(reqMsg)
+
+	// 2. Client A shuts down write side (half-close)
+	tcpClientA := clientA.(*net.TCPConn)
+	if err := tcpClientA.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite failed: %v", err)
+	}
+
+	// 3. Server B reads until EOF
+	receivedReq := make([]byte, len(reqMsg))
+	if _, err := io.ReadFull(serverB, receivedReq); err != nil {
+		t.Fatalf("Server B failed to read request: %v", err)
+	}
+	if !bytes.Equal(receivedReq, reqMsg) {
+		t.Fatalf("expected req %q, got %q", reqMsg, receivedReq)
+	}
+
+	// 4. Server B sends response to Client A AFTER client A half-closed
+	time.Sleep(20 * time.Millisecond)
+	_, err = serverB.Write(respMsg)
+	if err != nil {
+		t.Fatalf("Server B failed to write response: %v", err)
+	}
+	_ = serverB.Close()
+
+	// 5. Client A reads response
+	receivedResp, err := io.ReadAll(clientA)
+	if err != nil {
+		t.Fatalf("Client A failed to read response: %v", err)
+	}
+	if !bytes.Equal(receivedResp, respMsg) {
+		t.Fatalf("expected resp %q, got %q", respMsg, receivedResp)
+	}
+
+	<-done
+}
+

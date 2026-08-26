@@ -73,6 +73,16 @@ func NewIPRateLimiter(maxAttempts int, window time.Duration) *IPRateLimiter {
 	return limiter
 }
 
+func filterValid(times []time.Time, cutoff time.Time) []time.Time {
+	var valid []time.Time
+	for _, t := range times {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	return valid
+}
+
 func (l *IPRateLimiter) cleanupLoop() {
 	ticker := time.NewTicker(l.window)
 	defer ticker.Stop()
@@ -84,12 +94,7 @@ func (l *IPRateLimiter) cleanupLoop() {
 			l.mu.Lock()
 			cutoff := now.Add(-l.window)
 			for ip, times := range l.failures {
-				var valid []time.Time
-				for _, t := range times {
-					if t.After(cutoff) {
-						valid = append(valid, t)
-					}
-				}
+				valid := filterValid(times, cutoff)
 				if len(valid) == 0 {
 					delete(l.failures, ip)
 				} else {
@@ -107,14 +112,7 @@ func (l *IPRateLimiter) RecordFailure(ip string) {
 	defer l.mu.Unlock()
 	now := time.Now()
 	cutoff := now.Add(-l.window)
-
-	var valid []time.Time
-	for _, t := range l.failures[ip] {
-		if t.After(cutoff) {
-			valid = append(valid, t)
-		}
-	}
-	valid = append(valid, now)
+	valid := append(filterValid(l.failures[ip], cutoff), now)
 	l.failures[ip] = valid
 }
 
@@ -124,14 +122,8 @@ func (l *IPRateLimiter) IsRateLimited(ip string) bool {
 	defer l.mu.Unlock()
 	now := time.Now()
 	cutoff := now.Add(-l.window)
-
-	count := 0
-	for _, t := range l.failures[ip] {
-		if t.After(cutoff) {
-			count++
-		}
-	}
-	return count >= l.maxAttempts
+	valid := filterValid(l.failures[ip], cutoff)
+	return len(valid) >= l.maxAttempts
 }
 
 // Reset clears failure history for an IP (e.g. after successful auth or in tests).
@@ -280,36 +272,9 @@ func (ac *AccessController) AuthenticateRequest(r *http.Request, requiredCaps ..
 
 	// 2. If no tokens are configured at all, grant open default access
 	if clusterTok == "" && adminTok == "" && len(scopedMap) == 0 {
-		ident = &SessionIdentity{
-			Role: "admin",
-			Capabilities: map[string]bool{
-				CapabilityAdmin:   true,
-				CapabilityInspect: true,
-				CapabilityExec:    true,
-				CapabilityCopy:    true,
-				CapabilityProxy:   true,
-				CapabilityPeer:    true,
-				CapabilityThread:  true,
-			},
-			RemoteIP:  ip,
-			CreatedAt: time.Now(),
-		}
+		ident = newAdminIdentity("", ip)
 	} else if adminTok != "" && constantTimeMatch(token, adminTok) {
-		ident = &SessionIdentity{
-			Token: token,
-			Role:  "admin",
-			Capabilities: map[string]bool{
-				CapabilityAdmin:   true,
-				CapabilityInspect: true,
-				CapabilityExec:    true,
-				CapabilityCopy:    true,
-				CapabilityProxy:   true,
-				CapabilityPeer:    true,
-				CapabilityThread:  true,
-			},
-			RemoteIP:  ip,
-			CreatedAt: time.Now(),
-		}
+		ident = newAdminIdentity(token, ip)
 	} else if clusterTok != "" && constantTimeMatch(token, clusterTok) {
 		ident = &SessionIdentity{
 			Token: token,
@@ -360,3 +325,22 @@ func (ac *AccessController) Close() {
 		ac.rateLimiter.Close()
 	}
 }
+
+func newAdminIdentity(token, ip string) *SessionIdentity {
+	return &SessionIdentity{
+		Token: token,
+		Role:  "admin",
+		Capabilities: map[string]bool{
+			CapabilityAdmin:   true,
+			CapabilityInspect: true,
+			CapabilityExec:    true,
+			CapabilityCopy:    true,
+			CapabilityProxy:   true,
+			CapabilityPeer:    true,
+			CapabilityThread:  true,
+		},
+		RemoteIP:  ip,
+		CreatedAt: time.Now(),
+	}
+}
+
