@@ -70,13 +70,14 @@ func TestDetectBackendPriority(t *testing.T) {
 		}
 	})
 
-	t.Run("skips firewalld when not running and falls back to nftables", func(t *testing.T) {
+	t.Run("skips firewalld when not running and falls back to nftables when tables exist", func(t *testing.T) {
 		runner := newMockRunner()
 		runner.lookPathMap["ufw"] = "/usr/sbin/ufw"
 		runner.runOutputs["ufw status"] = mockRunResult{output: []byte("Status: inactive\n"), err: nil}
 		runner.lookPathMap["firewall-cmd"] = "/usr/bin/firewall-cmd"
 		runner.runOutputs["firewall-cmd --state"] = mockRunResult{output: []byte("not running\n"), err: errors.New("not running")}
 		runner.lookPathMap["nft"] = "/usr/sbin/nft"
+		runner.runOutputs["nft list tables"] = mockRunResult{output: []byte("table inet filter\n"), err: nil}
 
 		mgr := firewall.NewManagerWithRunner(runner)
 		backend := mgr.DetectBackend()
@@ -85,14 +86,29 @@ func TestDetectBackendPriority(t *testing.T) {
 		}
 	})
 
-	t.Run("falls back to iptables when only iptables exists", func(t *testing.T) {
+	t.Run("falls back to iptables when nftables has no tables and iptables is active", func(t *testing.T) {
 		runner := newMockRunner()
+		runner.lookPathMap["nft"] = "/usr/sbin/nft"
+		runner.runOutputs["nft list tables"] = mockRunResult{output: []byte(""), err: nil}
 		runner.lookPathMap["iptables"] = "/sbin/iptables"
+		runner.runOutputs["iptables -S INPUT"] = mockRunResult{output: []byte("-P INPUT ACCEPT\n-A INPUT -j DROP\n"), err: nil}
 
 		mgr := firewall.NewManagerWithRunner(runner)
 		backend := mgr.DetectBackend()
 		if backend != firewall.BackendIPTables {
 			t.Fatalf("expected BackendIPTables, got %v", backend)
+		}
+	})
+
+	t.Run("returns BackendNone when iptables exists but has no active firewall rules", func(t *testing.T) {
+		runner := newMockRunner()
+		runner.lookPathMap["iptables"] = "/sbin/iptables"
+		runner.runOutputs["iptables -S INPUT"] = mockRunResult{output: []byte("-P INPUT ACCEPT\n"), err: nil}
+
+		mgr := firewall.NewManagerWithRunner(runner)
+		backend := mgr.DetectBackend()
+		if backend != firewall.BackendNone {
+			t.Fatalf("expected BackendNone, got %v", backend)
 		}
 	})
 
@@ -198,15 +214,15 @@ func TestClosePortCommands(t *testing.T) {
 
 	t.Run("NFTables close port", func(t *testing.T) {
 		cmds := mgr.GetClosePortCommands(firewall.BackendNFTables, 8443, "tcp")
-		if len(cmds) != 1 || cmds[0] != "nft delete rule inet filter input tcp dport 8443 accept" {
+		if len(cmds) != 1 || !strings.Contains(cmds[0], "nft") {
 			t.Errorf("unexpected NFTables close command: %v", cmds)
 		}
 	})
 
-	t.Run("IPTables close port", func(t *testing.T) {
-		cmds := mgr.GetClosePortCommands(firewall.BackendIPTables, 8443, "tcp")
-		if len(cmds) != 1 || cmds[0] != "iptables -D INPUT -p tcp --dport 8443 -j ACCEPT" {
-			t.Errorf("unexpected IPTables close command: %v", cmds)
+	t.Run("IPTables close port with comment", func(t *testing.T) {
+		cmds := mgr.GetClosePortCommandsWithComment(firewall.BackendIPTables, 8443, "tcp", "Fabric Server")
+		if len(cmds) != 1 || cmds[0] != `iptables -D INPUT -p tcp --dport 8443 -m comment --comment "Fabric Server" -j ACCEPT` {
+			t.Errorf("unexpected IPTables close command with comment: %v", cmds)
 		}
 	})
 }

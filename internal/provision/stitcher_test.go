@@ -469,11 +469,14 @@ func TestFormatSSHError(t *testing.T) {
 		}
 	})
 
-	t.Run("formats exit status 255 with firewall diagnostic", func(t *testing.T) {
+	t.Run("formats exit status 255 with firewall diagnostic and unblocking guidance", func(t *testing.T) {
 		err := fmt.Errorf("exit status 255")
 		formatted := FormatSSHError("10.0.0.5", "2222", err, "")
 		if !strings.Contains(formatted.Error(), "port 2222/TCP may be closed, blocked by a firewall") {
 			t.Errorf("expected firewall diagnostic with custom port, got: %v", formatted)
+		}
+		if !strings.Contains(formatted.Error(), "unblock with:") {
+			t.Errorf("expected unblocking guidance in error, got: %v", formatted)
 		}
 	})
 }

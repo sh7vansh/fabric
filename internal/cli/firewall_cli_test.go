@@ -142,7 +142,7 @@ func TestInitFirewallFlows(t *testing.T) {
 		runner := newCLIMockRunner()
 		runner.lookPathMap["ufw"] = "/usr/sbin/ufw"
 		runner.runOutputs["ufw status"] = cliMockRunResult{output: []byte("Status: active\n"), err: nil}
-		runner.runOutputs["ufw allow 8443/tcp comment Fabric Server Control Plane"] = cliMockRunResult{
+		runner.runOutputs["ufw allow 8443/tcp comment \"Fabric Server Control Plane\""] = cliMockRunResult{
 			output: []byte("Permission denied\n"),
 			err:    errors.New("exit status 1"),
 		}
@@ -157,6 +157,66 @@ func TestInitFirewallFlows(t *testing.T) {
 		err := rootCmd.Execute()
 		if err != nil {
 			t.Fatalf("fabric init should not fail fatally on firewall permission error: %v", err)
+		}
+	})
+
+	t.Run("server role with --acme opens both 8443 and 80", func(t *testing.T) {
+		runner := newCLIMockRunner()
+		runner.lookPathMap["ufw"] = "/usr/sbin/ufw"
+		runner.runOutputs["ufw status"] = cliMockRunResult{output: []byte("Status: active\n"), err: nil}
+
+		SetDefaultFirewallManager(firewall.NewManagerWithRunner(runner))
+		defer SetDefaultFirewallManager(nil)
+
+		var stdoutBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetArgs([]string{"init", "-y", "--role", "server", "--acme", "--server", "wss://localhost:8443/ws", "--token", "tok"})
+
+		err := rootCmd.Execute()
+		if err != nil {
+			t.Fatalf("fabric init failed: %v", err)
+		}
+
+		found8443 := false
+		found80 := false
+		for _, exec := range runner.executed {
+			if len(exec) >= 3 && exec[0] == "ufw" && exec[1] == "allow" {
+				if strings.HasPrefix(exec[2], "8443/tcp") {
+					found8443 = true
+				}
+				if strings.HasPrefix(exec[2], "80/tcp") {
+					found80 = true
+				}
+			}
+		}
+		if !found8443 || !found80 {
+			t.Errorf("expected both 8443/tcp and 80/tcp to be opened with --acme, got: %v", runner.executed)
+		}
+	})
+
+	t.Run("inactive firewall notes that no configuration is required", func(t *testing.T) {
+		runner := newCLIMockRunner()
+		SetDefaultFirewallManager(firewall.NewManagerWithRunner(runner))
+		defer SetDefaultFirewallManager(nil)
+
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		rootCmd.SetArgs([]string{"init", "-y", "--role", "server", "--server", "wss://localhost:8443/ws", "--token", "tok"})
+		err := rootCmd.Execute()
+
+		w.Close()
+		os.Stdout = oldStdout
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+
+		if err != nil {
+			t.Fatalf("fabric init failed: %v", err)
+		}
+
+		if !strings.Contains(buf.String(), "No active Linux firewall detected") {
+			t.Errorf("expected note about inactive firewall in output, got: %s", buf.String())
 		}
 	})
 }

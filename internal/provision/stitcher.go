@@ -73,7 +73,7 @@ func FormatSSHError(target, port string, err error, output string) error {
 		strings.Contains(combined, "no route to host") ||
 		strings.Contains(combined, "network is unreachable") ||
 		strings.Contains(combined, "host is down") {
-		return fmt.Errorf("SSH connection to %s (port %s) failed: %w (port %s/TCP may be closed, blocked by a firewall, or SSH service is not running)", target, port, err, port)
+		return fmt.Errorf("SSH connection to %s (port %s) failed: %w (port %s/TCP may be closed, blocked by a firewall, or SSH service is not running; unblock with: 'sudo ufw allow %s/tcp' or 'sudo firewall-cmd --add-port=%s/tcp')", target, port, err, port, port, port)
 	}
 	return fmt.Errorf("SSH execution on %s (port %s) failed: %w", target, port, err)
 }
@@ -798,12 +798,12 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 		}
 	}
 
-	// 1. Explicit Remote / Inverted Mode Verification
+	// 1. Explicit Remote Mode Verification
 	if opts.Mode == "inverted" || opts.Mode == "remote" {
 		if !opts.SilentOutput {
 			fmt.Printf("[+] Verifying remote thread listener via direct mTLS probe (%s)...", targetProbeAddr)
 		}
-		return verifyDirectInvertedProbe(proberFn, targetProbeAddr, caCertPath, targetHostOnly, listenPort, remoteHostname, remoteOS, remoteArch, opts, false)
+		return verifyDirectRemoteProbe(proberFn, targetProbeAddr, caCertPath, targetHostOnly, listenPort, remoteHostname, remoteOS, remoteArch, opts, false)
 	}
 
 	// 2. Normal Mode Verification with Automatic Fallback State Machine
@@ -847,7 +847,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 			}
 
 			mgr := service.NewInitManager()
-			switchScript := mgr.RenderInvertedSwitchScript(listenPort)
+			switchScript := mgr.RenderRemoteSwitchScript(listenPort)
 			if err := exec.Run(switchScript); err != nil {
 				return nil, fmt.Errorf("failed to switch thread to remote mode: %w", err)
 			}
@@ -856,7 +856,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 				fmt.Printf("[+] Probing remote thread via direct mTLS (%s)...", targetProbeAddr)
 			}
 
-			return verifyDirectInvertedProbe(proberFn, targetProbeAddr, caCertPath, targetHostOnly, listenPort, remoteHostname, remoteOS, remoteArch, opts, true)
+			return verifyDirectRemoteProbe(proberFn, targetProbeAddr, caCertPath, targetHostOnly, listenPort, remoteHostname, remoteOS, remoteArch, opts, true)
 
 		case <-ticker.C:
 			if !opts.SilentOutput {
@@ -883,7 +883,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 	}
 }
 
-func verifyDirectInvertedProbe(proberFn DirectProberFunc, targetProbeAddr, caCertPath, targetHostOnly, listenPort, remoteHostname, remoteOS, remoteArch string, opts StitchHostOptions, isFallback bool) (*protocol.NodeMetadata, error) {
+func verifyDirectRemoteProbe(proberFn DirectProberFunc, targetProbeAddr, caCertPath, targetHostOnly, listenPort, remoteHostname, remoteOS, remoteArch string, opts StitchHostOptions, isFallback bool) (*protocol.NodeMetadata, error) {
 	prefix := "Direct"
 	if isFallback {
 		prefix = "Fallback direct"

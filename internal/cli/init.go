@@ -29,6 +29,7 @@ var (
 	initOpenFirewall bool
 	initTrustCA      bool
 	initUntrustCA    bool
+	initACMEFlag     bool
 
 	defaultFirewallManager *firewall.Manager
 )
@@ -50,23 +51,14 @@ var initCmd = &cobra.Command{
 	GroupID: "system",
 	Long: `Interactive onboarding wizard to configure the local operator workspace (~/.fabric/config.json),
 participation role (thread, server, or both), operating mode (local or remote), cluster tokens, and Root CA trust.`,
-	Example: `  # Launch interactive setup wizard
-  fabric init
+	Example: `  # Initialize Server interactively
+  fabric init --role=server
 
-  # Set up as a dedicated Fabric Server
-  fabric init --role server
+  # Join local machine as a Thread
+  fabric init --role=thread --server=wss://192.168.1.50:8443/ws
 
-  # Set up as a managed Thread
-  fabric init --role thread --server wss://gateway:8443/ws --token secret-token
-
-  # Set up as a Thread in remote mode
-  fabric init --role thread --mode remote --token secret-token
-
-  # Non-interactive setup for scripts
-  fabric init -y --server wss://gateway:8443/ws --token secret-token
-
-  # Non-interactive setup with automatic firewall port configuration
-  fabric init --role server --open-firewall -y
+  # Initialize non-interactively with auto-generated token
+  fabric init -y --role=server --auto-token
 
   # Install local Fabric Root CA into the OS trust store
   fabric init --trust-ca
@@ -87,6 +79,7 @@ func init() {
 	initCmd.Flags().BoolVar(&initAutoToken, "auto-token", false, "Auto-generate a secure random token")
 	initCmd.Flags().BoolVarP(&initNonInteract, "yes", "y", false, "Accept all defaults non-interactively")
 	initCmd.Flags().BoolVar(&initOpenFirewall, "open-firewall", false, "Automatically configure local firewall rules")
+	initCmd.Flags().BoolVar(&initACMEFlag, "acme", false, "Enable automatic Let's Encrypt / ACME TLS certification (opens port 80/tcp)")
 	initCmd.Flags().BoolVar(&initTrustCA, "trust-ca", false, "Install Fabric Root CA into system trust store")
 	initCmd.Flags().BoolVar(&initUntrustCA, "untrust-ca", false, "Remove Fabric Root CA from system trust store")
 }
@@ -395,6 +388,26 @@ func generateSecureToken() string {
 	return hex.EncodeToString(b)
 }
 
+type initPortSpec struct {
+	port    int
+	proto   string
+	comment string
+	purpose string
+}
+
+func applyInitOpenPort(fwMgr *firewall.Manager, backend firewall.Backend, p initPortSpec) {
+	err := fwMgr.OpenPortWithBackend(backend, p.port, p.proto, p.comment)
+	if err == nil {
+		fmt.Printf("[+] Configured %s firewall rule (opened %d/%s for %s)\n", backend, p.port, p.proto, p.purpose)
+	} else {
+		fmt.Printf("[!] Warning: Could not automatically configure %s firewall: %v\n", backend, err)
+		manual := fwMgr.GetOpenPortManualInstructions(backend, p.port, p.proto, p.comment)
+		if manual != "" {
+			fmt.Printf("    Manual firewall command: %s\n", manual)
+		}
+	}
+}
+
 func configureInitFirewall(reader *bufio.Reader, role, mode string, nonInteract, autoOpen bool) {
 	if role == "thread" && (mode == "local" || mode == "") {
 		fmt.Println("[+] Operating in local mode: outbound-only connectivity (zero inbound ports required).")
@@ -404,52 +417,57 @@ func configureInitFirewall(reader *bufio.Reader, role, mode string, nonInteract,
 	fwMgr := getFirewallManager()
 	backend := fwMgr.DetectBackend()
 	if backend == firewall.BackendNone {
+		fmt.Println("[*] No active Linux firewall detected (ufw/firewalld/nftables/iptables); skipping firewall rule configuration.")
 		return
 	}
 
-	port := 8443
-	comment := "Fabric Server Control Plane"
-	purpose := "Server"
-	if role == "thread" && mode == "remote" {
-		comment = "Fabric Remote Thread Listener"
-		purpose = "Remote Thread"
-	} else if role == "both" {
-		purpose = "Server + Thread"
+	var ports []initPortSpec
+	if role == "server" || role == "both" {
+		purpose := "Server"
+		if role == "both" {
+			purpose = "Server + Thread"
+		}
+		ports = append(ports, initPortSpec{
+			port:    8443,
+			proto:   "tcp",
+			comment: "Fabric Server Control Plane",
+			purpose: purpose,
+		})
+		if initACMEFlag {
+			ports = append(ports, initPortSpec{
+				port:    80,
+				proto:   "tcp",
+				comment: "Fabric ACME HTTP Challenge",
+				purpose: "ACME HTTP Challenge",
+			})
+		}
+	} else if role == "thread" && mode == "remote" {
+		ports = append(ports, initPortSpec{
+			port:    8443,
+			proto:   "tcp",
+			comment: "Fabric Remote Thread Listener",
+			purpose: "Remote Thread",
+		})
 	}
 
-	if autoOpen || nonInteract {
-		err := fwMgr.OpenPortWithBackend(backend, port, "tcp", comment)
-		if err == nil {
-			fmt.Printf("[+] Configured %s firewall rule (opened %d/tcp for %s)\n", backend, port, purpose)
-		} else {
-			fmt.Printf("[!] Warning: Could not automatically configure %s firewall: %v\n", backend, err)
-			manual := fwMgr.GetOpenPortManualInstructions(backend, port, "tcp", comment)
-			if manual != "" {
-				fmt.Printf("    Manual firewall command: %s\n", manual)
-			}
+	for _, p := range ports {
+		if autoOpen || nonInteract {
+			applyInitOpenPort(fwMgr, backend, p)
+			continue
 		}
-		return
-	}
 
-	promptMsg := fmt.Sprintf("Open port %d/tcp in %s? (Y/n)", port, backend)
-	choice := prompt(reader, promptMsg, "Y")
-	if strings.ToLower(choice) == "y" || strings.ToLower(choice) == "yes" || choice == "" {
-		err := fwMgr.OpenPortWithBackend(backend, port, "tcp", comment)
-		if err == nil {
-			fmt.Printf("[+] Configured %s firewall rule (opened %d/tcp for %s)\n", backend, port, purpose)
+		promptMsg := fmt.Sprintf("Open port %d/%s in %s for %s? (Y/n)", p.port, p.proto, backend, p.purpose)
+		choice := prompt(reader, promptMsg, "Y")
+		if strings.ToLower(choice) == "y" || strings.ToLower(choice) == "yes" || choice == "" {
+			applyInitOpenPort(fwMgr, backend, p)
 		} else {
-			fmt.Printf("[!] Warning: Could not configure %s firewall: %v\n", backend, err)
-			manual := fwMgr.GetOpenPortManualInstructions(backend, port, "tcp", comment)
+			fmt.Printf("[*] Skipped firewall configuration for port %d/%s.\n", p.port, p.proto)
+			manual := fwMgr.GetOpenPortManualInstructions(backend, p.port, p.proto, p.comment)
 			if manual != "" {
-				fmt.Printf("    Manual firewall command: %s\n", manual)
+				fmt.Printf("    To open manually: %s\n", manual)
 			}
-		}
-	} else {
-		fmt.Println("[*] Skipped firewall configuration.")
-		manual := fwMgr.GetOpenPortManualInstructions(backend, port, "tcp", comment)
-		if manual != "" {
-			fmt.Printf("    To open manually: %s\n", manual)
 		}
 	}
 }
+
 

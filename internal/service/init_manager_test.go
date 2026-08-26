@@ -176,6 +176,21 @@ func TestRenderInvertedSwitchScript(t *testing.T) {
 	}
 }
 
+func TestRenderRemoteSwitchScript(t *testing.T) {
+	mgr := NewInitManager()
+	script := mgr.RenderRemoteSwitchScript("8443")
+
+	if !strings.Contains(script, `PORT=":8443"`) {
+		t.Errorf("expected PORT=:8443, got: %s", script)
+	}
+	if !strings.Contains(script, "FABRIC_LISTEN=") {
+		t.Errorf("missing FABRIC_LISTEN update in switch script: %s", script)
+	}
+	if !strings.Contains(script, "systemctl restart fabric-thread") {
+		t.Errorf("missing systemctl restart in switch script: %s", script)
+	}
+}
+
 func TestRenderBootstrapScript_AtomicBinaryUnpack(t *testing.T) {
 	mgr := NewInitManager()
 	opts := BootstrapScriptOptions{

@@ -862,8 +862,8 @@ fi
 `, opts.NodePayload, opts.CliPayload, opts.CAPayload, opts.CertPayload, opts.KeyPayload, envB64, mode, opts.ListenAddr)
 }
 
-// RenderInvertedSwitchScript renders a lightweight SSH command to switch an existing thread to remote mode.
-func (m *InitManager) RenderInvertedSwitchScript(listenPort string) string {
+// RenderRemoteSwitchScript renders a lightweight SSH command to switch an existing thread to remote mode.
+func (m *InitManager) RenderRemoteSwitchScript(listenPort string) string {
 	if !strings.HasPrefix(listenPort, ":") {
 		listenPort = ":" + listenPort
 	}
@@ -956,5 +956,10 @@ elif command -v iptables >/dev/null 2>&1; then
     $SUDO iptables -I INPUT -p tcp --dport "%s" -m comment --comment "Fabric Remote Thread Listener" -j ACCEPT 2>/dev/null || $SUDO iptables -I INPUT -p tcp --dport "%s" -j ACCEPT 2>/dev/null || true
 fi
 `, listenPort, portNum, portNum, portNum, portNum, portNum, portNum, portNum)
+}
+
+// RenderInvertedSwitchScript is a deprecated alias for RenderRemoteSwitchScript.
+func (m *InitManager) RenderInvertedSwitchScript(listenPort string) string {
+	return m.RenderRemoteSwitchScript(listenPort)
 }
 
