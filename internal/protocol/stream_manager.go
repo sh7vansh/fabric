@@ -130,19 +130,37 @@ func (sm *StreamManager) Bridge(a, b net.Conn) (*StreamTelemetry, error) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	var (
+		bytesAB, bytesBA int64
+		rErrA, wErrB     error
+		rErrB, wErrA     error
+	)
+
 	// Direction A -> B
 	go func() {
 		defer wg.Done()
-		sm.transferUni(a, b, &telem.BytesFromAToB, &sm.bytesAToB, &telem.ErrA, &telem.ErrB, &once, closeBoth)
+		rErrA, wErrB = sm.transferUni(a, b, &bytesAB, &sm.bytesAToB, &once, closeBoth)
 	}()
 
 	// Direction B -> A
 	go func() {
 		defer wg.Done()
-		sm.transferUni(b, a, &telem.BytesFromBToA, &sm.bytesBToA, &telem.ErrB, &telem.ErrA, &once, closeBoth)
+		rErrB, wErrA = sm.transferUni(b, a, &bytesBA, &sm.bytesBToA, &once, closeBoth)
 	}()
 
 	wg.Wait()
+	telem.BytesFromAToB = bytesAB
+	telem.BytesFromBToA = bytesBA
+	if rErrA != nil {
+		telem.ErrA = rErrA
+	} else {
+		telem.ErrA = wErrA
+	}
+	if rErrB != nil {
+		telem.ErrB = rErrB
+	} else {
+		telem.ErrB = wErrB
+	}
 	telem.EndTime = time.Now()
 	telem.Duration = telem.EndTime.Sub(telem.StartTime)
 	telem.TotalBytes = telem.BytesFromAToB + telem.BytesFromBToA
@@ -154,10 +172,9 @@ func (sm *StreamManager) transferUni(
 	src, dst net.Conn,
 	telemBytes *int64,
 	smBytes *atomic.Int64,
-	srcErr, dstErr *error,
 	once *sync.Once,
 	closeBoth func(),
-) {
+) (rErrOut error, wErrOut error) {
 	buf := sm.getBuffer()
 	defer sm.putBuffer(buf)
 
@@ -175,13 +192,13 @@ func (sm *StreamManager) transferUni(
 				smBytes.Add(int64(wn))
 			}
 			if wErr != nil {
-				*dstErr = wErr
+				wErrOut = wErr
 				break
 			}
 		}
 		if rErr != nil {
 			if rErr != io.EOF {
-				*srcErr = rErr
+				rErrOut = rErr
 			}
 			break
 		}
@@ -195,9 +212,11 @@ func (sm *StreamManager) transferUni(
 	// Propagate half-close write on dst if supported
 	if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 		_ = cw.CloseWrite()
-	} else if *srcErr != nil || *dstErr != nil {
+	} else if rErrOut != nil || wErrOut != nil {
 		once.Do(closeBoth)
 	}
+
+	return rErrOut, wErrOut
 }
 
 // DefaultIdleDeadline is the default idle timeout applied to proxy streams (60s).

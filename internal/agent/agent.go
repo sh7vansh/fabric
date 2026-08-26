@@ -487,7 +487,11 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 			defer timeoutTimer.Stop()
 		}
 
+		var stdioWg sync.WaitGroup
+		stdioWg.Add(2)
+
 		go func() {
+			defer stdioWg.Done()
 			defer stdout.Close()
 			buf := make([]byte, 64*1024)
 			for {
@@ -505,6 +509,7 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		}()
 
 		go func() {
+			defer stdioWg.Done()
 			defer stderr.Close()
 			buf := make([]byte, 64*1024)
 			for {
@@ -537,9 +542,11 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 				}
 			}
 		}()
+
+		err = cmd.Wait()
+		stdioWg.Wait()
 	}
 
-	err = cmd.Wait()
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
