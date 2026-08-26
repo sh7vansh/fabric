@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release Tag (e.g. v1.1.0)'
+        required: false
+        default: ''
 
 jobs:
   build-and-release:
@@ -13,40 +19,52 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-        
+        with:
+          fetch-depth: 0
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: 'stable'
+          cache: true
+
+      - name: Run Tests
+        run: |
+          go test -v ./...
 
       - name: Build Canonical Binaries
         run: |
           mkdir -p dist
-          
+
           # Build canonical binaries across supported Linux architectures
           ARCHS=("amd64" "arm64" "arm")
-          TAG_VERSION="${{ github.ref_name }}"
+          TAG_VERSION="${{ github.event.inputs.tag || github.ref_name }}"
           COMMIT_SHA="${{ github.sha }}"
           BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
           PROTOCOL_VERSION="1.0.0"
-          
-          LDFLAGS="-s -w -X fabric/internal/version.Version=${TAG_VERSION} -X fabric/internal/version.GitCommit=${COMMIT_SHA} -X fabric/internal/version.BuildDate=${BUILD_DATE} -X fabric/internal/version.ProtocolVersion=${PROTOCOL_VERSION}"
-          
+
+          LDFLAGS="-s -w -X fabric/internal/version.Version=${TAG_VERSION#v} -X fabric/internal/version.GitCommit=${COMMIT_SHA} -X fabric/internal/version.BuildDate=${BUILD_DATE} -X fabric/internal/version.ProtocolVersion=${PROTOCOL_VERSION}"
+
           for ARCH in "${ARCHS[@]}"; do
             echo "Building canonical binaries for linux/$ARCH..."
-            GOOS=linux GOARCH=$ARCH go build -ldflags="${LDFLAGS}" -o "dist/fabric-linux-$ARCH" ./cmd/cli
-            GOOS=linux GOARCH=$ARCH go build -ldflags="${LDFLAGS}" -o "dist/fabric-server-linux-$ARCH" ./cmd/server
-            GOOS=linux GOARCH=$ARCH go build -ldflags="${LDFLAGS}" -o "dist/fabric-thread-linux-$ARCH" ./cmd/thread
+            GOOS=linux GOARCH=$ARCH CGO_ENABLED=0 go build -ldflags="${LDFLAGS}" -o "dist/fabric-linux-$ARCH" ./cmd/cli
+            GOOS=linux GOARCH=$ARCH CGO_ENABLED=0 go build -ldflags="${LDFLAGS}" -o "dist/fabric-server-linux-$ARCH" ./cmd/server
+            GOOS=linux GOARCH=$ARCH CGO_ENABLED=0 go build -ldflags="${LDFLAGS}" -o "dist/fabric-thread-linux-$ARCH" ./cmd/thread
           done
 
-      - name: Generate Checksum Manifest
+      - name: Generate Checksum Manifests
         run: |
           cd dist
           sha256sum fabric* > checksums.txt
+          for file in fabric-*; do
+            sha256sum "$file" > "${file}.sha256"
+          done
           cat checksums.txt
 
       - name: Create Release and Upload Assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: dist/*
           generate_release_notes: true
+
