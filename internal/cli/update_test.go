@@ -155,25 +155,25 @@ func TestRunUpdate_EndToEnd(t *testing.T) {
 
 	// Create initial mock binaries
 	oldFabric := filepath.Join(tmpDir, "fabric")
-	oldNode := filepath.Join(tmpDir, "fabric-node")
-	oldSocket := filepath.Join(tmpDir, "fabric-socket")
+	oldServer := filepath.Join(tmpDir, "fabric-server")
+	oldThread := filepath.Join(tmpDir, "fabric-thread")
 
 	_ = os.WriteFile(oldFabric, []byte("OLD_CLI_BINARY"), 0755)
-	_ = os.WriteFile(oldNode, []byte("OLD_NODE_BINARY"), 0755)
-	_ = os.WriteFile(oldSocket, []byte("OLD_SOCKET_BINARY"), 0755)
+	_ = os.WriteFile(oldServer, []byte("OLD_SERVER_BINARY"), 0755)
+	_ = os.WriteFile(oldThread, []byte("OLD_THREAD_BINARY"), 0755)
 
 	newCliPayload := []byte("#!/bin/sh\necho 'NEW_CLI_v2.2.0'\n")
-	newNodePayload := []byte("#!/bin/sh\necho 'NEW_NODE_v2.2.0'\n")
-	newSocketPayload := []byte("#!/bin/sh\necho 'NEW_SOCKET_v2.2.0'\n")
+	newServerPayload := []byte("#!/bin/sh\necho 'NEW_SERVER_v2.2.0'\n")
+	newThreadPayload := []byte("#!/bin/sh\necho 'NEW_THREAD_v2.2.0'\n")
 
 	cliSum := sha256.Sum256(newCliPayload)
-	nodeSum := sha256.Sum256(newNodePayload)
-	socketSum := sha256.Sum256(newSocketPayload)
+	serverSum := sha256.Sum256(newServerPayload)
+	threadSum := sha256.Sum256(newThreadPayload)
 
-	checksumsContent := fmt.Sprintf("%s  fabric-linux-amd64\n%s  fabric-node-linux-amd64\n%s  fabric-socket-linux-amd64\n",
+	checksumsContent := fmt.Sprintf("%s  fabric-linux-amd64\n%s  fabric-server-linux-amd64\n%s  fabric-thread-linux-amd64\n",
 		hex.EncodeToString(cliSum[:]),
-		hex.EncodeToString(nodeSum[:]),
-		hex.EncodeToString(socketSum[:]),
+		hex.EncodeToString(serverSum[:]),
+		hex.EncodeToString(threadSum[:]),
 	)
 
 	// Setup mock server serving release metadata, downloads, and checksums
@@ -188,10 +188,10 @@ func TestRunUpdate_EndToEnd(t *testing.T) {
 			json.NewEncoder(w).Encode(rel)
 		case "/downloads/fabric-linux-amd64":
 			w.Write(newCliPayload)
-		case "/downloads/fabric-node-linux-amd64":
-			w.Write(newNodePayload)
-		case "/downloads/fabric-socket-linux-amd64":
-			w.Write(newSocketPayload)
+		case "/downloads/fabric-server-linux-amd64":
+			w.Write(newServerPayload)
+		case "/downloads/fabric-thread-linux-amd64":
+			w.Write(newThreadPayload)
 		case "/downloads/checksums.txt":
 			w.Write([]byte(checksumsContent))
 		default:
@@ -228,14 +228,14 @@ func TestRunUpdate_EndToEnd(t *testing.T) {
 		t.Errorf("fabric binary not updated properly: got %q", string(cliContent))
 	}
 
-	nodeContent, _ := os.ReadFile(oldNode)
-	if string(nodeContent) != string(newNodePayload) {
-		t.Errorf("fabric-node binary not updated properly: got %q", string(nodeContent))
+	serverContent, _ := os.ReadFile(oldServer)
+	if string(serverContent) != string(newServerPayload) {
+		t.Errorf("fabric-server binary not updated properly: got %q", string(serverContent))
 	}
 
-	socketContent, _ := os.ReadFile(oldSocket)
-	if string(socketContent) != string(newSocketPayload) {
-		t.Errorf("fabric-socket binary not updated properly: got %q", string(socketContent))
+	threadContent, _ := os.ReadFile(oldThread)
+	if string(threadContent) != string(newThreadPayload) {
+		t.Errorf("fabric-thread binary not updated properly: got %q", string(threadContent))
 	}
 
 	// Verify permissions

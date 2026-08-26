@@ -3,6 +3,7 @@ package meshdns
 import (
 	"encoding/base64"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -219,4 +220,27 @@ func TestCentralizedCacheEviction(t *testing.T) {
 		t.Errorf("expected entry to be evicted by central ticker loop after TTL expiry")
 	}
 }
+
+func TestWriteHostsFileAtomicFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetHosts := filepath.Join(tmpDir, "hosts")
+
+	mgr := NewSystemDNSManager("fabric.mesh")
+	defer mgr.Teardown()
+	mgr.hostsPath = targetHosts
+
+	content := "127.0.0.1 localhost\n10.0.0.1 alpha.fabric.mesh\n"
+	if err := mgr.writeHostsFileAtomic(content); err != nil {
+		t.Fatalf("writeHostsFileAtomic failed: %v", err)
+	}
+
+	readBack, err := os.ReadFile(targetHosts)
+	if err != nil {
+		t.Fatalf("os.ReadFile failed: %v", err)
+	}
+	if string(readBack) != content {
+		t.Fatalf("expected content %q, got %q", content, string(readBack))
+	}
+}
+
 

@@ -119,7 +119,7 @@ func main() {
 
 		go func() {
 			if err := meshRelay.ServeWSAuth(conn, r.RemoteAddr, authenticated); err != nil {
-				log.Printf("[Relay] Session ended for %s: %v\n", r.RemoteAddr, err)
+				log.Printf("[Server] Session ended for %s: %v\n", r.RemoteAddr, err)
 			}
 		}()
 	})

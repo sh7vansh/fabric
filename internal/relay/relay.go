@@ -195,13 +195,13 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 		}
 
 		if !r.ValidateToken(hs.Token) {
-			log.Println("[Relay] Unauthorized connection attempt from:", hs.Hostname)
+			log.Println("[Server] Unauthorized connection attempt from:", hs.Hostname)
 			mux.Session.Close()
 			return
 		}
 
 		if !protocol.IsValidHostname(hs.Hostname) {
-			log.Println("[Relay] Handshake rejected: invalid hostname (must match RFC 1123):", hs.Hostname)
+			log.Println("[Server] Handshake rejected: invalid hostname (must match RFC 1123):", hs.Hostname)
 			mux.Session.Close()
 			return
 		}
@@ -234,7 +234,7 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 		isAuthenticated = true
 		sessionAuthMu.Unlock()
 
-		log.Printf("[Relay] Node connected successfully: %s (session: %s)\n", hs.Hostname, sessID)
+		log.Printf("[Server] Node connected successfully: %s (session: %s)\n", hs.Hostname, sessID)
 	})
 
 	requireAuth := func(name string, handler func(stream net.Conn, env []byte)) func(stream net.Conn, env []byte) {
@@ -244,7 +244,7 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 			sessionAuthMu.RUnlock()
 
 			if !authed {
-				log.Printf("[Relay] Dropping %s on unauthenticated session\n", name)
+				log.Printf("[Server] Dropping %s on unauthenticated session\n", name)
 				stream.Close()
 				mux.Session.Close()
 				return
@@ -276,9 +276,9 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 			stream.Close()
 			return
 		}
-		log.Printf("[Relay] Exec request targeting %s: %s\n", req.TargetHostname, req.Command)
+		log.Printf("[Server] Exec request targeting %s: %s\n", req.TargetHostname, req.Command)
 		if err := r.RouteStream(req.TargetHostname, env, stream); err != nil {
-			log.Println("[Relay] RouteStream error:", err)
+			log.Println("[Server] RouteStream error:", err)
 		}
 	}))
 
@@ -289,7 +289,7 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 			return
 		}
 		if err := r.RouteStream(req.TargetHostname, env, stream); err != nil {
-			log.Println("[Relay] RouteStream copy error:", err)
+			log.Println("[Server] RouteStream copy error:", err)
 		}
 	}))
 
@@ -300,7 +300,7 @@ func (r *Relay) ServeMuxAuth(mux *protocol.StreamMultiplexer, remoteAddr, proxyI
 			return
 		}
 		if err := r.RouteProxyStream(req.TargetHostname, env, stream); err != nil {
-			log.Println("[Relay] RouteProxyStream error:", err)
+			log.Println("[Server] RouteProxyStream error:", err)
 		}
 	}))
 
@@ -364,7 +364,7 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 			meta.Tags = existing.Metadata.Tags
 		}
 		if existing.Mux != nil && existing.Mux != mux {
-			log.Printf("[Relay] Renewing registration for %q (displacing previous session)\n", meta.Hostname)
+			log.Printf("[Server] Renewing registration for %q (displacing previous session)\n", meta.Hostname)
 			go existing.Mux.Session.Close()
 		}
 	}

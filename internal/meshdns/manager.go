@@ -363,6 +363,13 @@ func (m *SystemDNSManager) readAndStripHostsBlock() ([]string, error) {
 	return newLines, nil
 }
 
+func (m *SystemDNSManager) commitHostsLines(lines []string) error {
+	if len(lines) > 0 {
+		lines = append(lines, "")
+	}
+	return m.writeHostsFileAtomic(strings.Join(lines, "\n"))
+}
+
 func (m *SystemDNSManager) updateHostsBlock(nodes []protocol.NodeMetadata, socketIP string) {
 	hostsFileLock.Lock()
 	defer hostsFileLock.Unlock()
@@ -372,9 +379,6 @@ func (m *SystemDNSManager) updateHostsBlock(nodes []protocol.NodeMetadata, socke
 		return
 	}
 
-	if len(newLines) > 0 {
-		newLines = append(newLines, "")
-	}
 	newLines = append(newLines, hostsBlockStart)
 	for _, n := range nodes {
 		// Strict RFC 1123 DNS hostname validation to prevent /etc/hosts injection
@@ -382,9 +386,9 @@ func (m *SystemDNSManager) updateHostsBlock(nodes []protocol.NodeMetadata, socke
 			newLines = append(newLines, socketIP+" "+n.Hostname+"."+m.domain)
 		}
 	}
-	newLines = append(newLines, hostsBlockEnd, "")
+	newLines = append(newLines, hostsBlockEnd)
 
-	_ = m.writeHostsFileAtomic(strings.Join(newLines, "\n"))
+	_ = m.commitHostsLines(newLines)
 }
 
 func (m *SystemDNSManager) cleanHostsBlock() {
@@ -396,10 +400,7 @@ func (m *SystemDNSManager) cleanHostsBlock() {
 		return
 	}
 
-	if len(newLines) > 0 {
-		newLines = append(newLines, "")
-	}
-	_ = m.writeHostsFileAtomic(strings.Join(newLines, "\n"))
+	_ = m.commitHostsLines(newLines)
 }
 
 func (m *SystemDNSManager) writeHostsFileAtomic(content string) error {
@@ -430,5 +431,16 @@ func (m *SystemDNSManager) writeHostsFileAtomic(content string) error {
 		return err
 	}
 
-	return os.Rename(tmpPath, m.hostsPath)
+	if err := os.Rename(tmpPath, m.hostsPath); err != nil {
+		// Fallback copy if rename fails across filesystems / mount points
+		data, rErr := os.ReadFile(tmpPath)
+		if rErr != nil {
+			return err
+		}
+		if wErr := os.WriteFile(m.hostsPath, data, 0644); wErr != nil {
+			return wErr
+		}
+	}
+
+	return nil
 }

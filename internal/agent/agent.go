@@ -27,7 +27,31 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var validUsernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_.][a-zA-Z0-9_.-]*$`)
+var (
+	validUsernameRegex = regexp.MustCompile(`^[a-zA-Z0-9_.][a-zA-Z0-9_.-]*$`)
+	validEnvKeyRegex   = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+)
+
+func quoteShellArg(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func formatEnvExports(env []string) string {
+	var envPrefix strings.Builder
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		key := parts[0]
+		if !validEnvKeyRegex.MatchString(key) {
+			continue
+		}
+		if len(parts) == 2 {
+			envPrefix.WriteString(fmt.Sprintf("export %s=%s\n", key, quoteShellArg(parts[1])))
+		} else {
+			envPrefix.WriteString(fmt.Sprintf("export %s\n", key))
+		}
+	}
+	return envPrefix.String()
+}
 
 // Config configures the NodeAgent daemon.
 type Config struct {
@@ -396,11 +420,8 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 			protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
 			return
 		}
-		var envPrefix strings.Builder
-		for _, e := range req.Env {
-			envPrefix.WriteString(fmt.Sprintf("export %s\n", e))
-		}
-		fullCmd := envPrefix.String() + req.Command
+		envPrefix := formatEnvExports(req.Env)
+		fullCmd := envPrefix + req.Command
 		cmd = exec.Command("su", "-", req.User, "-c", fullCmd)
 	} else {
 		cmd = exec.Command("sh", "-c", req.Command)

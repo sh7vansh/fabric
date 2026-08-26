@@ -475,4 +475,22 @@ func TestAgentHandleExecStreamCloseKillsProcessGroup(t *testing.T) {
 	}
 }
 
+func TestFormatEnvExports(t *testing.T) {
+	env := []string{
+		"VALID=hello world",
+		"QUOTED=it's 'great'",
+		"INVALID-KEY=blocked",
+		"INJECTION=val; rm -rf /",
+		"JUST_KEY",
+	}
+
+	result := formatEnvExports(env)
+	expected := "export VALID='hello world'\nexport QUOTED='it'\\''s '\\''great'\\'''\nexport INJECTION='val; rm -rf /'\nexport JUST_KEY\n"
+	if result != expected {
+		t.Fatalf("expected:\n%q\ngot:\n%q", expected, result)
+	}
+}
+
+
+
 

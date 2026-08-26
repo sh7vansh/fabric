@@ -187,12 +187,38 @@ func ExtractTarWithLimits(r io.Reader, destDir string, maxBytes int64, maxEntrie
 }
 
 func commitStagedDirectory(stagingDir, destDir string) error {
-	if err := os.MkdirAll(destDir, 0755); err != nil {
-		return err
-	}
-
 	entries, err := os.ReadDir(stagingDir)
 	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		return nil
+	}
+
+	destStat, destErr := os.Stat(destDir)
+	isExistingDir := destErr == nil && destStat.IsDir()
+	explicitDir := strings.HasSuffix(destDir, "/") || strings.HasSuffix(destDir, string(filepath.Separator))
+
+	// If destDir is not an explicit or existing directory, and the archive contains a single regular file, commit directly as that file.
+	if !isExistingDir && !explicitDir && len(entries) == 1 && !entries[0].IsDir() {
+		if err := os.MkdirAll(filepath.Dir(destDir), 0755); err != nil {
+			return err
+		}
+		src := filepath.Join(stagingDir, entries[0].Name())
+		dst := destDir
+		if _, err := os.Lstat(dst); err == nil {
+			_ = os.RemoveAll(dst)
+		}
+		if err := os.Rename(src, dst); err != nil {
+			if err := copyRecursive(src, dst); err != nil {
+				return err
+			}
+			_ = os.RemoveAll(src)
+		}
+		return nil
+	}
+
+	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return err
 	}
 

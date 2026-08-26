@@ -37,7 +37,7 @@ var updateCmd = &cobra.Command{
 	Long: `Download and install the latest or specified release of Fabric.
 
 Performs atomic self-update on the local binary and optionally upgrades companion
-daemons (fabric-socket, fabric-node) installed in the same binary directory.`,
+daemons (fabric-server, fabric-thread) installed in the same binary directory.`,
 	Example: `  # Check if a newer version of Fabric is available
   fabric update --check
 
@@ -75,7 +75,7 @@ func init() {
 	updateCmd.Flags().BoolVarP(&updateForce, "force", "f", false, "Force re-install even if already at latest version")
 	updateCmd.Flags().StringVarP(&updateTargetVersion, "version", "v", "", "Target release version to install (defaults to latest)")
 	updateCmd.Flags().StringVar(&updateInstallDir, "dir", "", "Target binary installation directory (defaults to current binary location)")
-	updateCmd.Flags().BoolVarP(&updateAllBinaries, "all", "a", false, "Update companion daemons (fabric-socket, fabric-node) if present")
+	updateCmd.Flags().BoolVarP(&updateAllBinaries, "all", "a", false, "Update companion daemons (fabric-server, fabric-thread) if present")
 	updateCmd.Flags().BoolVar(&updateRestartService, "restart", false, "Restart running systemd/supervisor services after update")
 
 	rootCmd.AddCommand(updateCmd)
@@ -377,7 +377,24 @@ func DownloadAndInstallBinary(ctx context.Context, client *http.Client, download
 	return nil
 }
 
-// RunUpdate performs the full Fabric update lifecycle based on UpdaterConfig.
+func resolveAssetDownloadURL(cfg UpdaterConfig, release *ReleaseInfo, latestTag, assetName string) string {
+	if cfg.DownloadURL != "" {
+		return fmt.Sprintf("%s/%s", strings.TrimRight(cfg.DownloadURL, "/"), assetName)
+	}
+	if envDownload := os.Getenv("FABRIC_DOWNLOAD_URL"); envDownload != "" {
+		return fmt.Sprintf("%s/%s", strings.TrimRight(envDownload, "/"), assetName)
+	}
+	if release != nil {
+		for _, asset := range release.Assets {
+			if asset.Name == assetName {
+				return asset.BrowserDownloadURL
+			}
+		}
+	}
+	return fmt.Sprintf("https://github.com/sh7vansh/fabric/releases/download/%s/%s", latestTag, assetName)
+}
+
+// RunUpdate performs the full update workflow according to the provided config.
 func RunUpdate(cfg UpdaterConfig) error {
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = &http.Client{Timeout: 60 * time.Second}
@@ -391,74 +408,66 @@ func RunUpdate(cfg UpdaterConfig) error {
 	if cfg.Arch == "" {
 		cfg.Arch = runtime.GOARCH
 	}
-	if cfg.CurrentVersion == "" {
-		cfg.CurrentVersion = Version
-	}
 
 	normArch := NormalizeArch(cfg.Arch)
-	ctx := context.Background()
-
-	apiURL := cfg.ReleaseAPIURL
-	if apiURL == "" {
-		if envAPI := os.Getenv("FABRIC_UPDATE_URL"); envAPI != "" {
-			apiURL = envAPI
-		} else if envRel := os.Getenv("FABRIC_RELEASE_URL"); envRel != "" {
-			apiURL = envRel
-		}
+	currentVer := cfg.CurrentVersion
+	if currentVer == "" {
+		currentVer = "dev"
 	}
 
-	fmt.Fprintf(cfg.Out, "[+] Checking for Fabric updates (current: v%s)...\n", strings.TrimPrefix(cfg.CurrentVersion, "v"))
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
 
-	release, err := FetchReleaseInfo(ctx, cfg.HTTPClient, apiURL, cfg.TargetVersion)
+	fmt.Fprintf(cfg.Out, "[+] Checking for Fabric updates (current: %s, os: %s, arch: %s)...\n", currentVer, cfg.OS, normArch)
+
+	release, err := FetchReleaseInfo(ctx, cfg.HTTPClient, cfg.ReleaseAPIURL, cfg.TargetVersion)
 	if err != nil {
-		return fmt.Errorf("update check failed: %w", err)
+		return fmt.Errorf("failed to check for updates: %w", err)
 	}
 
 	latestTag := release.TagName
-	cmp := SemverCompare(cfg.CurrentVersion, latestTag)
-
-	if cmp >= 0 && !cfg.Force && cfg.TargetVersion == "" {
-		fmt.Fprintf(cfg.Out, "[+] Fabric is already up to date (version %s).\n", latestTag)
-		return nil
+	if latestTag == "" {
+		latestTag = release.Name
 	}
+
+	cmp := SemverCompare(currentVer, latestTag)
 
 	if cfg.CheckOnly {
 		if cmp < 0 {
-			fmt.Fprintf(cfg.Out, "[+] An update is available: v%s -> %s\n    Run 'fabric update' to install the latest release.\n", strings.TrimPrefix(cfg.CurrentVersion, "v"), latestTag)
+			fmt.Fprintf(cfg.Out, "\n📢 An update is available: %s -> %s\n", currentVer, latestTag)
+			fmt.Fprintf(cfg.Out, "Run 'fabric update' to install the latest version.\n")
 		} else {
-			fmt.Fprintf(cfg.Out, "[+] Fabric is up to date (version %s).\n", latestTag)
+			fmt.Fprintf(cfg.Out, "\n✨ Fabric is already up to date (version %s).\n", currentVer)
 		}
 		return nil
 	}
 
-	installPath, err := FindInstallPath(cfg.InstallDir)
-	if err != nil {
-		return err
+	if cmp >= 0 && !cfg.Force {
+		fmt.Fprintf(cfg.Out, "\n✨ Fabric is already up to date (version %s).\n", currentVer)
+		fmt.Fprintf(cfg.Out, "Use --force to re-install this version.\n")
+		return nil
 	}
+
+	// Determine install path for the primary CLI binary
+	installPath := ""
+	if cfg.InstallDir != "" {
+		installPath = filepath.Join(cfg.InstallDir, "fabric")
+	} else {
+		execPath, err := os.Executable()
+		if err != nil {
+			installPath = "/usr/local/bin/fabric"
+		} else {
+			installPath = execPath
+		}
+	}
+
 	binDir := filepath.Dir(installPath)
 
 	fmt.Fprintf(cfg.Out, "[+] Updating Fabric: v%s -> %s (linux/%s)...\n", strings.TrimPrefix(cfg.CurrentVersion, "v"), latestTag, normArch)
 
 	// Resolve download URL for CLI binary: fabric-linux-<arch>
 	assetName := fmt.Sprintf("fabric-%s-%s", cfg.OS, normArch)
-	downloadURL := ""
-
-	if cfg.DownloadURL != "" {
-		downloadURL = fmt.Sprintf("%s/%s", strings.TrimRight(cfg.DownloadURL, "/"), assetName)
-	} else if envDownload := os.Getenv("FABRIC_DOWNLOAD_URL"); envDownload != "" {
-		downloadURL = fmt.Sprintf("%s/%s", strings.TrimRight(envDownload, "/"), assetName)
-	} else {
-		for _, asset := range release.Assets {
-			if asset.Name == assetName {
-				downloadURL = asset.BrowserDownloadURL
-				break
-			}
-		}
-		if downloadURL == "" {
-			// Standard fallback GitHub release asset URL
-			downloadURL = fmt.Sprintf("https://github.com/sh7vansh/fabric/releases/download/%s/%s", latestTag, assetName)
-		}
-	}
+	downloadURL := resolveAssetDownloadURL(cfg, release, latestTag, assetName)
 
 	fmt.Fprintf(cfg.Out, "[+] Downloading %s...\n", assetName)
 	if err := DownloadAndInstallBinary(ctx, cfg.HTTPClient, downloadURL, installPath); err != nil {
@@ -467,7 +476,7 @@ func RunUpdate(cfg UpdaterConfig) error {
 	fmt.Fprintf(cfg.Out, "[+] Installed %s to %s\n", assetName, installPath)
 
 	// Update companion binaries if requested or if already present in the target directory
-	companionRoles := []string{"socket", "node"}
+	companionRoles := []string{"server", "thread"}
 	for _, role := range companionRoles {
 		binName := "fabric-" + role
 		targetBinPath := filepath.Join(binDir, binName)
@@ -475,23 +484,7 @@ func RunUpdate(cfg UpdaterConfig) error {
 
 		if cfg.UpdateAll || statErr == nil {
 			compAssetName := fmt.Sprintf("fabric-%s-%s-%s", role, cfg.OS, normArch)
-			compDownloadURL := ""
-
-			if cfg.DownloadURL != "" {
-				compDownloadURL = fmt.Sprintf("%s/%s", strings.TrimRight(cfg.DownloadURL, "/"), compAssetName)
-			} else if envDownload := os.Getenv("FABRIC_DOWNLOAD_URL"); envDownload != "" {
-				compDownloadURL = fmt.Sprintf("%s/%s", strings.TrimRight(envDownload, "/"), compAssetName)
-			} else {
-				for _, asset := range release.Assets {
-					if asset.Name == compAssetName {
-						compDownloadURL = asset.BrowserDownloadURL
-						break
-					}
-				}
-				if compDownloadURL == "" {
-					compDownloadURL = fmt.Sprintf("https://github.com/sh7vansh/fabric/releases/download/%s/%s", latestTag, compAssetName)
-				}
-			}
+			compDownloadURL := resolveAssetDownloadURL(cfg, release, latestTag, compAssetName)
 
 			fmt.Fprintf(cfg.Out, "[+] Updating companion binary %s...\n", compAssetName)
 			if err := DownloadAndInstallBinary(ctx, cfg.HTTPClient, compDownloadURL, targetBinPath); err != nil {
@@ -505,7 +498,7 @@ func RunUpdate(cfg UpdaterConfig) error {
 	// Restart active services if requested
 	if cfg.RestartService {
 		mgr := service.NewInitManager()
-		for _, role := range []string{"socket", "node"} {
+		for _, role := range []string{"server", "thread"} {
 			if err := mgr.HandleAction("restart", role); err == nil {
 				fmt.Fprintf(cfg.Out, "[+] Restarted background %s service.\n", role)
 			}

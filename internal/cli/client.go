@@ -438,7 +438,7 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 			res = append(res, *localNode)
 			return res, nil
 		}
-		return nil, fmt.Errorf("%w\n  👉 Tip: If you are logged into a managed thread, inspect local daemon status with 'fabric agent status'. To query the Fabric, run 'fabric ps' from your workstation or pass --server.", socketErr)
+		return nil, fmt.Errorf("%w\n  👉 Tip: If you are logged into a managed thread, inspect local daemon status with 'fabric thread service status'. To query the Fabric, run 'fabric ps' from your workstation or pass --server.", socketErr)
 	}
 
 	if socketNode != nil {

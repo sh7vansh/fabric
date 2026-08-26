@@ -300,4 +300,39 @@ func TestExtractTarAtomicCleanupOnInterruption(t *testing.T) {
 	}
 }
 
+func TestExtractTarSingleFileDestination(t *testing.T) {
+	tempDir := t.TempDir()
+	srcFile := filepath.Join(tempDir, "source.txt")
+	if err := os.WriteFile(srcFile, []byte("single file content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := CreateTar(&buf, srcFile); err != nil {
+		t.Fatalf("CreateTar failed: %v", err)
+	}
+
+	destFile := filepath.Join(tempDir, "renamed.txt")
+	if err := ExtractTar(&buf, destFile); err != nil {
+		t.Fatalf("ExtractTar failed: %v", err)
+	}
+
+	fi, err := os.Stat(destFile)
+	if err != nil {
+		t.Fatalf("os.Stat(destFile) failed: %v", err)
+	}
+	if fi.IsDir() {
+		t.Fatalf("expected destFile %q to be a regular file, but it is a directory", destFile)
+	}
+
+	content, err := os.ReadFile(destFile)
+	if err != nil {
+		t.Fatalf("os.ReadFile failed: %v", err)
+	}
+	if string(content) != "single file content" {
+		t.Fatalf("expected 'single file content', got %q", string(content))
+	}
+}
+
+
 
