@@ -176,3 +176,39 @@ func TestRenderInvertedSwitchScript(t *testing.T) {
 	}
 }
 
+func TestRenderBootstrapScript_AtomicBinaryUnpack(t *testing.T) {
+	mgr := NewInitManager()
+	opts := BootstrapScriptOptions{
+		ServerURL:   "wss://10.0.0.1:8443/ws",
+		NodePayload: "mock-thread-payload",
+		CliPayload:  "mock-cli-payload",
+	}
+
+	script := mgr.RenderBootstrapScript(opts)
+
+	// Ensure atomic staging for fabric-thread binary
+	if !strings.Contains(script, `TMP_BIN="${TARGET_BIN}.tmp.$$"`) && !strings.Contains(script, `TMP_BIN="$TARGET_BIN.tmp"`) {
+		t.Errorf("script must use temporary staging path for binary unpacking to avoid ETXTBSY")
+	}
+	if !strings.Contains(script, `mv -f "$TMP_BIN" "$TARGET_BIN"`) {
+		t.Errorf("script must atomically move TMP_BIN over TARGET_BIN")
+	}
+
+	// Ensure atomic staging for fabric CLI binary
+	if !strings.Contains(script, `TMP_CLI="${TARGET_CLI}.tmp.$$"`) && !strings.Contains(script, `TMP_CLI="$TARGET_CLI.tmp"`) {
+		t.Errorf("script must use temporary staging path for CLI binary unpacking to avoid ETXTBSY")
+	}
+	if !strings.Contains(script, `mv -f "$TMP_CLI" "$TARGET_CLI"`) {
+		t.Errorf("script must atomically move TMP_CLI over TARGET_CLI")
+	}
+
+	// Ensure no direct in-place piping into TARGET_BIN / TARGET_CLI
+	if strings.Contains(script, `tee "$TARGET_BIN"`) || strings.Contains(script, `> "$TARGET_BIN"`) {
+		t.Errorf("script must not stream directly into TARGET_BIN (causes ETXTBSY on running binaries)")
+	}
+	if strings.Contains(script, `tee "$TARGET_CLI"`) || strings.Contains(script, `> "$TARGET_CLI"`) {
+		t.Errorf("script must not stream directly into TARGET_CLI (causes ETXTBSY on running binaries)")
+	}
+}
+
+

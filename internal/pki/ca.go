@@ -529,6 +529,16 @@ func (c *CA) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error
 	hosts := []string{}
 	if serverName == "" || serverName == "localhost" {
 		hosts = append(hosts, "localhost", "127.0.0.1", "::1")
+		if addrs, err := net.InterfaceAddrs(); err == nil {
+			for _, addr := range addrs {
+				if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+					hosts = append(hosts, ipNet.IP.String())
+				}
+			}
+		}
+		if c.domain != "" {
+			hosts = append(hosts, c.domain, "*."+c.domain)
+		}
 	} else {
 		hosts = append(hosts, serverName)
 		if !strings.Contains(serverName, ".") && c.domain != "" {

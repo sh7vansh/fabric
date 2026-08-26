@@ -274,4 +274,91 @@ func TestCAGetCertificateSNIAuthorization(t *testing.T) {
 	}
 }
 
+func TestCAGetCertificate_EmptyServerName_IncludesInterfaceIPsAndDomain(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "fabric-ca-ip-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	domain := "fabric.mesh"
+	ca, err := pki.LoadOrInitCA(tmpDir, domain)
+	if err != nil {
+		t.Fatalf("LoadOrInitCA failed: %v", err)
+	}
+
+	// Request certificate with empty ServerName (RFC 6066 raw IP connection)
+	cert, err := ca.GetCertificate(&tls.ClientHelloInfo{ServerName: ""})
+	if err != nil {
+		t.Fatalf("GetCertificate failed for empty ServerName: %v", err)
+	}
+	if cert == nil || len(cert.Certificate) == 0 {
+		t.Fatalf("expected non-nil certificate")
+	}
+
+	parsedCert, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("failed to parse certificate: %v", err)
+	}
+
+	// Verify localhost and loopbacks
+	found127 := false
+	foundV6Loopback := false
+	for _, ip := range parsedCert.IPAddresses {
+		if ip.String() == "127.0.0.1" {
+			found127 = true
+		}
+		if ip.String() == "::1" {
+			foundV6Loopback = true
+		}
+	}
+	if !found127 || !foundV6Loopback {
+		t.Errorf("expected 127.0.0.1 and ::1 in IPAddresses, got: %v", parsedCert.IPAddresses)
+	}
+
+	// Verify all host non-loopback IP interfaces are included in IPAddresses
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatalf("failed to get interface addrs: %v", err)
+	}
+
+	var expectedIPs []string
+	for _, addr := range addrs {
+		if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() {
+			expectedIPs = append(expectedIPs, ipNet.IP.String())
+		}
+	}
+
+	for _, expectedIP := range expectedIPs {
+		found := false
+		for _, ip := range parsedCert.IPAddresses {
+			if ip.String() == expectedIP {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected host interface IP %s in certificate IP SANs, but it was missing (got %v)", expectedIP, parsedCert.IPAddresses)
+		}
+	}
+
+	// Verify mesh domain and wildcard domain in DNSNames
+	foundDomain := false
+	foundWildcard := false
+	for _, dns := range parsedCert.DNSNames {
+		if dns == domain {
+			foundDomain = true
+		}
+		if dns == "*."+domain {
+			foundWildcard = true
+		}
+	}
+	if !foundDomain {
+		t.Errorf("expected domain %q in DNSNames, got %v", domain, parsedCert.DNSNames)
+	}
+	if !foundWildcard {
+		t.Errorf("expected wildcard domain %q in DNSNames, got %v", "*."+domain, parsedCert.DNSNames)
+	}
+}
+
 

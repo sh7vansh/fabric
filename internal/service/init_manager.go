@@ -653,12 +653,15 @@ ENV_FILE="$CONFIG_DIR/thread.env"
 PAYLOAD="%s"
 if [ -n "$PAYLOAD" ]; then
     echo "[+] Unpacking injected fabric-thread binary to $TARGET_BIN..."
+    TMP_BIN="${TARGET_BIN}.tmp.$$"
     if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
-        (echo "$PAYLOAD" | base64 -d | gzip -d | $SUDO tee "$TARGET_BIN" > /dev/null 2>&1) || (echo "$PAYLOAD" | base64 -d | gunzip | $SUDO tee "$TARGET_BIN" > /dev/null 2>&1)
-        $SUDO chmod 755 "$TARGET_BIN"
+        (echo "$PAYLOAD" | base64 -d | gzip -d | $SUDO tee "$TMP_BIN" > /dev/null 2>&1) || (echo "$PAYLOAD" | base64 -d | gunzip | $SUDO tee "$TMP_BIN" > /dev/null 2>&1)
+        $SUDO chmod 755 "$TMP_BIN"
+        $SUDO mv -f "$TMP_BIN" "$TARGET_BIN"
     else
-        (echo "$PAYLOAD" | base64 -d | gzip -d > "$TARGET_BIN" 2>/dev/null) || (echo "$PAYLOAD" | base64 -d | gunzip > "$TARGET_BIN" 2>/dev/null)
-        chmod 755 "$TARGET_BIN"
+        (echo "$PAYLOAD" | base64 -d | gzip -d > "$TMP_BIN" 2>/dev/null) || (echo "$PAYLOAD" | base64 -d | gunzip > "$TMP_BIN" 2>/dev/null)
+        chmod 755 "$TMP_BIN"
+        mv -f "$TMP_BIN" "$TARGET_BIN"
     fi
 fi
 
@@ -667,12 +670,15 @@ CLI_PAYLOAD="%s"
 if [ -n "$CLI_PAYLOAD" ]; then
     echo "[+] Unpacking injected fabric CLI to $INSTALL_BIN_DIR/fabric..."
     TARGET_CLI="$INSTALL_BIN_DIR/fabric"
+    TMP_CLI="${TARGET_CLI}.tmp.$$"
     if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
-        (echo "$CLI_PAYLOAD" | base64 -d | gzip -d | $SUDO tee "$TARGET_CLI" > /dev/null 2>&1) || (echo "$CLI_PAYLOAD" | base64 -d | gunzip | $SUDO tee "$TARGET_CLI" > /dev/null 2>&1)
-        $SUDO chmod 755 "$TARGET_CLI"
+        (echo "$CLI_PAYLOAD" | base64 -d | gzip -d | $SUDO tee "$TMP_CLI" > /dev/null 2>&1) || (echo "$CLI_PAYLOAD" | base64 -d | gunzip | $SUDO tee "$TMP_CLI" > /dev/null 2>&1)
+        $SUDO chmod 755 "$TMP_CLI"
+        $SUDO mv -f "$TMP_CLI" "$TARGET_CLI"
     else
-        (echo "$CLI_PAYLOAD" | base64 -d | gzip -d > "$TARGET_CLI" 2>/dev/null) || (echo "$CLI_PAYLOAD" | base64 -d | gunzip > "$TARGET_CLI" 2>/dev/null)
-        chmod 755 "$TARGET_CLI"
+        (echo "$CLI_PAYLOAD" | base64 -d | gzip -d > "$TMP_CLI" 2>/dev/null) || (echo "$CLI_PAYLOAD" | base64 -d | gunzip > "$TMP_CLI" 2>/dev/null)
+        chmod 755 "$TMP_CLI"
+        mv -f "$TMP_CLI" "$TARGET_CLI"
     fi
 fi
 
