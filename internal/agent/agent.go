@@ -543,8 +543,8 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 			}
 		}()
 
-		err = cmd.Wait()
 		stdioWg.Wait()
+		err = cmd.Wait()
 	}
 
 	exitCode := 0
