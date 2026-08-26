@@ -25,6 +25,8 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 	fmt.Println("[+] Starting Fabric uninstallation...")
 
 	// 1. Uninstall services if they exist (silently ignore errors if not installed)
+	_ = UninstallService("thread")
+	_ = UninstallService("server")
 	_ = UninstallService("node")
 	_ = UninstallService("socket")
 
@@ -47,8 +49,8 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// 3. Remove binaries
-	binaries := []string{"fabric", "fabric-socket", "fabric-node"}
+	// 4. Remove binaries
+	binaries := []string{"fabric", "fabric-server", "fabric-thread", "fabric-socket", "fabric-node"}
 	var dirs []string
 	dirs = append(dirs, "/usr/local/bin")
 	if home != "" {

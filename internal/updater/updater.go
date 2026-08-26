@@ -159,7 +159,58 @@ func (u *Updater) FetchReleaseInfo(ctx context.Context, targetVersion string) (*
 	return &info, nil
 }
 
-// FetchChecksumManifest fetches and parses SHA-256 digests from checksums.txt or .sha256 manifests.
+// VerifyExecutableViability checks file permissions and executable magic headers prior to installation.
+func VerifyExecutableViability(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("cannot stat binary: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("target %s is not a regular file", path)
+	}
+	if info.Mode().Perm()&0111 == 0 {
+		return fmt.Errorf("file %s is not marked executable (mode: %o)", path, info.Mode().Perm())
+	}
+	if info.Size() < 4 {
+		return fmt.Errorf("file %s is too small to be a valid executable (%d bytes)", path, info.Size())
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to open file for viability check: %w", err)
+	}
+	defer f.Close()
+
+	header := make([]byte, 16)
+	n, err := f.Read(header)
+	if err != nil || n < 4 {
+		return fmt.Errorf("failed to read binary header for viability check: %w", err)
+	}
+
+	// 1. ELF magic: 0x7F 'E' 'L' 'F'
+	if header[0] == 0x7F && header[1] == 'E' && header[2] == 'L' && header[3] == 'F' {
+		return nil
+	}
+	// 2. Script hashbang: '#!'
+	if header[0] == '#' && header[1] == '!' {
+		return nil
+	}
+	// 3. Mach-O 32/64-bit / Universal binary magics
+	if (header[0] == 0xFE && header[1] == 0xED && header[2] == 0xFA && (header[3] == 0xCE || header[3] == 0xCF)) ||
+		(header[0] == 0xCE && header[1] == 0xFA && header[2] == 0xED && header[3] == 0xFE) ||
+		(header[0] == 0xCF && header[1] == 0xFA && header[2] == 0xED && header[3] == 0xFE) ||
+		(header[0] == 0xCA && header[1] == 0xFE && header[2] == 0xBA && header[3] == 0xBE) {
+		return nil
+	}
+	// 4. Windows PE MZ header
+	if header[0] == 'M' && header[1] == 'Z' {
+		return nil
+	}
+
+	return fmt.Errorf("file %s lacks valid executable magic header", path)
+}
+
+// FetchChecksumManifest fetches and parses SHA-256 digests from checksums.txt.
 func (u *Updater) FetchChecksumManifest(ctx context.Context, release *ReleaseInfo, latestTag string) (map[string]string, error) {
 	manifestMap := make(map[string]string)
 
@@ -172,43 +223,34 @@ func (u *Updater) FetchChecksumManifest(ctx context.Context, release *ReleaseInf
 		}
 	}
 
-	// 1. Try checksums.txt, SHA256SUMS, checksums.sha256
-	for _, manifestName := range []string{"checksums.txt", "SHA256SUMS", "checksums.sha256"} {
-		manifestURL := baseURL + "/" + manifestName
-		req, err := http.NewRequestWithContext(ctx, "GET", manifestURL, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("User-Agent", "fabric-updater")
-		resp, err := u.httpClient.Do(req)
-		if err != nil {
-			continue
-		}
+	manifestURL := baseURL + "/checksums.txt"
+	req, err := http.NewRequestWithContext(ctx, "GET", manifestURL, nil)
+	if err != nil {
+		return manifestMap, err
+	}
+	req.Header.Set("User-Agent", "fabric-updater")
+	resp, err := u.httpClient.Do(req)
+	if err != nil {
+		return manifestMap, err
+	}
+	defer resp.Body.Close()
 
-		if resp.StatusCode == http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-
-			for _, line := range strings.Split(string(body), "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || strings.HasPrefix(line, "#") {
-					continue
-				}
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					hash := strings.ToLower(fields[0])
-					name := strings.TrimPrefix(fields[1], "*")
-					name = filepath.Base(name)
-					if len(hash) == 64 {
-						manifestMap[name] = hash
-					}
+	if resp.StatusCode == http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		for _, line := range strings.Split(string(body), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				hash := strings.ToLower(fields[0])
+				name := strings.TrimPrefix(fields[1], "*")
+				name = filepath.Base(name)
+				if len(hash) == 64 {
+					manifestMap[name] = hash
 				}
 			}
-			if len(manifestMap) > 0 {
-				return manifestMap, nil
-			}
-		} else {
-			resp.Body.Close()
 		}
 	}
 
@@ -269,6 +311,17 @@ func computeSHA256(filePath string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// resolveChecksum looks up the asset hash from the manifest or probes single asset checksum.
+func (u *Updater) resolveChecksum(ctx context.Context, manifest map[string]string, assetName, downloadURL string) string {
+	if hash, ok := manifest[assetName]; ok && hash != "" {
+		return hash
+	}
+	if hash, err := u.FetchSingleAssetChecksum(ctx, downloadURL); err == nil && hash != "" {
+		return hash
+	}
+	return ""
 }
 
 // Run executes the complete update pipeline: Check -> Fetch -> Verify -> Stage -> Commit -> Rollback.
@@ -338,12 +391,7 @@ func (u *Updater) Run(ctx context.Context) error {
 	// Primary CLI binary
 	cliAssetName := fmt.Sprintf("fabric-%s-%s", u.osName, u.archName)
 	cliDownloadURL := u.ResolveAssetDownloadURL(release, latestTag, cliAssetName)
-	cliExpectedHash := checksumManifest[cliAssetName]
-	if cliExpectedHash == "" {
-		if hash, err := u.FetchSingleAssetChecksum(ctx, cliDownloadURL); err == nil {
-			cliExpectedHash = hash
-		}
-	}
+	cliExpectedHash := u.resolveChecksum(ctx, checksumManifest, cliAssetName, cliDownloadURL)
 	if cliExpectedHash == "" {
 		return fmt.Errorf("security error: checksum manifest missing for %s", cliAssetName)
 	}
@@ -366,12 +414,7 @@ func (u *Updater) Run(ctx context.Context) error {
 		if u.cfg.UpdateAll || statErr == nil {
 			compAssetName := fmt.Sprintf("fabric-%s-%s-%s", role, u.osName, u.archName)
 			compDownloadURL := u.ResolveAssetDownloadURL(release, latestTag, compAssetName)
-			compHash := checksumManifest[compAssetName]
-			if compHash == "" {
-				if hash, err := u.FetchSingleAssetChecksum(ctx, compDownloadURL); err == nil {
-					compHash = hash
-				}
-			}
+			compHash := u.resolveChecksum(ctx, checksumManifest, compAssetName, compDownloadURL)
 			if compHash != "" {
 				plannedBinaries = append(plannedBinaries, &StagedBinary{
 					Role:           role,
@@ -446,6 +489,11 @@ func (u *Updater) Run(ctx context.Context) error {
 
 		if err := os.Chmod(b.TempStagePath, 0755); err != nil {
 			return fmt.Errorf("failed to set permissions on %s: %w", b.AssetName, err)
+		}
+
+		// Verify executable viability
+		if err := VerifyExecutableViability(b.TempStagePath); err != nil {
+			return fmt.Errorf("executable viability verification failed for %s: %w", b.AssetName, err)
 		}
 	}
 

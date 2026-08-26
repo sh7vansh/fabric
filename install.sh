@@ -112,22 +112,22 @@ else
                 asset="${role}-linux-${FABRIC_ARCH}"
                 if [ -f "$asset" ]; then
                     expected="$(grep -E "[[:space:]]\*?${asset}$" checksums.txt | awk '{print $1}' || true)"
-                    if [ -n "$expected" ]; then
-                        actual="$(sha256sum "$asset" | awk '{print $1}')"
-                        if [ "$expected" != "$actual" ]; then
-                            echo "[-] Error: Security checksum mismatch for $asset (expected $expected, got $actual)"
-                            exit 1
-                        fi
+                    if [ -z "$expected" ]; then
+                        echo "[-] Error: Checksum for $asset not found in manifest"
+                        exit 1
+                    fi
+                    actual="$(sha256sum "$asset" | awk '{print $1}')"
+                    if [ "$expected" != "$actual" ]; then
+                        echo "[-] Error: Security checksum mismatch for $asset (expected $expected, got $actual)"
+                        exit 1
                     fi
                     mv "$asset" "$role"
                 fi
             done
         )
-    else
-        # Move without verification if checksum manifest unavailable
-        [ -f "$TMP_DIR/fabric-linux-$FABRIC_ARCH" ] && mv "$TMP_DIR/fabric-linux-$FABRIC_ARCH" "$TMP_DIR/fabric" || true
-        [ -f "$TMP_DIR/fabric-server-linux-$FABRIC_ARCH" ] && mv "$TMP_DIR/fabric-server-linux-$FABRIC_ARCH" "$TMP_DIR/fabric-server" || true
-        [ -f "$TMP_DIR/fabric-thread-linux-$FABRIC_ARCH" ] && mv "$TMP_DIR/fabric-thread-linux-$FABRIC_ARCH" "$TMP_DIR/fabric-thread" || true
+    elif [ -f "$TMP_DIR/fabric-linux-$FABRIC_ARCH" ]; then
+        echo "[-] Error: Checksum manifest missing or sha256sum tool not found. Cannot verify binary integrity."
+        exit 1
     fi
 
     # Fallback to Go build if binaries were not downloaded and Go is available

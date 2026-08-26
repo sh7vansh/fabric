@@ -286,8 +286,8 @@ func TestRunUpdate_ForceReinstall(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	oldFabric := filepath.Join(tmpDir, "fabric")
-	_ = os.WriteFile(oldFabric, []byte("ORIGINAL_CONTENT"), 0755)
-	newPayload := []byte("FORCED_REINSTALLED_CONTENT")
+	_ = os.WriteFile(oldFabric, []byte("#!/bin/sh\necho ORIGINAL_CONTENT\n"), 0755)
+	newPayload := []byte("#!/bin/sh\necho FORCED_REINSTALLED_CONTENT\n")
 	newSum := sha256.Sum256(newPayload)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

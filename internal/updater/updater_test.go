@@ -316,3 +316,85 @@ func TestRunUpdate_MissingChecksum_Rejected(t *testing.T) {
 		t.Errorf("expected target binary to remain original, got %q", string(content))
 	}
 }
+
+func TestVerifyExecutableViability(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// 1. Valid ELF header
+	elfPath := filepath.Join(tmpDir, "valid-elf")
+	_ = os.WriteFile(elfPath, []byte("\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00"), 0755)
+	if err := updater.VerifyExecutableViability(elfPath); err != nil {
+		t.Errorf("expected valid ELF to pass viability, got: %v", err)
+	}
+
+	// 2. Valid script header
+	scriptPath := filepath.Join(tmpDir, "valid-script")
+	_ = os.WriteFile(scriptPath, []byte("#!/bin/sh\necho hi\n"), 0755)
+	if err := updater.VerifyExecutableViability(scriptPath); err != nil {
+		t.Errorf("expected valid script to pass viability, got: %v", err)
+	}
+
+	// 3. Non-executable permissions
+	noExecPath := filepath.Join(tmpDir, "no-exec")
+	_ = os.WriteFile(noExecPath, []byte("\x7fELF\x02\x01\x01\x00"), 0644)
+	if err := updater.VerifyExecutableViability(noExecPath); err == nil {
+		t.Errorf("expected non-executable permissions to fail viability, got nil")
+	}
+
+	// 4. Invalid magic header
+	invalidMagicPath := filepath.Join(tmpDir, "invalid-magic")
+	_ = os.WriteFile(invalidMagicPath, []byte("NOT_A_VALID_BINARY_HEADER"), 0755)
+	if err := updater.VerifyExecutableViability(invalidMagicPath); err == nil {
+		t.Errorf("expected invalid magic to fail viability, got nil")
+	}
+}
+
+func TestRunUpdate_ExecutableViabilityFailure_Rollback(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "fabric")
+	_ = os.WriteFile(targetPath, []byte("ORIGINAL_FABRIC_BINARY"), 0755)
+
+	corruptPayload := []byte("CORRUPT_NON_EXECUTABLE_PAYLOAD_WITHOUT_MAGIC")
+	corruptSum := sha256.Sum256(corruptPayload)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/release":
+			json.NewEncoder(w).Encode(updater.ReleaseInfo{TagName: "v2.5.0"})
+		case "/downloads/fabric-linux-amd64":
+			w.Write(corruptPayload)
+		case "/downloads/checksums.txt":
+			w.Write([]byte(fmt.Sprintf("%s  fabric-linux-amd64\n", hex.EncodeToString(corruptSum[:]))))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var buf bytes.Buffer
+	cfg := updater.Config{
+		CurrentVersion: "v2.4.1",
+		ReleaseAPIURL:  server.URL + "/api/release",
+		DownloadURL:    server.URL + "/downloads",
+		InstallDir:     tmpDir,
+		OS:             "linux",
+		Arch:           "amd64",
+		HTTPClient:     server.Client(),
+		Out:            &buf,
+	}
+
+	u := updater.New(cfg)
+	err := u.Run(context.Background())
+	if err == nil {
+		t.Fatalf("expected error on non-viable executable, got nil")
+	}
+	if !strings.Contains(err.Error(), "viability") && !strings.Contains(err.Error(), "executable") {
+		t.Errorf("expected viability error, got: %v", err)
+	}
+
+	// Original binary preserved
+	content, _ := os.ReadFile(targetPath)
+	if string(content) != "ORIGINAL_FABRIC_BINARY" {
+		t.Errorf("expected target binary to remain original, got %q", string(content))
+	}
+}

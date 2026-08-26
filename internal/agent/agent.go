@@ -87,7 +87,7 @@ func formatEnvExports(env []string) string {
 	return envPrefix.String()
 }
 
-// Config configures the NodeAgent daemon.
+// Config configures the ThreadDaemon.
 type Config struct {
 	ServerURL     string
 	ListenAddress string // e.g. ":8080" for inverted connection mode
@@ -102,7 +102,7 @@ type Config struct {
 	InitialRetry  time.Duration
 }
 
-// Agent is the deep autonomous node daemon module managing connection resilience,
+// Agent is the deep autonomous thread daemon module managing connection resilience,
 // command execution, PTY sessions, file transfers, proxying, and DNS coordination.
 type Agent struct {
 	cfg              Config
@@ -111,7 +111,7 @@ type Agent struct {
 	actualListenAddr string
 }
 
-// New creates and initializes a new NodeAgent.
+// New creates and initializes a new ThreadDaemon Agent.
 func New(cfg Config) *Agent {
 	if cfg.Domain == "" {
 		cfg.Domain = version.DefaultDomain
@@ -277,7 +277,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	}
 
 	backoff := a.cfg.InitialRetry
-	sessionID := fmt.Sprintf("node-%s-%d", a.cfg.Hostname, time.Now().UnixNano())
+	sessionID := fmt.Sprintf("thread-%s-%d", a.cfg.Hostname, time.Now().UnixNano())
 
 	for {
 		select {
@@ -666,7 +666,7 @@ func (a *Agent) HandleProxy(stream net.Conn, env []byte) {
 
 	conn, err := net.Dial("tcp", targetAddr)
 	if err != nil {
-		log.Println("[Agent] Node proxy dial error:", err)
+		log.Println("[Agent] Thread proxy dial error:", err)
 		return
 	}
 	defer conn.Close()

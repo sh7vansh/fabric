@@ -482,6 +482,26 @@ func TestRelayAdminTokenRoleSeparation(t *testing.T) {
 	}
 }
 
+func TestRelayAdminTokenUnsetRejection(t *testing.T) {
+	r := New(Config{
+		Domain: "fabric.mesh",
+		Token:  "worker-token-only",
+	})
+	defer r.Close()
+
+	if !r.ValidateToken("worker-token-only") {
+		t.Errorf("expected worker token to pass ValidateToken")
+	}
+
+	// When AdminToken is unset, worker token must NOT be treated as admin token
+	if r.ValidateAdminToken("worker-token-only") {
+		t.Errorf("worker token should NOT pass ValidateAdminToken when AdminToken is unset")
+	}
+	if r.ValidateAdminToken("") {
+		t.Errorf("empty token should NOT pass ValidateAdminToken")
+	}
+}
+
 func TestRelayHandshakeProtocolVersionRejection(t *testing.T) {
 	r := New(Config{
 		Domain: "fabric.mesh",

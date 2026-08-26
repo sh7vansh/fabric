@@ -396,9 +396,34 @@ func TestSSHExecutorDelimitation(t *testing.T) {
 	}
 
 	// We verify that the Target is safely separated by -- delimiter
-	// We can test QueryArch error output or mock
 	if executor.Target != "-oProxyCommand=touch/tmp/pwned" {
 		t.Errorf("expected target preserved")
+	}
+}
+
+func TestResolveReleaseBinaryName(t *testing.T) {
+	tests := []struct {
+		role     string
+		osName   string
+		arch     string
+		expected string
+	}{
+		{"thread", "linux", "amd64", "fabric-thread-linux-amd64"},
+		{"node", "linux", "amd64", "fabric-thread-linux-amd64"},
+		{"server", "linux", "arm64", "fabric-server-linux-arm64"},
+		{"socket", "linux", "arm64", "fabric-server-linux-arm64"},
+		{"cli", "linux", "arm", "fabric-linux-arm"},
+		{"fabric", "linux", "amd64", "fabric-linux-amd64"},
+	}
+
+	for _, tc := range tests {
+		got, err := ResolveReleaseBinaryName(tc.role, tc.osName, tc.arch)
+		if err != nil {
+			t.Errorf("ResolveReleaseBinaryName(%q, %q, %q) returned unexpected error: %v", tc.role, tc.osName, tc.arch, err)
+		}
+		if got != tc.expected {
+			t.Errorf("ResolveReleaseBinaryName(%q, %q, %q) = %q; want %q", tc.role, tc.osName, tc.arch, got, tc.expected)
+		}
 	}
 }
 

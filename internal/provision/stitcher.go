@@ -192,10 +192,10 @@ func FindLocalCliBinary() (string, error) {
 	return "", fmt.Errorf("fabric cli binary not found locally")
 }
 
-// FetchReleaseBinary downloads a specific release binary from GitHub.
-func FetchReleaseBinary(role, osName, arch string) ([]byte, error) {
+// ResolveReleaseBinaryName returns the canonical release binary filename for a given role, OS, and arch.
+func ResolveReleaseBinaryName(role, osName, arch string) (string, error) {
 	if osName != "linux" {
-		return nil, fmt.Errorf("only linux is supported by pre-compiled binaries")
+		return "", fmt.Errorf("only linux is supported by pre-compiled binaries")
 	}
 	fabricArch := "amd64"
 	switch arch {
@@ -206,14 +206,26 @@ func FetchReleaseBinary(role, osName, arch string) ([]byte, error) {
 	case "armv7l", "armhf", "arm":
 		fabricArch = "arm"
 	default:
-		return nil, fmt.Errorf("unsupported arch: %s", arch)
+		return "", fmt.Errorf("unsupported arch: %s", arch)
 	}
 
-	binName := "fabric-linux-" + fabricArch
-	if role == "node" {
-		binName = "fabric-node-linux-" + fabricArch
-	} else if role == "socket" {
-		binName = "fabric-socket-linux-" + fabricArch
+	switch strings.ToLower(role) {
+	case "thread", "node":
+		return "fabric-thread-linux-" + fabricArch, nil
+	case "server", "socket":
+		return "fabric-server-linux-" + fabricArch, nil
+	case "cli", "fabric":
+		return "fabric-linux-" + fabricArch, nil
+	default:
+		return "fabric-" + role + "-linux-" + fabricArch, nil
+	}
+}
+
+// FetchReleaseBinary downloads a specific release binary from GitHub.
+func FetchReleaseBinary(role, osName, arch string) ([]byte, error) {
+	binName, err := ResolveReleaseBinaryName(role, osName, arch)
+	if err != nil {
+		return nil, err
 	}
 
 	url := "https://github.com/sh7vansh/fabric/releases/latest/download/" + binName
@@ -230,8 +242,8 @@ func FetchReleaseBinary(role, osName, arch string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// ResolveCrossPlatformBinaries returns node and cli binaries matching the requested remote architecture.
-func ResolveCrossPlatformBinaries(remoteOS, remoteArch string) (nodeBytes []byte, cliBytes []byte, err error) {
+// ResolveCrossPlatformBinaries returns thread and cli binaries matching the requested remote architecture.
+func ResolveCrossPlatformBinaries(remoteOS, remoteArch string) (threadBytes []byte, cliBytes []byte, err error) {
 	// Normalize local arch mapping for comparison
 	localArch := runtime.GOARCH
 	remoteMappedArch := "amd64"
@@ -245,27 +257,27 @@ func ResolveCrossPlatformBinaries(remoteOS, remoteArch string) (nodeBytes []byte
 	// 1. If remote architecture matches local, use local binaries!
 	if runtime.GOOS == remoteOS && localArch == remoteMappedArch {
 		if p, err := FindLocalBinary(""); err == nil {
-			nodeBytes, _ = os.ReadFile(p)
+			threadBytes, _ = os.ReadFile(p)
 		}
 		if p, err := FindLocalCliBinary(); err == nil {
 			cliBytes, _ = os.ReadFile(p)
 		}
-		if len(nodeBytes) > 0 {
-			return nodeBytes, cliBytes, nil
+		if len(threadBytes) > 0 {
+			return threadBytes, cliBytes, nil
 		}
 	}
 
 	// 2. Otherwise, fetch them directly from GitHub releases!
 	fmt.Printf("[+] Remote architecture (%s/%s) differs from local. Downloading correct binaries from GitHub...\n", remoteOS, remoteMappedArch)
-	
-	nodeBytes, err = FetchReleaseBinary("node", remoteOS, remoteArch)
+
+	threadBytes, err = FetchReleaseBinary("thread", remoteOS, remoteArch)
 	if err != nil {
-		return nil, nil, fmt.Errorf("cross-platform fetch failed for node: %w", err)
+		return nil, nil, fmt.Errorf("cross-platform fetch failed for thread daemon: %w", err)
 	}
-	
+
 	cliBytes, _ = FetchReleaseBinary("cli", remoteOS, remoteArch)
-	
-	return nodeBytes, cliBytes, nil
+
+	return threadBytes, cliBytes, nil
 }
 
 // PackageBinaryPayload compresses and base64-encodes binary data into an embedded payload string.

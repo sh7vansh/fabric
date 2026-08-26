@@ -77,9 +77,6 @@ func New(cfg Config) *Relay {
 	}
 
 	adminToken := cfg.AdminToken
-	if adminToken == "" {
-		adminToken = cfg.Token
-	}
 
 	r := &Relay{
 		domain:       domain,
@@ -357,12 +354,9 @@ func (r *Relay) ValidateToken(provided string) bool {
 	return false
 }
 
-// ValidateAdminToken verifies the provided token against the administrative token.
+// ValidateAdminToken verifies the provided token against the configured administrative token.
 func (r *Relay) ValidateAdminToken(provided string) bool {
 	if r.adminToken != "" && protocol.ValidateToken(provided, r.adminToken) {
-		return true
-	}
-	if r.adminToken == "" && protocol.ValidateToken(provided, r.token) {
 		return true
 	}
 	return false

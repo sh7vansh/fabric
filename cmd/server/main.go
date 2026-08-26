@@ -42,7 +42,7 @@ func main() {
 	httpPortFlag := flag.Int("http-port", 80, "Port for HTTP / ACME HTTP-01 challenge listener (0 to disable)")
 	caDirFlag := flag.String("ca-dir", "", "Directory to store internal Root CA")
 	tokenFlag := flag.String("token", os.Getenv("FABRIC_TOKEN"), "Pre-shared token for authentication")
-	adminTokenFlag := flag.String("admin-token", os.Getenv("FABRIC_ADMIN_TOKEN"), "Pre-shared token for administrative control plane operations (defaults to token)")
+	adminTokenFlag := flag.String("admin-token", os.Getenv("FABRIC_ADMIN_TOKEN"), "Pre-shared token for administrative control plane operations")
 	gatewayIDFlag := flag.String("gateway-id", os.Getenv("FABRIC_GATEWAY_ID"), "Unique gateway identifier for federation")
 	regionFlag := flag.String("region", os.Getenv("FABRIC_REGION"), "Geographic region for this gateway (e.g. us-east, eu-west)")
 	federationCAFlag := flag.String("federation-ca", os.Getenv("FABRIC_FEDERATION_CA"), "Path to shared Federation Root CA certificate")
