@@ -25,7 +25,52 @@ func loadKeyPair(dir string) (*tls.Certificate, error) {
 	return &cert, nil
 }
 
-// BuildMTLSConfig constructs a tls.Config with system root CAs and discovers local cluster certificates.
+// DefaultCACandidatePaths returns an ordered list of standard filesystem locations where the Fabric Root CA certificate may exist.
+func DefaultCACandidatePaths() []string {
+	var paths []string
+	if envCACert := os.Getenv("FABRIC_CA_CERT"); envCACert != "" {
+		paths = append(paths, envCACert)
+	}
+	if envCADir := os.Getenv("FABRIC_CA_DIR"); envCADir != "" {
+		paths = append(paths, filepath.Join(envCADir, "ca.crt"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		paths = append(paths,
+			filepath.Join(home, ".fabric", "ca", "ca.crt"),
+			filepath.Join(home, ".fabric", "ca.crt"),
+		)
+	}
+	paths = append(paths,
+		"/etc/fabric/ca/ca.crt",
+		"/etc/fabric/ca.crt",
+	)
+	return paths
+}
+
+// FindCACert locates and reads the first existing Fabric Root CA certificate from the specified custom path or default candidate paths.
+func FindCACert(customPath string) (string, []byte, error) {
+	if customPath != "" {
+		data, err := os.ReadFile(customPath)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to read custom CA file %s: %w", customPath, err)
+		}
+		if len(data) == 0 {
+			return "", nil, fmt.Errorf("custom CA file %s is empty", customPath)
+		}
+		return customPath, data, nil
+	}
+
+	for _, p := range DefaultCACandidatePaths() {
+		if data, err := os.ReadFile(p); err == nil && len(data) > 0 {
+			return p, data, nil
+		}
+	}
+	return "", nil, fmt.Errorf("could not find Root CA in standard locations (~/.fabric/ca/ca.crt or /etc/fabric/ca.crt)")
+}
+
+// BuildMTLSConfig constructs a *tls.Config tailored for Fabric client connections.
+// It loads system CAs, checks for a custom or local CA certificate, and
+// automatically loads any present client certificate from the same directory.
 func BuildMTLSConfig(customCAPath string) (*tls.Config, error) {
 	pool, err := x509.SystemCertPool()
 	if err != nil || pool == nil {
@@ -44,22 +89,7 @@ func BuildMTLSConfig(customCAPath string) (*tls.Config, error) {
 	}
 
 	// 2. Discover default cluster CA locations if not already present
-	defaultPaths := []string{
-		"/etc/fabric/ca/ca.crt",
-		"/etc/fabric/ca.crt",
-	}
-	if envCACert := os.Getenv("FABRIC_CA_CERT"); envCACert != "" {
-		defaultPaths = append([]string{envCACert}, defaultPaths...)
-	}
-	if envCADir := os.Getenv("FABRIC_CA_DIR"); envCADir != "" {
-		defaultPaths = append([]string{filepath.Join(envCADir, "ca.crt")}, defaultPaths...)
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		defaultPaths = append(defaultPaths,
-			filepath.Join(home, ".fabric", "ca", "ca.crt"),
-			filepath.Join(home, ".fabric", "ca.crt"),
-		)
-	}
+	defaultPaths := DefaultCACandidatePaths()
 
 	for _, p := range defaultPaths {
 		if p == customCAPath {

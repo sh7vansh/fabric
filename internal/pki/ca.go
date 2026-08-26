@@ -172,6 +172,50 @@ func LoadOrInitCA(dir, domain string, opts ...Option) (*CA, error) {
 	return ca, nil
 }
 
+// ResolveCADir resolves the target directory for CA operations based on custom path,
+// environment variables (FABRIC_CA_DIR), existing /etc/fabric/ca paths, or the user's home directory.
+func ResolveCADir(customDir string) string {
+	if customDir != "" {
+		return customDir
+	}
+	if envCADir := os.Getenv("FABRIC_CA_DIR"); envCADir != "" {
+		return envCADir
+	}
+	if _, err := os.Stat("/etc/fabric/ca/ca.crt"); err == nil {
+		return "/etc/fabric/ca"
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".fabric", "ca")
+	}
+	return "/tmp/fabric-ca"
+}
+
+// BootstrapCA resolves standard CA directory locations, initializes or loads the CA,
+// creates client certificates in ~/.fabric, and exports root CA public certs to /etc/fabric
+// when root privileges are available.
+func BootstrapCA(caDir, domain string, opts ...Option) (*CA, string, error) {
+	caDir = ResolveCADir(caDir)
+
+	ca, err := LoadOrInitCA(caDir, domain, opts...)
+	if err != nil {
+		return nil, "", fmt.Errorf("bootstrap CA in %s: %w", caDir, err)
+	}
+
+	caCertPath := filepath.Join(caDir, "ca.crt")
+	if home, err := os.UserHomeDir(); err == nil {
+		_ = ca.EnsureClientCertificate(filepath.Join(home, ".fabric"))
+	}
+
+	if data, err := os.ReadFile(caCertPath); err == nil && len(data) > 0 {
+		if os.Geteuid() == 0 {
+			_ = os.MkdirAll("/etc/fabric", 0755)
+			_ = os.WriteFile("/etc/fabric/ca.crt", data, 0644)
+		}
+	}
+
+	return ca, caCertPath, nil
+}
+
 // EnsureClientCertificate checks if client.crt and client.key exist in destDir.
 // If either is missing, it mints a client certificate and writes both files.
 func (c *CA) EnsureClientCertificate(destDir string) error {

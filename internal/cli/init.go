@@ -207,23 +207,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	// 6. CA Initialization and Trust Setup
 	caPath := ""
 	if role == "server" || role == "both" {
-		caDir := ""
-		if home, err := os.UserHomeDir(); err == nil {
-			caDir = filepath.Join(home, ".fabric", "ca")
-		} else {
-			caDir = "/etc/fabric/ca"
-		}
-		if ca, err := pki.LoadOrInitCA(caDir, domain); err == nil && ca != nil {
-			caPath = filepath.Join(caDir, "ca.crt")
-			if home, err := os.UserHomeDir(); err == nil {
-				_ = ca.EnsureClientCertificate(filepath.Join(home, ".fabric"))
-			}
-			if data, err := os.ReadFile(caPath); err == nil {
-				if os.Geteuid() == 0 {
-					_ = os.MkdirAll("/etc/fabric", 0755)
-					_ = os.WriteFile("/etc/fabric/ca.crt", data, 0644)
-				}
-			}
+		if _, path, err := pki.BootstrapCA("", domain); err == nil {
+			caPath = path
 		}
 	}
 
@@ -236,17 +221,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// 7. Save CLI Config
 	if caPath == "" {
-		if home, err := os.UserHomeDir(); err == nil {
-			for _, p := range []string{
-				filepath.Join(home, ".fabric", "ca", "ca.crt"),
-				filepath.Join(home, ".fabric", "ca.crt"),
-				"/etc/fabric/ca.crt",
-			} {
-				if _, err := os.Stat(p); err == nil {
-					caPath = p
-					break
-				}
-			}
+		if path, _, err := pki.FindCACert(""); err == nil {
+			caPath = path
 		}
 	}
 
@@ -367,29 +343,9 @@ func writeRoleEnv(role, serverURL, token, domain, mode string) error {
 }
 
 func installLocalCATrust() error {
-	var certPEM []byte
-	var foundPath string
-	candidates := []string{
-		"/etc/fabric/ca/ca.crt",
-		"/etc/fabric/ca.crt",
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append([]string{
-			filepath.Join(home, ".fabric", "ca", "ca.crt"),
-			filepath.Join(home, ".fabric", "ca.crt"),
-		}, candidates...)
-	}
-
-	for _, p := range candidates {
-		if data, err := os.ReadFile(p); err == nil && len(data) > 0 {
-			certPEM = data
-			foundPath = p
-			break
-		}
-	}
-
-	if len(certPEM) == 0 {
-		return fmt.Errorf("could not find Root CA in standard locations (~/.fabric/ca/ca.crt or /etc/fabric/ca.crt)")
+	foundPath, certPEM, err := pki.FindCACert("")
+	if err != nil {
+		return err
 	}
 
 	trustStore := pki.NewSystemTrustStore()
