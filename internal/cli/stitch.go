@@ -180,9 +180,9 @@ func promptTopology(isBatch bool) string {
 	input, _ := reader.ReadString('\n')
 	input = strings.TrimSpace(strings.ToLower(input))
 	if input == "2" || input == "remote" || input == "inverted" || input == "direct" {
-		return "inverted"
+		return "remote"
 	}
-	return "normal"
+	return "local"
 }
 
 func resolveStitchMode(modeFlag string, remoteFlag, invertedFlag, directFlag bool) (string, error) {
@@ -200,10 +200,10 @@ func resolveStitchMode(modeFlag string, remoteFlag, invertedFlag, directFlag boo
 		return "", fmt.Errorf("invalid mode %q: must be 'local' or 'remote'", modeFlag)
 	}
 	if mode == "remote" || mode == "inverted" || mode == "direct" {
-		return "inverted", nil
+		return "remote", nil
 	}
 	if mode == "local" || mode == "normal" {
-		return "normal", nil
+		return "local", nil
 	}
 	return "", nil
 }
@@ -400,6 +400,14 @@ func runStitchScan(cmd *cobra.Command, rawCIDR string) error {
 	discovered, err := provision.ScanTargets(targets, scanOpts, nil)
 	if err != nil {
 		return fmt.Errorf("scan failed: %w", err)
+	}
+
+	scanMode, _ := resolveStitchMode(stitchModeFlag, stitchRemoteFlag, stitchInvertedFlag, stitchDirectFlag)
+	if scanMode == "" {
+		scanMode = "local"
+	}
+	for i := range discovered {
+		discovered[i].Mode = scanMode
 	}
 
 	if stitchQuietFlag || stitchFormatFlag == "json" {

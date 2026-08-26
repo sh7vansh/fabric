@@ -58,13 +58,13 @@ func TestResolveStitchMode(t *testing.T) {
 		expected string
 		wantErr  bool
 	}{
-		{modeFlag: "local", expected: "normal"},
-		{modeFlag: "remote", expected: "inverted"},
-		{modeFlag: "normal", expected: "normal"},
-		{modeFlag: "inverted", expected: "inverted"},
-		{remote: true, expected: "inverted"},
-		{inverted: true, expected: "inverted"},
-		{direct: true, expected: "inverted"},
+		{modeFlag: "local", expected: "local"},
+		{modeFlag: "remote", expected: "remote"},
+		{modeFlag: "normal", expected: "local"},
+		{modeFlag: "inverted", expected: "remote"},
+		{remote: true, expected: "remote"},
+		{inverted: true, expected: "remote"},
+		{direct: true, expected: "remote"},
 		{modeFlag: "unknown", wantErr: true},
 	}
 

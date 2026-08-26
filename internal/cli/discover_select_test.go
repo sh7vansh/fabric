@@ -144,3 +144,21 @@ func TestFormatDiscoveredOutput(t *testing.T) {
 		t.Errorf("JSON output missing banner: %s", jsonOut)
 	}
 }
+
+func TestPrintDiscoveryTable_IncludesMode(t *testing.T) {
+	mockHosts := []provision.DiscoveredHost{
+		{IP: "192.168.1.10", Port: 22, CleanBanner: "OpenSSH_8.9 Ubuntu", Latency: 2 * time.Millisecond, Mode: "local"},
+		{IP: "192.168.1.42", Port: 2222, CleanBanner: "Dropbear_2020", Latency: 1 * time.Millisecond, Mode: "remote"},
+	}
+
+	var buf bytes.Buffer
+	PrintDiscoveryTable(&buf, mockHosts)
+	out := buf.String()
+
+	if !strings.Contains(out, "MODE") {
+		t.Errorf("Discovery table header missing MODE column: %s", out)
+	}
+	if !strings.Contains(out, "local") || !strings.Contains(out, "remote") {
+		t.Errorf("Discovery table missing mode values: %s", out)
+	}
+}

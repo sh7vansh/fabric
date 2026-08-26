@@ -115,7 +115,7 @@ func (e *SSHExecutor) Run(script string) error {
 	return sshCmd.Run()
 }
 
-// FindLocalBinary locates the fabric-node binary on the local machine.
+// FindLocalBinary locates the fabric-thread (or fallback fabric-node) binary on the local machine.
 func FindLocalBinary(preferredPath string) (string, error) {
 	if preferredPath != "" {
 		if _, err := os.Stat(preferredPath); err == nil {
@@ -124,33 +124,41 @@ func FindLocalBinary(preferredPath string) (string, error) {
 		return "", fmt.Errorf("specified binary path not found: %s", preferredPath)
 	}
 
+	binNames := []string{"fabric-thread", "fabric-node"}
+
 	// 1. Check directory of current executable
 	if execPath, err := os.Executable(); err == nil {
 		execDir := filepath.Dir(execPath)
-		candidate := filepath.Join(execDir, "fabric-node")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
+		for _, name := range binNames {
+			candidate := filepath.Join(execDir, name)
+			if _, err := os.Stat(candidate); err == nil {
+				return candidate, nil
+			}
 		}
 	}
 
 	// 2. Check system PATH
-	if p, err := exec.LookPath("fabric-node"); err == nil {
-		return p, nil
-	}
-
-	// 3. Check common bin locations
-	candidates := []string{
-		"./bin/fabric-node",
-		"bin/fabric-node",
-		"/usr/local/bin/fabric-node",
-	}
-	for _, c := range candidates {
-		if _, err := os.Stat(c); err == nil {
-			return c, nil
+	for _, name := range binNames {
+		if p, err := exec.LookPath(name); err == nil {
+			return p, nil
 		}
 	}
 
-	return "", fmt.Errorf("fabric-node binary not found locally")
+	// 3. Check common bin locations
+	for _, name := range binNames {
+		candidates := []string{
+			"./bin/" + name,
+			"bin/" + name,
+			"/usr/local/bin/" + name,
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				return c, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("fabric-thread binary not found locally")
 }
 
 // FindLocalCliBinary locates the fabric cli binary on the local machine.
@@ -368,7 +376,7 @@ func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
 	}
 
 	listenAddr := ""
-	if opts.Mode == "inverted" {
+	if opts.Mode == "inverted" || opts.Mode == "remote" {
 		port := opts.ListenPort
 		if port == "" {
 			port = "8443"
@@ -565,7 +573,7 @@ type NodeVerifierFunc func(socketURL, token string) ([]protocol.NodeMetadata, er
 // ExecuteStitchHost performs the full bootstrap and mesh join verification workflow.
 func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier NodeVerifierFunc, prober ...DirectProberFunc) (*protocol.NodeMetadata, error) {
 	socketURL := opts.SocketURL
-	if opts.Mode != "inverted" {
+	if opts.Mode != "inverted" && opts.Mode != "remote" {
 		u, err := url.Parse(socketURL)
 		if err == nil {
 			host, port, err := net.SplitHostPort(u.Host)

@@ -39,7 +39,7 @@ func PrintDiscoveryTable(w io.Writer, hosts []provision.DiscoveredHost) {
 	}
 
 	tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
-	fmt.Fprintf(tw, "NUM\tENDPOINT\tBANNER\tLATENCY\n")
+	fmt.Fprintf(tw, "NUM\tENDPOINT\tBANNER\tLATENCY\tMODE\n")
 	for i, h := range hosts {
 		endpoint := h.IP
 		if h.Port != 22 {
@@ -49,7 +49,11 @@ func PrintDiscoveryTable(w io.Writer, hosts []provision.DiscoveredHost) {
 		if banner == "" {
 			banner = h.Banner
 		}
-		fmt.Fprintf(tw, "[%d]\t%s\t%s\t%s\n", i+1, endpoint, banner, h.Latency)
+		mode := h.Mode
+		if mode == "" {
+			mode = "local"
+		}
+		fmt.Fprintf(tw, "[%d]\t%s\t%s\t%s\t%s\n", i+1, endpoint, banner, h.Latency, mode)
 	}
 	tw.Flush()
 }

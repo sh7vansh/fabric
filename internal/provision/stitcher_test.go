@@ -3,6 +3,8 @@ package provision
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -64,6 +66,36 @@ func TestPackageBinaryPayload(t *testing.T) {
 	emptyPayload, err := PackageBinaryPayload(nil)
 	if err != nil || emptyPayload != "" {
 		t.Errorf("expected empty payload for nil data, got: %s", emptyPayload)
+	}
+}
+
+func TestFindLocalBinary_FabricThreadPreference(t *testing.T) {
+	tmpDir := t.TempDir()
+	binDir := filepath.Join(tmpDir, "bin")
+	if err := os.MkdirAll(binDir, 0755); err != nil {
+		t.Fatalf("failed to create bin dir: %v", err)
+	}
+	threadBin := filepath.Join(binDir, "fabric-thread")
+	if err := os.WriteFile(threadBin, []byte("#!/bin/sh\necho thread"), 0755); err != nil {
+		t.Fatalf("failed to write fake thread bin: %v", err)
+	}
+
+	// Change working directory to tmpDir during test
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get wd: %v", err)
+	}
+	defer os.Chdir(wd)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+
+	found, err := FindLocalBinary("")
+	if err != nil {
+		t.Fatalf("expected FindLocalBinary to find fabric-thread, got err: %v", err)
+	}
+	if !strings.HasSuffix(found, "fabric-thread") {
+		t.Errorf("expected found binary to be fabric-thread, got: %s", found)
 	}
 }
 

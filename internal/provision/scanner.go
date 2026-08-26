@@ -21,6 +21,7 @@ type DiscoveredHost struct {
 	Banner      string        `json:"banner"`
 	CleanBanner string        `json:"clean_banner"`
 	Latency     time.Duration `json:"latency_ms"`
+	Mode        string        `json:"mode,omitempty"`
 }
 
 // ScanOptions configures the concurrent network discovery scan.

@@ -595,6 +595,11 @@ func (m *InitManager) RenderBootstrapScript(opts BootstrapScriptOptions) string 
 		serverURL = opts.SocketURL
 	}
 	mode := opts.Mode
+	if mode == "inverted" {
+		mode = "remote"
+	} else if mode == "normal" {
+		mode = "local"
+	}
 	if mode == "" {
 		if opts.ListenAddr != "" {
 			mode = "remote"
