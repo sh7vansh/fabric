@@ -71,3 +71,29 @@ func TestGetConfigDeprecationWarnings(t *testing.T) {
 		t.Errorf("expected --direct deprecation warning, got %q", errOut)
 	}
 }
+
+func TestNormalizeServiceRole(t *testing.T) {
+	tests := []struct {
+		args     []string
+		expected string
+	}{
+		{nil, "thread"},
+		{[]string{}, "thread"},
+		{[]string{"node"}, "thread"},
+		{[]string{"agent"}, "thread"},
+		{[]string{"NODE"}, "thread"},
+		{[]string{"AGENT"}, "thread"},
+		{[]string{"thread"}, "thread"},
+		{[]string{"server"}, "server"},
+		{[]string{"socket"}, "server"},
+		{[]string{"hub"}, "server"},
+		{[]string{"both"}, "both"},
+	}
+	for _, tc := range tests {
+		got := normalizeServiceRole(tc.args)
+		if got != tc.expected {
+			t.Errorf("normalizeServiceRole(%v) = %q, want %q", tc.args, got, tc.expected)
+		}
+	}
+}
+

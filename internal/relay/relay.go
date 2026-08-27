@@ -386,11 +386,6 @@ func (r *Relay) ValidateAdminToken(provided string) bool {
 
 // RegisterThread registers an active thread connection, displacing any existing session for the hostname.
 func (r *Relay) RegisterThread(meta protocol.ThreadMetadata, mux *protocol.StreamMultiplexer) (*ThreadSession, error) {
-	return r.RegisterNode(meta, mux)
-}
-
-// RegisterNode registers an active node connection, displacing any existing session for the hostname.
-func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMultiplexer) (*NodeSession, error) {
 	if meta.Hostname == "" {
 		return nil, fmt.Errorf("empty hostname")
 	}
@@ -422,7 +417,7 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 		}
 	}
 
-	sess := &NodeSession{
+	sess := &ThreadSession{
 		Mux:      mux,
 		Metadata: meta,
 	}
@@ -435,7 +430,7 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 	}
 
 	go r.BroadcastSync()
-	go r.BroadcastThreadAdvertise([]protocol.NodeMetadata{meta})
+	go r.BroadcastThreadAdvertise([]protocol.ThreadMetadata{meta})
 
 	// Monitor session closure
 	if mux != nil && mux.Session != nil {
@@ -458,8 +453,14 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 	return sess, nil
 }
 
-// UnregisterNode removes a node by hostname and triggers a sync broadcast.
-func (r *Relay) UnregisterNode(hostname string) {
+// RegisterNode registers an active node connection, displacing any existing session for the hostname.
+// Deprecated: Use RegisterThread instead.
+func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMultiplexer) (*NodeSession, error) {
+	return r.RegisterThread(meta, mux)
+}
+
+// UnregisterThread removes a thread by hostname and triggers a sync broadcast.
+func (r *Relay) UnregisterThread(hostname string) {
 	r.mu.Lock()
 	if _, ok := r.nodes[hostname]; ok {
 		delete(r.nodes, hostname)
@@ -473,16 +474,17 @@ func (r *Relay) UnregisterNode(hostname string) {
 	go r.BroadcastThreadWithdraw(hostname)
 }
 
-// GetThread returns a copy of thread metadata if online (local or remote).
-func (r *Relay) GetThread(hostname string) (*protocol.ThreadMetadata, bool) {
-	return r.GetNode(hostname)
+// UnregisterNode removes a node by hostname and triggers a sync broadcast.
+// Deprecated: Use UnregisterThread instead.
+func (r *Relay) UnregisterNode(hostname string) {
+	r.UnregisterThread(hostname)
 }
 
-// GetNode returns a copy of node metadata if online (local or remote).
-func (r *Relay) GetNode(hostname string) (*protocol.NodeMetadata, bool) {
+// GetThread returns a copy of thread metadata if online (local or remote).
+func (r *Relay) GetThread(hostname string) (*protocol.ThreadMetadata, bool) {
 	r.mu.RLock()
 	state, ok := r.nodes[hostname]
-	var metaCopy protocol.NodeMetadata
+	var metaCopy protocol.ThreadMetadata
 	if ok {
 		metaCopy = state.Metadata
 	}
@@ -514,6 +516,12 @@ func (r *Relay) GetNode(hostname string) (*protocol.NodeMetadata, bool) {
 	}
 
 	return nil, false
+}
+
+// GetNode returns a copy of node metadata if online (local or remote).
+// Deprecated: Use GetThread instead.
+func (r *Relay) GetNode(hostname string) (*protocol.NodeMetadata, bool) {
+	return r.GetThread(hostname)
 }
 
 func (r *Relay) listNodesLocked() []protocol.NodeMetadata {

@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"fabric/internal/protocol"
@@ -173,5 +175,82 @@ func TestRegisterInvertedIfApplicable(t *testing.T) {
 		t.Errorf("expected address 10.0.0.50:8443, got: %s", entryIP.Address)
 	}
 }
+
+func TestConfigCommand(t *testing.T) {
+	tempHome := t.TempDir()
+	os.Setenv("HOME", tempHome)
+	defer os.Unsetenv("HOME")
+
+	// 1. fabric config set default_server
+	{
+		var stdoutBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetErr(&stdoutBuf)
+		rootCmd.SetArgs([]string{"config", "set", "default_server", "wss://control.fabric.internal:8443/ws"})
+		err := rootCmd.Execute()
+		if err != nil {
+			t.Fatalf("config set default_server failed: %v", err)
+		}
+	}
+
+	// 2. fabric config get default_server
+	{
+		var stdoutBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetErr(&stdoutBuf)
+		rootCmd.SetArgs([]string{"config", "get", "default_server"})
+		err := rootCmd.Execute()
+		if err != nil {
+			t.Fatalf("config get default_server failed: %v", err)
+		}
+		if !strings.Contains(stdoutBuf.String(), "wss://control.fabric.internal:8443/ws") {
+			t.Errorf("expected wss://control.fabric.internal:8443/ws, got: %s", stdoutBuf.String())
+		}
+	}
+
+	// 3. fabric config set format
+	{
+		var stdoutBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetErr(&stdoutBuf)
+		rootCmd.SetArgs([]string{"config", "set", "format", "json"})
+		err := rootCmd.Execute()
+		if err != nil {
+			t.Fatalf("config set format failed: %v", err)
+		}
+	}
+
+	// 4. fabric config get format
+	{
+		var stdoutBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetErr(&stdoutBuf)
+		rootCmd.SetArgs([]string{"config", "get", "format"})
+		err := rootCmd.Execute()
+		if err != nil {
+			t.Fatalf("config get format failed: %v", err)
+		}
+		if !strings.Contains(stdoutBuf.String(), "json") {
+			t.Errorf("expected json, got: %s", stdoutBuf.String())
+		}
+	}
+
+	// 5. fabric config view
+	{
+		var stdoutBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetErr(&stdoutBuf)
+		rootCmd.SetArgs([]string{"config", "view"})
+		err := rootCmd.Execute()
+		if err != nil {
+			t.Fatalf("config view failed: %v", err)
+		}
+		out := stdoutBuf.String()
+		if !strings.Contains(out, "control.fabric.internal") {
+			t.Errorf("expected view to contain control.fabric.internal, got: %s", out)
+		}
+	}
+}
+
 
 

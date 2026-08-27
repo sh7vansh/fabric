@@ -29,6 +29,8 @@ type StitchHostOptions struct {
 	IdentityKey   string
 	ServerURL     string
 	SocketURL     string
+	ThreadName    string
+	NodeName      string
 	Token         string
 	Domain        string
 	Tags          []string
@@ -462,6 +464,8 @@ func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
 	return mgr.RenderBootstrapScript(service.BootstrapScriptOptions{
 		ServerURL:     socketURL,
 		SocketURL:     socketURL,
+		ThreadName:    opts.ThreadName,
+		NodeName:      opts.NodeName,
 		ListenAddr:    listenAddr,
 		Mode:          opts.Mode,
 		Token:         opts.Token,

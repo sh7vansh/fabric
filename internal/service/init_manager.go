@@ -24,6 +24,8 @@ const (
 type BootstrapScriptOptions struct {
 	ServerURL     string
 	SocketURL     string
+	ThreadName    string
+	NodeName      string
 	ListenAddr    string
 	Mode          string
 	Token         string
@@ -635,8 +637,24 @@ func (m *InitManager) RenderBootstrapScript(opts BootstrapScriptOptions) string 
 		threadPayload = opts.NodePayload
 	}
 
-	rawEnv := fmt.Sprintf("FABRIC_SERVER_URL=%s\nFABRIC_SOCKET_URL=%s\nFABRIC_MODE=%s\nFABRIC_LISTEN=%s\nFABRIC_TOKEN=%s\nFABRIC_DOMAIN=%s\nFABRIC_TAGS=%s\n",
-		serverURL, serverURL, mode, opts.ListenAddr, opts.Token, opts.Domain, tagsJoined)
+	threadName := opts.ThreadName
+	if threadName == "" {
+		threadName = opts.NodeName
+	}
+
+	var envBuilder strings.Builder
+	envBuilder.WriteString(fmt.Sprintf("FABRIC_SERVER_URL=%s\n", serverURL))
+	envBuilder.WriteString(fmt.Sprintf("FABRIC_SOCKET_URL=%s\n", serverURL))
+	if threadName != "" {
+		envBuilder.WriteString(fmt.Sprintf("FABRIC_THREAD_NAME=%s\n", threadName))
+		envBuilder.WriteString(fmt.Sprintf("FABRIC_NODE_NAME=%s\n", threadName))
+	}
+	envBuilder.WriteString(fmt.Sprintf("FABRIC_MODE=%s\n", mode))
+	envBuilder.WriteString(fmt.Sprintf("FABRIC_LISTEN=%s\n", opts.ListenAddr))
+	envBuilder.WriteString(fmt.Sprintf("FABRIC_TOKEN=%s\n", opts.Token))
+	envBuilder.WriteString(fmt.Sprintf("FABRIC_DOMAIN=%s\n", opts.Domain))
+	envBuilder.WriteString(fmt.Sprintf("FABRIC_TAGS=%s\n", tagsJoined))
+	rawEnv := envBuilder.String()
 	envB64 := base64.StdEncoding.EncodeToString([]byte(rawEnv))
 
 	return fmt.Sprintf(`#!/usr/bin/env bash

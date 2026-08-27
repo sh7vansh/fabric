@@ -540,3 +540,51 @@ func TestRelayHandshakeProtocolVersionRejection(t *testing.T) {
 	}
 }
 
+func TestRelayCanonicalThreadRegistration(t *testing.T) {
+	r := New(Config{
+		Domain:   "fabric.mesh",
+		Token:    "secret-123",
+		PingFreq: 0,
+	})
+	defer r.Close()
+
+	sMux, cMux := createMockMultiplexers(t)
+	defer cMux.Session.Close()
+
+	meta := protocol.ThreadMetadata{
+		Hostname:      "thread-canon-1",
+		ThreadName:    "thread-canon-1",
+		OS:            "linux",
+		Arch:          "amd64",
+		OperatingMode: "local",
+		Tags:          []string{"backend", "production"},
+	}
+
+	sess, err := r.RegisterThread(meta, sMux)
+	if err != nil {
+		t.Fatalf("RegisterThread failed: %v", err)
+	}
+	if sess.Metadata.Hostname != "thread-canon-1" {
+		t.Errorf("expected thread-canon-1, got %s", sess.Metadata.Hostname)
+	}
+
+	// Lookup via canonical GetThread
+	got, ok := r.GetThread("thread-canon-1")
+	if !ok || got.ThreadName != "thread-canon-1" {
+		t.Fatalf("GetThread failed: got=%+v ok=%v", got, ok)
+	}
+
+	// List via canonical ListThreads
+	threads := r.ListThreads()
+	if len(threads) != 1 {
+		t.Errorf("expected 1 thread in ListThreads, got %d", len(threads))
+	}
+
+	// Unregister via canonical UnregisterThread
+	r.UnregisterThread("thread-canon-1")
+	if _, ok := r.GetThread("thread-canon-1"); ok {
+		t.Errorf("expected thread-canon-1 to be unregistered")
+	}
+}
+
+

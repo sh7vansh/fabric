@@ -132,20 +132,28 @@ Please use 'fabric thread service' instead.`,
   fabric thread service status`,
 }
 
+func normalizeServiceRole(args []string) string {
+	role := "thread"
+	if len(args) > 0 {
+		role = strings.ToLower(args[0])
+	}
+	switch role {
+	case "node", "agent":
+		return "thread"
+	case "socket", "hub":
+		return "server"
+	default:
+		return role
+	}
+}
+
 var serviceInstallCmd = &cobra.Command{
 	Use:   "install [role]",
 	Short: "Install and enable service (deprecated, use 'fabric thread service install')",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		WarnDeprecated("fabric service", "fabric thread service")
-		role := "thread"
-		if len(args) > 0 {
-			role = strings.ToLower(args[0])
-		}
-		if role == "node" || role == "agent" {
-			role = "thread"
-		}
-		return InstallService(role)
+		return InstallService(normalizeServiceRole(args))
 	},
 }
 
@@ -155,14 +163,7 @@ var serviceUninstallCmd = &cobra.Command{
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		WarnDeprecated("fabric service", "fabric thread service")
-		role := "thread"
-		if len(args) > 0 {
-			role = strings.ToLower(args[0])
-		}
-		if role == "node" || role == "agent" {
-			role = "thread"
-		}
-		return UninstallService(role)
+		return UninstallService(normalizeServiceRole(args))
 	},
 }
 
@@ -173,14 +174,7 @@ func newServiceActionCmd(action, desc string) *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			WarnDeprecated("fabric service", "fabric thread service")
-			role := "thread"
-			if len(args) > 0 {
-				role = strings.ToLower(args[0])
-			}
-			if role == "node" || role == "agent" {
-				role = "thread"
-			}
-			return HandleServiceAction(action, role)
+			return HandleServiceAction(action, normalizeServiceRole(args))
 		},
 	}
 }

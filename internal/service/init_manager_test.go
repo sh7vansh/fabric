@@ -63,6 +63,7 @@ func TestRenderBootstrapScript(t *testing.T) {
 	mgr := NewInitManager()
 	opts := BootstrapScriptOptions{
 		ServerURL:   "wss://10.0.0.1:8443/ws",
+		ThreadName:  "worker-prod-1",
 		ListenAddr:  ":8443",
 		Token:       "tok-123",
 		Domain:      "custom.mesh",
@@ -93,6 +94,9 @@ func TestRenderBootstrapScript(t *testing.T) {
 
 	if !strings.Contains(envStr, "FABRIC_SERVER_URL=wss://10.0.0.1:8443/ws") {
 		t.Errorf("missing server url in decoded env: %s", envStr)
+	}
+	if !strings.Contains(envStr, "FABRIC_THREAD_NAME=worker-prod-1") {
+		t.Errorf("missing thread name in decoded env: %s", envStr)
 	}
 	if !strings.Contains(envStr, "FABRIC_MODE=remote") {
 		t.Errorf("missing mode in decoded env: %s", envStr)

@@ -55,23 +55,25 @@ type ExecRequest struct {
 }
 
 type ThreadMetadata struct {
-	ID          string   `json:"id,omitempty"`
-	NodeID      string   `json:"node_id,omitempty"`
-	ThreadName  string   `json:"thread_name,omitempty"`
-	SessionID   string   `json:"session_id,omitempty"`
-	Hostname    string   `json:"hostname,omitempty"`
-	Domain      string   `json:"domain,omitempty"`
-	OS          string   `json:"os,omitempty"`
-	Arch        string   `json:"arch,omitempty"`
-	Version     string   `json:"version,omitempty"`
-	RemoteIP    string   `json:"remote_ip,omitempty"`
-	Status      string   `json:"status,omitempty"` // "online"
-	ConnectedAt string   `json:"connected_at,omitempty"`
-	LastSeen    string   `json:"last_seen,omitempty"`
-	Uptime      string   `json:"uptime,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	ServerID    string   `json:"server_id,omitempty"`
-	GatewayID   string   `json:"gateway_id,omitempty"`
+	ID            string   `json:"id,omitempty"`
+	NodeID        string   `json:"node_id,omitempty"`
+	ThreadName    string   `json:"thread_name,omitempty"`
+	SessionID     string   `json:"session_id,omitempty"`
+	Hostname      string   `json:"hostname,omitempty"`
+	Domain        string   `json:"domain,omitempty"`
+	OS            string   `json:"os,omitempty"`
+	Arch          string   `json:"arch,omitempty"`
+	Version       string   `json:"version,omitempty"`
+	RemoteIP      string   `json:"remote_ip,omitempty"`
+	Status        string   `json:"status,omitempty"` // "online"
+	OperatingMode string   `json:"operating_mode,omitempty"`
+	Mode          string   `json:"mode,omitempty"`
+	ConnectedAt   string   `json:"connected_at,omitempty"`
+	LastSeen      string   `json:"last_seen,omitempty"`
+	Uptime        string   `json:"uptime,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	ServerID      string   `json:"server_id,omitempty"`
+	GatewayID     string   `json:"gateway_id,omitempty"`
 }
 
 type NodeMetadata = ThreadMetadata
@@ -104,6 +106,12 @@ func (t *ThreadMetadata) UnmarshalJSON(data []byte) error {
 	if t.GatewayID == "" && t.ServerID != "" {
 		t.GatewayID = t.ServerID
 	}
+	if t.OperatingMode == "" && t.Mode != "" {
+		t.OperatingMode = t.Mode
+	}
+	if t.Mode == "" && t.OperatingMode != "" {
+		t.Mode = t.OperatingMode
+	}
 	return nil
 }
 
@@ -120,6 +128,12 @@ func (t ThreadMetadata) MarshalJSON() ([]byte, error) {
 	}
 	if t.GatewayID == "" && t.ServerID != "" {
 		t.GatewayID = t.ServerID
+	}
+	if t.OperatingMode == "" && t.Mode != "" {
+		t.OperatingMode = t.Mode
+	}
+	if t.Mode == "" && t.OperatingMode != "" {
+		t.Mode = t.OperatingMode
 	}
 	return json.Marshal(Alias(t))
 }

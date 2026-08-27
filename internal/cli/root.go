@@ -88,6 +88,7 @@ func init() {
 	rootCmd.AddCommand(portCmd)
 	rootCmd.AddCommand(threadCmd)
 	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(configCmd)
 }
 
 func Execute() {

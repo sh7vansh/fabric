@@ -142,7 +142,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 	}
 
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "THREAD\tHOSTNAME\tSERVER\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
+	fmt.Fprintln(w, "THREAD\tHOSTNAME\tPLATFORM\tSERVER\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
 	for _, n := range nodes {
 		uptime := ""
 		if t, err := time.Parse(time.RFC3339, n.ConnectedAt); err == nil {
@@ -151,6 +151,14 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 		tagsStr := "-"
 		if len(n.Tags) > 0 {
 			tagsStr = strings.Join(n.Tags, ",")
+		}
+		platform := "-"
+		if n.OS != "" && n.Arch != "" {
+			platform = n.OS + "/" + n.Arch
+		} else if n.OS != "" {
+			platform = n.OS
+		} else if n.Arch != "" {
+			platform = n.Arch
 		}
 		domainStr := n.Domain
 		if domainStr == "" {
@@ -170,7 +178,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 		if gwStr == "" {
 			gwStr = "local"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayName, n.Hostname, gwStr, n.Status, tagsStr, n.RemoteIP, domainStr, uptime)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayName, n.Hostname, platform, gwStr, n.Status, tagsStr, n.RemoteIP, domainStr, uptime)
 	}
 	w.Flush()
 	return nil

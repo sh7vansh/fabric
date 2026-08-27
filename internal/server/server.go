@@ -44,9 +44,9 @@ type Config struct {
 	WireGuardEndpoint string
 }
 
-// Server is the deep control-plane domain module encapsulating MeshRelay,
+// SecureServer is the deep control-plane domain module encapsulating MeshRelay,
 // dynamic Dual-Mode TLS Engine, WireGuardEngine, and authenticated TLS WebSocket multiplexing.
-type Server struct {
+type SecureServer struct {
 	cfg        Config
 	relay      *relay.Relay
 	tlsEngine  *tlsengine.Engine
@@ -60,8 +60,11 @@ type Server struct {
 	closed     bool
 }
 
-// New constructs and initializes a new deep Server module.
-func New(cfg Config) (*Server, error) {
+// Server is a backward-compatible alias for SecureServer.
+type Server = SecureServer
+
+// NewSecureServer constructs and initializes a new deep SecureServer module.
+func NewSecureServer(cfg Config) (*SecureServer, error) {
 	if cfg.Domain == "" {
 		cfg.Domain = "fabric.mesh"
 	}
@@ -143,7 +146,7 @@ func New(cfg Config) (*Server, error) {
 		}
 	}
 
-	s := &Server{
+	s := &SecureServer{
 		cfg:        cfg,
 		relay:      meshRelay,
 		tlsEngine:  tlsEng,
@@ -156,6 +159,11 @@ func New(cfg Config) (*Server, error) {
 
 	s.registerRoutes()
 	return s, nil
+}
+
+// New constructs and initializes a new deep Server module (alias for NewSecureServer).
+func New(cfg Config) (*SecureServer, error) {
+	return NewSecureServer(cfg)
 }
 
 // Relay returns the underlying Relay module.

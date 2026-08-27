@@ -473,6 +473,32 @@ func TestServerDeviceEndpointsDisabledWireGuardErrorConformance(t *testing.T) {
 	}
 }
 
+func TestSecureServerCanonicalLifecycle(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "fabric-secureserver-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	caDir := filepath.Join(tmpDir, "ca")
+	srv, err := server.NewSecureServer(server.Config{
+		Domain:     "fabric.test",
+		Port:       8443,
+		CADir:      caDir,
+		Token:      "secret-token-123",
+		AdminToken: "admin-token-456",
+	})
+	if err != nil {
+		t.Fatalf("NewSecureServer failed: %v", err)
+	}
+	defer srv.Close()
+
+	if srv.Relay() == nil {
+		t.Errorf("expected Relay() to return non-nil internal Relay instance")
+	}
+}
+
+
 
 
 

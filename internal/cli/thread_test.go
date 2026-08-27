@@ -124,6 +124,12 @@ func TestThreadCommandsAndDeprecations(t *testing.T) {
 		if !strings.Contains(out, "THREAD") || !strings.Contains(out, "worker-1") || !strings.Contains(out, "worker-2") {
 			t.Errorf("expected thread table with THREAD header and workers, got:\n%s", out)
 		}
+		if !strings.Contains(out, "PLATFORM") {
+			t.Errorf("expected PLATFORM column in thread ls output, got:\n%s", out)
+		}
+		if !strings.Contains(out, "linux/amd64") || !strings.Contains(out, "linux/arm64") {
+			t.Errorf("expected platform OS/Arch in thread ls output, got:\n%s", out)
+		}
 	}
 
 	// 2. Test `fabric thread ls -q`

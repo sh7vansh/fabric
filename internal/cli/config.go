@@ -2,11 +2,14 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 func parseEnvFile(path string) map[string]string {
@@ -49,6 +52,7 @@ type ContextConfig struct {
 	Host          string                       `json:"host"`
 	Token         string                       `json:"token"`
 	CACert        string                       `json:"ca_cert,omitempty"`
+	Format        string                       `json:"format,omitempty"`
 	DirectThreads map[string]DirectThreadEntry `json:"direct_threads,omitempty"`
 	DirectNodes   map[string]DirectNodeEntry   `json:"direct_nodes,omitempty"`
 }
@@ -57,6 +61,7 @@ type Config struct {
 	Host          string
 	Token         string
 	CACert        string
+	Format        string
 	DirectAddress string
 	DirectThreads map[string]DirectThreadEntry
 	DirectNodes   map[string]DirectNodeEntry
@@ -113,6 +118,9 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 					}
 					if ctx.CACert != "" {
 						cfg.CACert = ctx.CACert
+					}
+					if ctx.Format != "" {
+						cfg.Format = ctx.Format
 					}
 					if ctx.DirectThreads != nil {
 						for k, v := range ctx.DirectThreads {
@@ -283,6 +291,7 @@ func SaveConfig(cfg *Config) error {
 		ctx.Host = cfg.Host
 		ctx.Token = cfg.Token
 		ctx.CACert = cfg.CACert
+		ctx.Format = cfg.Format
 		if cfg.DirectThreads != nil {
 			ctx.DirectThreads = cfg.DirectThreads
 			ctx.DirectNodes = cfg.DirectThreads
@@ -407,5 +416,98 @@ func LookupDirectThread(hostname string) (DirectThreadEntry, bool) {
 func LookupDirectNode(hostname string) (DirectNodeEntry, bool) {
 	return LookupDirectThread(hostname)
 }
+
+var configCmd = &cobra.Command{
+	Use:     "config [command]",
+	Short:   "Manage Fabric CLI configuration",
+	GroupID: "system",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runConfigView(cmd, args)
+	},
+}
+
+var configViewCmd = &cobra.Command{
+	Use:   "view",
+	Short: "Display active Fabric configuration",
+	RunE:  runConfigView,
+}
+
+var configGetCmd = &cobra.Command{
+	Use:   "get <key>",
+	Short: "Get a configuration property",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		key := strings.ToLower(args[0])
+		cfg := GetConfig()
+		switch key {
+		case "default_server", "server", "host":
+			fmt.Fprintln(cmd.OutOrStdout(), cfg.Host)
+		case "token":
+			fmt.Fprintln(cmd.OutOrStdout(), cfg.Token)
+		case "format":
+			fmt.Fprintln(cmd.OutOrStdout(), cfg.Format)
+		case "ca_cert", "cacert":
+			fmt.Fprintln(cmd.OutOrStdout(), cfg.CACert)
+		case "thread_name":
+			fmt.Fprintln(cmd.OutOrStdout(), cfg.ThreadName)
+		default:
+			return fmt.Errorf("unknown configuration key %q", args[0])
+		}
+		return nil
+	},
+}
+
+var configSetCmd = &cobra.Command{
+	Use:   "set <key> <value>",
+	Short: "Set a configuration property",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		key := strings.ToLower(args[0])
+		val := args[1]
+		cfg := GetConfig()
+		switch key {
+		case "default_server", "server", "host":
+			cfg.Host = val
+		case "token":
+			cfg.Token = val
+		case "format":
+			cfg.Format = val
+		case "ca_cert", "cacert":
+			cfg.CACert = val
+		default:
+			return fmt.Errorf("unknown configuration key %q", args[0])
+		}
+		if err := SaveConfig(cfg); err != nil {
+			return fmt.Errorf("failed to save config: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Updated %s = %s\n", key, val)
+		return nil
+	},
+}
+
+func runConfigView(cmd *cobra.Command, args []string) error {
+	cfg := GetConfig()
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "CURRENT CONFIGURATION:\n")
+	fmt.Fprintf(out, "  default_server: %s\n", cfg.Host)
+	fmt.Fprintf(out, "  token:          %s\n", cfg.Token)
+	if cfg.CACert != "" {
+		fmt.Fprintf(out, "  ca_cert:        %s\n", cfg.CACert)
+	}
+	if cfg.Format != "" {
+		fmt.Fprintf(out, "  format:         %s\n", cfg.Format)
+	}
+	if len(cfg.DirectThreads) > 0 {
+		fmt.Fprintf(out, "  direct_threads: %d registered\n", len(cfg.DirectThreads))
+	}
+	return nil
+}
+
+func init() {
+	configCmd.AddCommand(configViewCmd)
+	configCmd.AddCommand(configGetCmd)
+	configCmd.AddCommand(configSetCmd)
+}
+
 
 

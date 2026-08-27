@@ -187,7 +187,8 @@ func TestExecuteStitchHostWithMock(t *testing.T) {
 	mockExec := &mockExecutor{}
 	opts := StitchHostOptions{
 		Target:     "node-1",
-		SocketURL:  "wss://10.0.0.1:8443/ws",
+		ServerURL:  "wss://10.0.0.1:8443/ws",
+		ThreadName: "worker-node-1",
 		Token:      "tok",
 		Domain:     "fabric.mesh",
 		Tags:       []string{"ingress"},
@@ -195,6 +196,9 @@ func TestExecuteStitchHostWithMock(t *testing.T) {
 	}
 
 	verifier := func(socketURL, token string) ([]protocol.NodeMetadata, error) {
+		if socketURL != "wss://10.0.0.1:8443/ws" {
+			t.Errorf("verifier expected server URL wss://10.0.0.1:8443/ws, got %s", socketURL)
+		}
 		return []protocol.NodeMetadata{
 			{Hostname: "node-1", Status: "online", Tags: []string{"ingress"}},
 		}, nil
@@ -215,6 +219,9 @@ func TestExecuteStitchHostWithMock(t *testing.T) {
 	if !strings.Contains(mockEnv, "FABRIC_SERVER_URL=wss://10.0.0.1:8443/ws") {
 		t.Errorf("Script was not passed correctly to mock executor: %s", mockEnv)
 	}
+	if !strings.Contains(mockEnv, "FABRIC_THREAD_NAME=worker-node-1") {
+		t.Errorf("Script missing thread name in mock execution: %s", mockEnv)
+	}
 	if !strings.Contains(mockEnv, "FABRIC_TAGS=ingress") {
 		t.Errorf("Script missing tags in mock execution: %s", mockEnv)
 	}
@@ -223,6 +230,9 @@ func TestExecuteStitchHostWithMock(t *testing.T) {
 func TestProvisionerBatch(t *testing.T) {
 	mockExec := &mockExecutor{}
 	verifier := func(socketURL, token string) ([]protocol.NodeMetadata, error) {
+		if socketURL != "wss://10.0.0.1:8443/ws" {
+			t.Errorf("verifier expected server URL wss://10.0.0.1:8443/ws, got %s", socketURL)
+		}
 		return []protocol.NodeMetadata{
 			{Hostname: "host-a", Status: "online"},
 			{Hostname: "host-b", Status: "online"},
@@ -232,8 +242,8 @@ func TestProvisionerBatch(t *testing.T) {
 	provisioner := NewProvisioner(mockExec, verifier)
 
 	targets := []StitchHostOptions{
-		{Target: "host-a", SocketURL: "wss://10.0.0.1:8443/ws", Token: "tok", BinaryData: []byte("bin")},
-		{Target: "host-b", SocketURL: "wss://10.0.0.1:8443/ws", Token: "tok", BinaryData: []byte("bin")},
+		{Target: "host-a", ServerURL: "wss://10.0.0.1:8443/ws", ThreadName: "host-a", Token: "tok", BinaryData: []byte("bin")},
+		{Target: "host-b", ServerURL: "wss://10.0.0.1:8443/ws", ThreadName: "host-b", Token: "tok", BinaryData: []byte("bin")},
 	}
 
 	results, err := provisioner.ProvisionBatch(targets)

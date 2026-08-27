@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -261,3 +262,41 @@ func TestCanonicalMetadata(t *testing.T) {
 		t.Errorf("Unexpected unmarshaled ServerMetadata: %+v", sm)
 	}
 }
+
+func TestOperatingModeCanonicalization(t *testing.T) {
+	// 1. Test canonical marshaling contains "operating_mode"
+	tm := ThreadMetadata{
+		ThreadName:    "worker-1",
+		Hostname:      "worker-1",
+		OperatingMode: "local",
+	}
+	b, err := json.Marshal(tm)
+	if err != nil {
+		t.Fatalf("Failed to marshal ThreadMetadata: %v", err)
+	}
+	jsonStr := string(b)
+	if !strings.Contains(jsonStr, `"operating_mode":"local"`) {
+		t.Errorf("Expected JSON to contain '\"operating_mode\":\"local\"', got: %s", jsonStr)
+	}
+
+	// 2. Test legacy unmarshaling from "mode"
+	legacyJSON := []byte(`{"thread_name":"worker-2","mode":"remote"}`)
+	var tmLegacy ThreadMetadata
+	if err := json.Unmarshal(legacyJSON, &tmLegacy); err != nil {
+		t.Fatalf("Failed to unmarshal legacy mode: %v", err)
+	}
+	if tmLegacy.OperatingMode != "remote" {
+		t.Errorf("Expected OperatingMode to be 'remote', got %q", tmLegacy.OperatingMode)
+	}
+
+	// 3. Test canonical unmarshaling from "operating_mode"
+	canonicalJSON := []byte(`{"thread_name":"worker-3","operating_mode":"remote"}`)
+	var tmCanonical ThreadMetadata
+	if err := json.Unmarshal(canonicalJSON, &tmCanonical); err != nil {
+		t.Fatalf("Failed to unmarshal canonical operating_mode: %v", err)
+	}
+	if tmCanonical.OperatingMode != "remote" || tmCanonical.Mode != "remote" {
+		t.Errorf("Expected OperatingMode and Mode to be 'remote', got OperatingMode=%q Mode=%q", tmCanonical.OperatingMode, tmCanonical.Mode)
+	}
+}
+
