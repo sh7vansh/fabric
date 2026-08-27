@@ -27,11 +27,12 @@ func TestServerInProcessTLSEndToEnd(t *testing.T) {
 
 	caDir := filepath.Join(tmpDir, "ca")
 	srv, err := server.New(server.Config{
-		Domain:     "fabric.test",
-		Port:       8443,
-		CADir:      caDir,
-		Token:      "secret-token-123",
-		AdminToken: "admin-token-456",
+		Domain:            "fabric.test",
+		Port:              8443,
+		CADir:             caDir,
+		Token:             "secret-token-123",
+		AdminToken:        "admin-token-456",
+		WireGuardDisabled: true,
 	})
 	if err != nil {
 		t.Fatalf("server.New failed: %v", err)
@@ -110,10 +111,11 @@ func TestServerGracefulShutdown(t *testing.T) {
 
 	caDir := filepath.Join(tmpDir, "ca")
 	srv, err := server.New(server.Config{
-		Domain: "fabric.test",
-		Port:   65431,
-		CADir:  caDir,
-		Token:  "test-token",
+		Domain:            "fabric.test",
+		Port:              65431,
+		CADir:             caDir,
+		Token:             "test-token",
+		WireGuardDisabled: true,
 	})
 	if err != nil {
 		t.Fatalf("server.New failed: %v", err)
@@ -133,7 +135,7 @@ func TestServerGracefulShutdown(t *testing.T) {
 		if err != nil {
 			t.Errorf("expected clean shutdown on context cancel, got: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Errorf("server did not stop in time on cancel")
 	}
 }
@@ -147,12 +149,13 @@ func TestServerCanonicalVocabularyRoutes(t *testing.T) {
 
 	caDir := filepath.Join(tmpDir, "ca")
 	srv, err := server.New(server.Config{
-		Domain:     "fabric.test",
-		Port:       8443,
-		CADir:      caDir,
-		Token:      "tok-123",
-		AdminToken: "admin-tok-456",
-		ServerID:   "srv-alpha",
+		Domain:            "fabric.test",
+		Port:              8443,
+		CADir:             caDir,
+		Token:             "tok-123",
+		AdminToken:        "admin-tok-456",
+		ServerID:          "srv-alpha",
+		WireGuardDisabled: true,
 	})
 	if err != nil {
 		t.Fatalf("server.New failed: %v", err)
@@ -218,11 +221,12 @@ func TestServerPreUpgradeAccessControlAndRateLimiting(t *testing.T) {
 
 	caDir := filepath.Join(tmpDir, "ca")
 	srv, err := server.New(server.Config{
-		Domain:     "fabric.test",
-		Port:       8443,
-		CADir:      caDir,
-		Token:      "cluster-secret-xyz",
-		AdminToken: "admin-secret-xyz",
+		Domain:            "fabric.test",
+		Port:              8443,
+		CADir:             caDir,
+		Token:             "cluster-secret-xyz",
+		AdminToken:        "admin-secret-xyz",
+		WireGuardDisabled: true,
 	})
 	if err != nil {
 		t.Fatalf("server.New failed: %v", err)

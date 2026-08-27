@@ -152,19 +152,17 @@ func NewEngine(cfg EngineConfig, ipam *IPAMManager, store *DeviceStore, proxyRou
 
 	privHex, err := KeyBase64ToHex(privKey)
 	if err != nil {
-		_ = tunDev.Close()
+		wgDev.Close()
 		return nil, fmt.Errorf("failed to convert private key to hex: %w", err)
 	}
 
 	uapiConf := fmt.Sprintf("private_key=%s\nlisten_port=%d\n", privHex, cfg.Port)
 	if err := wgDev.IpcSet(uapiConf); err != nil {
-		_ = tunDev.Close()
 		wgDev.Close()
 		return nil, fmt.Errorf("failed to apply initial WireGuard UAPI config: %w", err)
 	}
 
 	if err := wgDev.Up(); err != nil {
-		_ = tunDev.Close()
 		wgDev.Close()
 		return nil, fmt.Errorf("failed to bring WireGuard device up: %w", err)
 	}
