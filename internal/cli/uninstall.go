@@ -79,38 +79,44 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 	fwMgr := getFirewallManager()
 	backend := fwMgr.DetectBackend()
 	if backend != firewall.BackendNone && isServerOrRemoteThread {
+		portsToClose := []struct {
+			port  int
+			proto string
+		}{
+			{8443, "tcp"},
+			{51820, "udp"},
+		}
+
 		if uninstallYesFlag || !isTerminalInput() {
-			err := fwMgr.ClosePortWithBackend(backend, 8443, "tcp")
-			if err == nil {
-				fmt.Printf("[+] Removed Fabric firewall rule (closed 8443/tcp in %s)\n", backend)
-			} else {
-				fmt.Printf("[!] Warning: Could not automatically remove %s firewall rule: %v\n", backend, err)
-				manual := fwMgr.GetClosePortManualInstructions(backend, 8443, "tcp")
-				if manual != "" {
-					fmt.Printf("    Manual removal command: %s\n", manual)
-				}
-			}
-		} else {
-			reader := bufio.NewReader(os.Stdin)
-			promptMsg := fmt.Sprintf("Remove Fabric firewall rule (8443/tcp) from %s? (Y/n)", backend)
-			choice := prompt(reader, promptMsg, "Y")
-			if strings.ToLower(choice) == "y" || strings.ToLower(choice) == "yes" || choice == "" {
-				err := fwMgr.ClosePortWithBackend(backend, 8443, "tcp")
+			for _, p := range portsToClose {
+				err := fwMgr.ClosePortWithBackend(backend, p.port, p.proto)
 				if err == nil {
-					fmt.Printf("[+] Removed Fabric firewall rule (closed 8443/tcp in %s)\n", backend)
+					fmt.Printf("[+] Removed Fabric firewall rule (closed %d/%s in %s)\n", p.port, p.proto, backend)
 				} else {
-					fmt.Printf("[!] Warning: Could not remove %s firewall rule: %v\n", backend, err)
-					manual := fwMgr.GetClosePortManualInstructions(backend, 8443, "tcp")
+					manual := fwMgr.GetClosePortManualInstructions(backend, p.port, p.proto)
 					if manual != "" {
 						fmt.Printf("    Manual removal command: %s\n", manual)
 					}
 				}
+			}
+		} else {
+			reader := bufio.NewReader(os.Stdin)
+			promptMsg := fmt.Sprintf("Remove Fabric firewall rules (8443/tcp, 51820/udp) from %s? (Y/n)", backend)
+			choice := prompt(reader, promptMsg, "Y")
+			if strings.ToLower(choice) == "y" || strings.ToLower(choice) == "yes" || choice == "" {
+				for _, p := range portsToClose {
+					err := fwMgr.ClosePortWithBackend(backend, p.port, p.proto)
+					if err == nil {
+						fmt.Printf("[+] Removed Fabric firewall rule (closed %d/%s in %s)\n", p.port, p.proto, backend)
+					} else {
+						manual := fwMgr.GetClosePortManualInstructions(backend, p.port, p.proto)
+						if manual != "" {
+							fmt.Printf("    Manual removal command: %s\n", manual)
+						}
+					}
+				}
 			} else {
 				fmt.Println("[*] Skipped firewall rule removal.")
-				manual := fwMgr.GetClosePortManualInstructions(backend, 8443, "tcp")
-				if manual != "" {
-					fmt.Printf("    To remove manually: %s\n", manual)
-				}
 			}
 		}
 	}

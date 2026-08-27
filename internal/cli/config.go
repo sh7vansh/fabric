@@ -82,7 +82,11 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 		}
 		configFiles = append(configFiles, filepath.Join(sudoHome, ".fabric", "config.json"))
 	}
-	configFiles = append(configFiles, "/etc/fabric/config.json")
+	sysDir := "/etc/fabric"
+	if envSys := os.Getenv("FABRIC_SYS_CONFIG_DIR"); envSys != "" {
+		sysDir = envSys
+	}
+	configFiles = append(configFiles, filepath.Join(sysDir, "config.json"))
 
 	for _, configPath := range configFiles {
 		b, err := os.ReadFile(configPath)
@@ -123,10 +127,10 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 
 	// Fallback to local daemon environment files if present
 	envCandidates := []string{
-		"/etc/fabric/agent.env",
-		"/etc/fabric/node.env",
-		"/etc/fabric/server.env",
-		"/etc/fabric/socket.env",
+		filepath.Join(sysDir, "agent.env"),
+		filepath.Join(sysDir, "node.env"),
+		filepath.Join(sysDir, "server.env"),
+		filepath.Join(sysDir, "socket.env"),
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		envCandidates = append(envCandidates,

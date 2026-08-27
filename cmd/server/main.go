@@ -27,6 +27,19 @@ func main() {
 		}
 	}
 
+	wgPortEnv := os.Getenv("FABRIC_WIREGUARD_PORT")
+	defaultWGPort := 51820
+	if wgPortEnv != "" {
+		if p, err := strconv.Atoi(wgPortEnv); err == nil {
+			defaultWGPort = p
+		}
+	}
+
+	wgSubnetEnv := os.Getenv("FABRIC_WIREGUARD_SUBNET")
+	if wgSubnetEnv == "" {
+		wgSubnetEnv = "100.64.0.0/10"
+	}
+
 	portFlag := flag.Int("port", defaultPort, "Port for primary WSS / HTTPS TLS listener")
 	domainFlag := flag.String("domain", defaultDomain, "Domain for the Fabric DNS server")
 	publicDomainFlag := flag.String("public-domain", os.Getenv("FABRIC_PUBLIC_DOMAIN"), "Public domain for ACME TLS certificates (e.g. example.com)")
@@ -47,6 +60,15 @@ func main() {
 	federationCAFlag := flag.String("federation-ca", os.Getenv("FABRIC_FEDERATION_CA"), "Path to shared Federation Root CA certificate")
 	peerFlag := flag.String("peer", os.Getenv("FABRIC_PEERS"), "Comma-separated list of peer server URLs to connect to")
 	leafOfFlag := flag.String("leaf-of", os.Getenv("FABRIC_LEAF_OF"), "Core server URL to connect to as an outbound Leaf relay")
+
+	// WireGuard Gateway configuration flags
+	wgPortFlag := flag.Int("wireguard-port", defaultWGPort, "UDP port for embedded WireGuard gateway listener")
+	wgSubnetFlag := flag.String("wireguard-subnet", wgSubnetEnv, "Overlay CIDR subnet (default 100.64.0.0/10)")
+	noWGFlag := flag.Bool("no-wireguard", os.Getenv("FABRIC_WIREGUARD_DISABLED") == "true", "Disable embedded WireGuard gateway")
+	wgKeyFlag := flag.String("wireguard-key", os.Getenv("FABRIC_WIREGUARD_KEY"), "Path to WireGuard private key or base64 key string")
+	wgDevicesFlag := flag.String("wireguard-devices", os.Getenv("FABRIC_WIREGUARD_DEVICES"), "Path to devices.json persistence file")
+	wgEndpointFlag := flag.String("wireguard-endpoint", os.Getenv("FABRIC_WIREGUARD_ENDPOINT"), "Public WireGuard endpoint override (host:port)")
+
 	flag.Parse()
 
 	token := *tokenFlag
@@ -69,21 +91,27 @@ func main() {
 	}
 
 	srv, err := server.New(server.Config{
-		Port:         *portFlag,
-		Domain:       *domainFlag,
-		PublicDomain: *publicDomainFlag,
-		ACMEEmail:    *acmeEmailFlag,
-		ACMEStaging:  *acmeStagingFlag,
-		HTTPPort:     *httpPortFlag,
-		CADir:        *caDirFlag,
-		Token:        token,
-		AdminToken:   *adminTokenFlag,
-		ServerID:     effectiveServerID,
-		GatewayID:    effectiveServerID,
-		Region:       *regionFlag,
-		FederationCA: *federationCAFlag,
-		Peers:        initialPeers,
-		LeafOf:       *leafOfFlag,
+		Port:              *portFlag,
+		Domain:            *domainFlag,
+		PublicDomain:      *publicDomainFlag,
+		ACMEEmail:         *acmeEmailFlag,
+		ACMEStaging:       *acmeStagingFlag,
+		HTTPPort:          *httpPortFlag,
+		CADir:             *caDirFlag,
+		Token:             token,
+		AdminToken:        *adminTokenFlag,
+		ServerID:          effectiveServerID,
+		GatewayID:         effectiveServerID,
+		Region:            *regionFlag,
+		FederationCA:      *federationCAFlag,
+		Peers:             initialPeers,
+		LeafOf:            *leafOfFlag,
+		WireGuardPort:     *wgPortFlag,
+		WireGuardSubnet:   *wgSubnetFlag,
+		WireGuardDisabled: *noWGFlag,
+		WireGuardKeyPath:  *wgKeyFlag,
+		WireGuardDevices:  *wgDevicesFlag,
+		WireGuardEndpoint: *wgEndpointFlag,
 	})
 	if err != nil {
 		log.Fatalf("Failed to initialize server: %v", err)

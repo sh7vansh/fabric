@@ -12,37 +12,47 @@ import (
 	"time"
 
 	"fabric/internal/pki"
+	"fabric/internal/protocol"
 	"fabric/internal/relay"
 	"fabric/internal/tlsengine"
 	"fabric/internal/version"
+	"fabric/internal/wireguard"
 )
 
 // Config configures the deep Server control-plane module.
 type Config struct {
-	Port         int
-	Domain       string
-	PublicDomain string
-	ACMEEmail    string
-	ACMEStaging  bool
-	HTTPPort     int
-	CADir        string
-	Token        string
-	AdminToken   string
-	ServerID     string
-	GatewayID    string
-	Region       string
-	FederationCA string
-	Peers        []string
-	LeafOf       string
+	Port              int
+	Domain            string
+	PublicDomain      string
+	ACMEEmail         string
+	ACMEStaging       bool
+	HTTPPort          int
+	CADir             string
+	Token             string
+	AdminToken        string
+	ServerID          string
+	GatewayID         string
+	Region            string
+	FederationCA      string
+	Peers             []string
+	LeafOf            string
+	WireGuardPort     int
+	WireGuardSubnet   string
+	WireGuardDisabled bool
+	WireGuardKeyPath  string
+	WireGuardDevices  string
+	WireGuardEndpoint string
 }
 
 // Server is the deep control-plane domain module encapsulating MeshRelay,
-// dynamic Dual-Mode TLS Engine, and authenticated TLS WebSocket multiplexing.
+// dynamic Dual-Mode TLS Engine, WireGuardEngine, and authenticated TLS WebSocket multiplexing.
 type Server struct {
 	cfg        Config
 	relay      *relay.Relay
 	tlsEngine  *tlsengine.Engine
 	accessCtrl *AccessController
+	wgEngine   *wireguard.WireGuardEngine
+	ipam       *wireguard.IPAMManager
 	mux        *http.ServeMux
 	mu         sync.RWMutex
 	boundAddr  string
@@ -64,6 +74,11 @@ func New(cfg Config) (*Server, error) {
 		serverID = cfg.GatewayID
 	}
 
+	ipam, err := wireguard.NewIPAMManager(cfg.WireGuardSubnet)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize IPAM: %w", err)
+	}
+
 	meshRelay := relay.New(relay.Config{
 		Domain:       cfg.Domain,
 		Token:        cfg.Token,
@@ -75,6 +90,12 @@ func New(cfg Config) (*Server, error) {
 		FederationCA: cfg.FederationCA,
 		Peers:        cfg.Peers,
 		LeafOf:       cfg.LeafOf,
+		OnNodeRegistered: func(meta protocol.NodeMetadata) {
+			_, _ = ipam.AllocateThreadIP(meta.Hostname)
+		},
+		OnNodeUnregistered: func(hostname string) {
+			ipam.ReleaseThreadIP(hostname)
+		},
 	})
 
 	tlsEng, err := tlsengine.New(tlsengine.Config{
@@ -102,11 +123,33 @@ func New(cfg Config) (*Server, error) {
 		AdminToken:   cfg.AdminToken,
 	})
 
+	var wgEng *wireguard.WireGuardEngine
+	if !cfg.WireGuardDisabled {
+		wgPort := cfg.WireGuardPort
+		if wgPort <= 0 {
+			wgPort = 51820
+		}
+		var err error
+		wgEng, err = wireguard.NewEngine(wireguard.EngineConfig{
+			Port:         wgPort,
+			Subnet:       cfg.WireGuardSubnet,
+			KeyPath:      cfg.WireGuardKeyPath,
+			DevicesPath:  cfg.WireGuardDevices,
+			MeshDomain:   cfg.Domain,
+			EndpointHost: cfg.WireGuardEndpoint,
+		}, ipam, nil, meshRelay)
+		if err != nil {
+			log.Printf("[Server] Warning: Failed to start WireGuard engine: %v\n", err)
+		}
+	}
+
 	s := &Server{
 		cfg:        cfg,
 		relay:      meshRelay,
 		tlsEngine:  tlsEng,
 		accessCtrl: accessCtrl,
+		wgEngine:   wgEng,
+		ipam:       ipam,
 		mux:        http.NewServeMux(),
 		closeCh:    make(chan struct{}),
 	}
@@ -128,6 +171,16 @@ func (s *Server) TLSEngine() *tlsengine.Engine {
 // AccessController returns the attached AccessController module.
 func (s *Server) AccessController() *AccessController {
 	return s.accessCtrl
+}
+
+// WireGuardEngine returns the attached userspace WireGuard engine.
+func (s *Server) WireGuardEngine() *wireguard.WireGuardEngine {
+	return s.wgEngine
+}
+
+// IPAM returns the attached IPAM overlay manager.
+func (s *Server) IPAM() *wireguard.IPAMManager {
+	return s.ipam
 }
 
 // Handler returns the HTTP handler with all registered endpoints.
@@ -206,7 +259,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		bInfo := version.GetBuildInfo()
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		resp := map[string]interface{}{
 			"version":          bInfo.Version,
 			"git_commit":       bInfo.GitCommit,
 			"build_date":       bInfo.BuildDate,
@@ -217,7 +270,12 @@ func (s *Server) registerRoutes() {
 			"gateway_id":       s.relay.GatewayID(),
 			"server_id":        s.relay.ServerID(),
 			"region":           s.relay.Region(),
-		})
+		}
+		if s.wgEngine != nil {
+			resp["wireguard_port"] = s.wgEngine.ListenPort()
+			resp["wireguard_public_key"] = s.wgEngine.ServerPublicKey()
+		}
+		json.NewEncoder(w).Encode(resp)
 	})
 
 	threadsListHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -316,6 +374,133 @@ func (s *Server) registerRoutes() {
 		}
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	})
+
+	// Device Management Endpoints
+	devicesListHandler := func(w http.ResponseWriter, r *http.Request) {
+		if _, code, err := s.accessCtrl.AuthenticateRequest(r, CapabilityInspect); err != nil {
+			http.Error(w, err.Error(), code)
+			return
+		}
+		if s.wgEngine == nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]wireguard.DeviceEntry{})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(s.wgEngine.ListDevices())
+	}
+
+	devicesPostHandler := func(w http.ResponseWriter, r *http.Request) {
+		if _, code, err := s.accessCtrl.AuthenticateRequest(r, CapabilityAdmin); err != nil {
+			http.Error(w, err.Error(), code)
+			return
+		}
+		if s.wgEngine == nil {
+			http.Error(w, "WireGuard gateway is disabled", http.StatusServiceUnavailable)
+			return
+		}
+		var body struct {
+			Name         string `json:"name"`
+			PublicKey    string `json:"public_key"`
+			PresharedKey string `json:"preshared_key,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" || body.PublicKey == "" {
+			http.Error(w, "invalid request body: missing name or public_key", http.StatusBadRequest)
+			return
+		}
+
+		dev, err := s.wgEngine.AddDevice(body.Name, body.PublicKey, body.PresharedKey)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		endpoint := s.cfg.WireGuardEndpoint
+		if endpoint == "" {
+			host := "localhost"
+			if s.cfg.PublicDomain != "" {
+				host = s.cfg.PublicDomain
+			} else if reqHost, _, err := net.SplitHostPort(r.Host); err == nil && reqHost != "" {
+				host = reqHost
+			} else if r.Host != "" {
+				host = r.Host
+			}
+			endpoint = fmt.Sprintf("%s:%d", host, s.wgEngine.ListenPort())
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"name":              dev.Name,
+			"public_key":        dev.PublicKey,
+			"preshared_key":     dev.PresharedKey,
+			"virtual_ip":        dev.VirtualIP,
+			"allowed_ips":       []string{"100.64.0.0/10"},
+			"dns":               s.ipam.ServerIP().String(),
+			"server_public_key": s.wgEngine.ServerPublicKey(),
+			"server_endpoint":   endpoint,
+			"created_at":        dev.CreatedAt,
+		})
+	}
+
+	deviceDetailHandler := func(prefix string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			name := r.URL.Path[len(prefix):]
+			if r.Method == http.MethodGet {
+				if _, code, err := s.accessCtrl.AuthenticateRequest(r, CapabilityInspect); err != nil {
+					http.Error(w, err.Error(), code)
+					return
+				}
+				if s.wgEngine == nil {
+					http.Error(w, "WireGuard gateway disabled", http.StatusServiceUnavailable)
+					return
+				}
+				dev, ok := s.wgEngine.Store().Get(name)
+				if !ok {
+					http.Error(w, "device not found", http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(dev)
+				return
+			}
+			if r.Method == http.MethodDelete {
+				if _, code, err := s.accessCtrl.AuthenticateRequest(r, CapabilityAdmin); err != nil {
+					http.Error(w, err.Error(), code)
+					return
+				}
+				if s.wgEngine == nil {
+					http.Error(w, "WireGuard gateway disabled", http.StatusServiceUnavailable)
+					return
+				}
+				if err := s.wgEngine.RemoveDevice(name); err != nil {
+					http.Error(w, err.Error(), http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{
+					"status": "removed",
+					"device": name,
+				})
+				return
+			}
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
+
+	deviceRoute := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			devicesListHandler(w, r)
+		} else if r.Method == http.MethodPost {
+			devicesPostHandler(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}
+
+	s.mux.HandleFunc("/devices", deviceRoute)
+	s.mux.HandleFunc("/api/v1/devices", deviceRoute)
+	s.mux.HandleFunc("/devices/", deviceDetailHandler("/devices/"))
+	s.mux.HandleFunc("/api/v1/devices/", deviceDetailHandler("/api/v1/devices/"))
 }
 
 // TLSConfig returns the unified *tls.Config for securing server listeners.
@@ -413,6 +598,9 @@ func (s *Server) Close() error {
 	}
 	s.closed = true
 	close(s.closeCh)
+	if s.wgEngine != nil {
+		_ = s.wgEngine.Close()
+	}
 	if s.accessCtrl != nil {
 		s.accessCtrl.Close()
 	}

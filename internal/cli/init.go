@@ -507,6 +507,12 @@ func configureInitFirewall(reader *bufio.Reader, role, mode string, nonInteract,
 			comment: "Fabric Server Control Plane",
 			purpose: purpose,
 		})
+		ports = append(ports, initPortSpec{
+			port:    51820,
+			proto:   "udp",
+			comment: "Fabric WireGuard Gateway",
+			purpose: "WireGuard Gateway",
+		})
 		if initACMEFlag {
 			ports = append(ports, initPortSpec{
 				port:    80,

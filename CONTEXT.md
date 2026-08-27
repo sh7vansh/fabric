@@ -43,6 +43,9 @@ Fabric is a lightweight remote execution, service discovery, and networking plat
 - **ExecutionSandbox**: A deep isolation module in `internal/agent` providing POSIX credential dropping, environment variable sanitization, and deterministic process group termination.
 - **StreamManager**: A deep connection bridging module in `internal/protocol` encapsulating pooled 32KB memory buffers, configurable idle deadlines, concurrency quotas, half-close TCP socket propagation, and transfer telemetry.
 - **TopologyReconciler**: A deep federation module in `internal/relay` providing 64-bit monotonic generation epochs, deterministic CRC32 state checksums, and delta synchronization.
+- **Device**: A client/consumer endpoint (e.g. iOS, Android, Smart TV) connecting via standard WireGuard to access `.fabric` services and DNS without running a daemon.
+- **WireGuardEngine**: An embedded pure userspace WireGuard subsystem in `fabric-server` (`wireguard-go` + `gvisor/netstack`) enabling zero-root, zero-kernel mobile device connectivity.
+- **IPAMManager**: An in-memory overlay IP allocation manager governing the `100.64.0.0/10` CGNAT range for Threads and Devices.
 
 ---
 
@@ -111,7 +114,12 @@ fabric
 │       ├── restart                         # Restart the thread daemon service
 │       ├── status                          # Inspect thread daemon service status
 │       └── uninstall                       # Remove the thread daemon service
+├── device                                  # Manage WireGuard client devices
+│   ├── ls                                  # List paired client devices and status
+│   ├── inspect <device>                    # Show configuration and telemetry for device
+│   └── rm <device>                         # Revoke device key and reclaim virtual IP
 ├── stitch [flags] [TARGET | CIDR]          # Bootstrap host over SSH or scan subnet into Fabric (--mode=local|remote)
+│   └── device <name>                       # Onboard mobile/TV device via WireGuard QR code & .conf profile
 ├── init [flags]                            # Initialize Fabric functionality (--role=server|thread|both --mode=local|remote)
 ├── agent <action>                          # [Deprecated] Alias for 'fabric thread service'
 ├── version                                 # Print version, build commit, and date
@@ -132,7 +140,9 @@ fabric
 | `fabric thread ls` | List connected threads with uptime, tags, and OS |
 | `fabric thread inspect <thread>` | Detailed thread inspect output (JSON/table) |
 | `fabric thread service <action>` | Manage local `fabric-thread` systemd service unit |
+| `fabric device <ls\|inspect\|rm>` | Manage WireGuard client devices |
 | `fabric stitch <host\|CIDR>` | SSH provision and join machine as a thread (`--mode=local\|remote`) |
+| `fabric stitch device <name>` | Onboard mobile/TV client device via WireGuard QR code & profile |
 | `fabric init` | Initialize Fabric functionality with root privileges (`sudo fabric init --role=server\|thread\|both`) |
 | `fabric agent <action>` | Deprecated alias for `fabric thread service` |
 | `fabric version` | Display version info |

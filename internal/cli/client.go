@@ -19,6 +19,7 @@ import (
 
 	"fabric/internal/pki"
 	"fabric/internal/protocol"
+	"fabric/internal/wireguard"
 
 	"github.com/gorilla/websocket"
 	"golang.org/x/term"
@@ -294,6 +295,102 @@ func (c *Client) RemovePeer(gatewayID string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to remove peer %s: HTTP %s", gatewayID, resp.Status)
+	}
+	return nil
+}
+
+// DeviceRegistration represents the response from registering a WireGuard device.
+type DeviceRegistration struct {
+	Name            string    `json:"name"`
+	PublicKey       string    `json:"public_key"`
+	PresharedKey    string    `json:"preshared_key,omitempty"`
+	VirtualIP       string    `json:"virtual_ip"`
+	AllowedIPs      []string  `json:"allowed_ips"`
+	DNS             string    `json:"dns"`
+	ServerPublicKey string    `json:"server_public_key"`
+	ServerEndpoint  string    `json:"server_endpoint"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+// ListDevices queries the server for all registered WireGuard devices.
+func (c *Client) ListDevices() ([]wireguard.DeviceEntry, error) {
+	resp, err := c.DoHTTP("GET", "/api/v1/devices", nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to list devices: HTTP %s", resp.Status)
+	}
+
+	var devices []wireguard.DeviceEntry
+	if err := json.NewDecoder(resp.Body).Decode(&devices); err != nil {
+		return nil, err
+	}
+	return devices, nil
+}
+
+// GetDevice queries the server for a specific device by name.
+func (c *Client) GetDevice(name string) (*wireguard.DeviceEntry, error) {
+	resp, err := c.DoHTTP("GET", "/api/v1/devices/"+name, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("device '%s' not found", name)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get device %s: HTTP %s", name, resp.Status)
+	}
+
+	var dev wireguard.DeviceEntry
+	if err := json.NewDecoder(resp.Body).Decode(&dev); err != nil {
+		return nil, err
+	}
+	return &dev, nil
+}
+
+// RegisterDevice registers a new WireGuard client device with the server.
+func (c *Client) RegisterDevice(name, pubKey, psk string) (*DeviceRegistration, error) {
+	body := map[string]string{
+		"name":       name,
+		"public_key": pubKey,
+	}
+	if psk != "" {
+		body["preshared_key"] = psk
+	}
+
+	resp, err := c.DoHTTP("POST", "/api/v1/devices", body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBytes, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to register device: HTTP %s (%s)", resp.Status, strings.TrimSpace(string(respBytes)))
+	}
+
+	var reg DeviceRegistration
+	if err := json.NewDecoder(resp.Body).Decode(&reg); err != nil {
+		return nil, err
+	}
+	return &reg, nil
+}
+
+// RemoveDevice removes a registered WireGuard device from the server.
+func (c *Client) RemoveDevice(name string) error {
+	resp, err := c.DoHTTP("DELETE", "/api/v1/devices/"+name, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to remove device %s: HTTP %s", name, resp.Status)
 	}
 	return nil
 }

@@ -27,16 +27,18 @@ type NodeSession struct {
 
 // Config configures the MeshRelay control-plane.
 type Config struct {
-	Domain       string
-	Token        string
-	AdminToken   string
-	PingFreq     time.Duration
-	ServerID     string
-	GatewayID    string
-	Region       string
-	FederationCA string
-	Peers        []string
-	LeafOf       string
+	Domain             string
+	Token              string
+	AdminToken         string
+	PingFreq           time.Duration
+	ServerID           string
+	GatewayID          string
+	Region             string
+	FederationCA       string
+	Peers              []string
+	LeafOf             string
+	OnNodeRegistered   func(meta protocol.NodeMetadata)
+	OnNodeUnregistered func(hostname string)
 }
 
 // Relay is the deep control-plane module managing mesh node registration,
@@ -50,6 +52,9 @@ type Relay struct {
 	closeCh      chan struct{}
 	closed       bool
 	closeMux     sync.Mutex
+
+	onNodeRegistered   func(meta protocol.NodeMetadata)
+	onNodeUnregistered func(hostname string)
 
 	// Federation fields
 	gatewayID    string
@@ -85,17 +90,19 @@ func New(cfg Config) *Relay {
 	adminToken := cfg.AdminToken
 
 	r := &Relay{
-		domain:       domain,
-		token:        cfg.Token,
-		adminToken:   adminToken,
-		nodes:        make(map[string]*NodeSession),
-		closeCh:      make(chan struct{}),
-		gatewayID:    serverID,
-		region:       region,
-		federationCA: cfg.FederationCA,
-		peers:        make(map[string]*GatewayPeerSession),
-		remoteNodes:  make(map[string]RemoteNodeEntry),
-		reconciler:   NewTopologyReconciler(serverID),
+		domain:             domain,
+		token:              cfg.Token,
+		adminToken:         adminToken,
+		nodes:              make(map[string]*NodeSession),
+		closeCh:            make(chan struct{}),
+		onNodeRegistered:   cfg.OnNodeRegistered,
+		onNodeUnregistered: cfg.OnNodeUnregistered,
+		gatewayID:          serverID,
+		region:             region,
+		federationCA:       cfg.FederationCA,
+		peers:              make(map[string]*GatewayPeerSession),
+		remoteNodes:        make(map[string]RemoteNodeEntry),
+		reconciler:         NewTopologyReconciler(serverID),
 	}
 
 	pingFreq := cfg.PingFreq
@@ -415,6 +422,10 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 	r.reconciler.IncrementEpoch()
 	r.mu.Unlock()
 
+	if r.onNodeRegistered != nil {
+		r.onNodeRegistered(meta)
+	}
+
 	go r.BroadcastSync()
 	go r.BroadcastThreadAdvertise([]protocol.NodeMetadata{meta})
 
@@ -428,6 +439,9 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 				r.reconciler.IncrementEpoch()
 			}
 			r.mu.Unlock()
+			if r.onNodeUnregistered != nil {
+				r.onNodeUnregistered(meta.Hostname)
+			}
 			r.BroadcastSync()
 			r.BroadcastThreadWithdraw(meta.Hostname)
 		}()
@@ -444,6 +458,9 @@ func (r *Relay) UnregisterNode(hostname string) {
 		r.reconciler.IncrementEpoch()
 	}
 	r.mu.Unlock()
+	if r.onNodeUnregistered != nil {
+		r.onNodeUnregistered(hostname)
+	}
 	go r.BroadcastSync()
 	go r.BroadcastThreadWithdraw(hostname)
 }

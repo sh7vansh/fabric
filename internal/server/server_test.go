@@ -9,11 +9,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"fabric/internal/pki"
 	"fabric/internal/server"
+	"fabric/internal/wireguard"
 )
 
 func TestServerInProcessTLSEndToEnd(t *testing.T) {
@@ -290,5 +292,118 @@ func TestServerPreUpgradeAccessControlAndRateLimiting(t *testing.T) {
 	}
 	defer conn.Close()
 }
+
+func TestServerDevicesRESTAPI(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "fabric-server-devices-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	caDir := filepath.Join(tmpDir, "ca")
+	devicesPath := filepath.Join(tmpDir, "devices.json")
+	srv, err := server.New(server.Config{
+		Domain:           "fabric.test",
+		Port:             8443,
+		CADir:            caDir,
+		Token:            "cluster-tok",
+		AdminToken:       "admin-tok",
+		WireGuardPort:    0,
+		WireGuardDevices: devicesPath,
+	})
+	if err != nil {
+		t.Fatalf("server.New failed: %v", err)
+	}
+	defer srv.Close()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		_ = srv.ServeTLS(ln)
+	}()
+
+	serverPort := ln.Addr().(*net.TCPAddr).Port
+	caCertPath := filepath.Join(caDir, "ca.crt")
+	tlsCfg, err := pki.BuildMTLSConfig(caCertPath)
+	if err != nil {
+		t.Fatalf("BuildMTLSConfig failed: %v", err)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsCfg,
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	baseURL := fmt.Sprintf("https://127.0.0.1:%d", serverPort)
+
+	// 1. Initial list: should be empty
+	req, _ := http.NewRequest("GET", baseURL+"/api/v1/devices", nil)
+	req.Header.Set("Authorization", "Bearer cluster-tok")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /api/v1/devices failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK on GET /api/v1/devices, got %d", resp.StatusCode)
+	}
+
+	// 2. Register new device: POST /api/v1/devices
+	clientPrivB64, clientPubB64, err := wireguard.GenerateKeypair()
+	if err != nil {
+		t.Fatalf("wireguard.GenerateKeypair failed: %v", err)
+	}
+	_ = clientPrivB64
+	postBody := strings.NewReader(fmt.Sprintf(`{"name":"ipad","public_key":"%s"}`, clientPubB64))
+	reqPost, _ := http.NewRequest("POST", baseURL+"/api/v1/devices", postBody)
+	reqPost.Header.Set("Authorization", "Bearer admin-tok")
+	reqPost.Header.Set("Content-Type", "application/json")
+	respPost, err := client.Do(reqPost)
+	if err != nil {
+		t.Fatalf("POST /api/v1/devices failed: %v", err)
+	}
+	defer respPost.Body.Close()
+	if respPost.StatusCode != http.StatusOK {
+		bodyB, _ := io.ReadAll(respPost.Body)
+		t.Fatalf("expected 200 OK on POST /api/v1/devices, got %d: %s", respPost.StatusCode, string(bodyB))
+	}
+
+	var postResult map[string]interface{}
+	json.NewDecoder(respPost.Body).Decode(&postResult)
+	if postResult["name"] != "ipad" || postResult["virtual_ip"] != "100.64.128.1" {
+		t.Errorf("unexpected post result: %+v", postResult)
+	}
+
+	// 3. Inspect device: GET /api/v1/devices/ipad
+	reqGet, _ := http.NewRequest("GET", baseURL+"/api/v1/devices/ipad", nil)
+	reqGet.Header.Set("Authorization", "Bearer cluster-tok")
+	respGet, err := client.Do(reqGet)
+	if err != nil {
+		t.Fatalf("GET /api/v1/devices/ipad failed: %v", err)
+	}
+	defer respGet.Body.Close()
+	if respGet.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK on GET /api/v1/devices/ipad, got %d", respGet.StatusCode)
+	}
+
+	// 4. Delete device: DELETE /api/v1/devices/ipad
+	reqDel, _ := http.NewRequest("DELETE", baseURL+"/api/v1/devices/ipad", nil)
+	reqDel.Header.Set("Authorization", "Bearer admin-tok")
+	respDel, err := client.Do(reqDel)
+	if err != nil {
+		t.Fatalf("DELETE /api/v1/devices/ipad failed: %v", err)
+	}
+	defer respDel.Body.Close()
+	if respDel.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK on DELETE /api/v1/devices/ipad, got %d", respDel.StatusCode)
+	}
+}
+
 
 

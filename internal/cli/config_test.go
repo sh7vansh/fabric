@@ -13,6 +13,8 @@ func TestLoadConfig(t *testing.T) {
 	tempHome := t.TempDir()
 	os.Setenv("HOME", tempHome)
 	defer os.Unsetenv("HOME")
+	os.Setenv("FABRIC_SYS_CONFIG_DIR", tempHome)
+	defer os.Unsetenv("FABRIC_SYS_CONFIG_DIR")
 
 	// 1. Test Defaults
 	cfg := LoadConfig("", "", "")
