@@ -98,7 +98,7 @@ func (m *IPAMManager) CIDR() string {
 	return m.cidr
 }
 
-// ServerIP returns the Fabric server and WireGuard gateway virtual IP (100.64.0.1).
+// ServerIP returns the Fabric Server virtual IP (100.64.0.1).
 func (m *IPAMManager) ServerIP() net.IP {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -107,7 +107,7 @@ func (m *IPAMManager) ServerIP() net.IP {
 	return out
 }
 
-// AllocateThreadIP allocates or retrieves a virtual IP for a Thread compute node.
+// AllocateThreadIP allocates or retrieves a virtual IP for a Thread.
 func (m *IPAMManager) AllocateThreadIP(hostname string) (net.IP, error) {
 	if hostname == "" {
 		return nil, errors.New("hostname cannot be empty")
@@ -141,7 +141,7 @@ func (m *IPAMManager) AllocateThreadIP(hostname string) (net.IP, error) {
 	return nil, ErrNoIPsAvailable
 }
 
-// ReleaseThreadIP releases the virtual IP assigned to a Thread compute node.
+// ReleaseThreadIP releases the virtual IP assigned to a Thread.
 func (m *IPAMManager) ReleaseThreadIP(hostname string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -151,6 +151,31 @@ func (m *IPAMManager) ReleaseThreadIP(hostname string) {
 		delete(m.ipToHostname, ipInt)
 		delete(m.allocatedIPs, ipInt)
 	}
+}
+
+// ReserveThreadIP explicitly reserves a specific IP for a thread.
+func (m *IPAMManager) ReserveThreadIP(hostname string, ip net.IP) error {
+	v4 := ip.To4()
+	if v4 == nil {
+		return fmt.Errorf("invalid IPv4 address: %v", ip)
+	}
+
+	ipInt := binary.BigEndian.Uint32(v4)
+	if ipInt < m.threadStart || ipInt > m.threadEnd {
+		return ErrInvalidIPRange
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if prevHostname, inUse := m.ipToHostname[ipInt]; inUse && prevHostname != hostname {
+		return ErrIPAlreadyAllocated
+	}
+
+	m.allocatedIPs[ipInt] = true
+	m.hostnameToIP[hostname] = ipInt
+	m.ipToHostname[ipInt] = hostname
+	return nil
 }
 
 // AllocateDeviceIP allocates or retrieves a virtual IP for a client device.

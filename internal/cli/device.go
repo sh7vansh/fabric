@@ -1,7 +1,12 @@
 package cli
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -33,6 +38,7 @@ var (
 	stitchDeviceOutFlag      string
 	stitchDeviceEndpointFlag string
 	stitchDevicePSKFlag      bool
+	stitchDeviceSubnetFlag   string
 )
 
 var deviceCmd = &cobra.Command{
@@ -89,7 +95,6 @@ var deviceInspectCmd = &cobra.Command{
 
 var deviceRmCmd = &cobra.Command{
 	Use:     "rm <device-name>",
-	Aliases: []string{"remove", "revoke", "disconnect"},
 	Short:   "Revoke and remove a WireGuard device",
 	Args:    cobra.ExactArgs(1),
 	Example: `  fabric device rm iphone`,
@@ -133,6 +138,7 @@ func init() {
 	stitchDeviceCmd.Flags().StringVarP(&stitchDeviceOutFlag, "out", "o", "", "Path to write WireGuard .conf file (default <name>.conf)")
 	stitchDeviceCmd.Flags().StringVar(&stitchDeviceEndpointFlag, "endpoint", "", "WireGuard server endpoint override (host:port)")
 	stitchDeviceCmd.Flags().BoolVar(&stitchDevicePSKFlag, "psk", true, "Generate symmetric preshared key for quantum resistance")
+	stitchDeviceCmd.Flags().StringVar(&stitchDeviceSubnetFlag, "subnet", "", "Custom overlay subnet override (e.g. 10.42.0.0/16)")
 
 	rootCmd.AddCommand(deviceCmd)
 	stitchCmd.AddCommand(stitchDeviceCmd)
@@ -201,10 +207,23 @@ func formatBytes(b int64) string {
 
 // GenerateWGConfigString formats standard WireGuard INI configuration.
 func GenerateWGConfigString(clientPrivKey, clientIP, dnsIP, serverPubKey, serverEndpoint, psk string) string {
+	return GenerateWGConfigStringWithSubnet(clientPrivKey, clientIP, dnsIP, serverPubKey, serverEndpoint, psk, "100.64.0.0/10")
+}
+
+// GenerateWGConfigStringWithSubnet formats standard WireGuard INI configuration with custom overlay subnet.
+func GenerateWGConfigStringWithSubnet(clientPrivKey, clientIP, dnsIP, serverPubKey, serverEndpoint, psk, subnet string) string {
+	if subnet == "" {
+		subnet = "100.64.0.0/10"
+	}
+	mask := "10"
+	if parts := strings.Split(subnet, "/"); len(parts) == 2 {
+		mask = parts[1]
+	}
+
 	var sb strings.Builder
 	sb.WriteString("[Interface]\n")
 	sb.WriteString(fmt.Sprintf("PrivateKey = %s\n", clientPrivKey))
-	sb.WriteString(fmt.Sprintf("Address = %s/10\n", clientIP))
+	sb.WriteString(fmt.Sprintf("Address = %s/%s\n", clientIP, mask))
 	if dnsIP != "" {
 		sb.WriteString(fmt.Sprintf("DNS = %s\n", dnsIP))
 	}
@@ -214,12 +233,16 @@ func GenerateWGConfigString(clientPrivKey, clientIP, dnsIP, serverPubKey, server
 		sb.WriteString(fmt.Sprintf("PresharedKey = %s\n", psk))
 	}
 	sb.WriteString(fmt.Sprintf("Endpoint = %s\n", serverEndpoint))
-	sb.WriteString("AllowedIPs = 100.64.0.0/10\n")
+	sb.WriteString(fmt.Sprintf("AllowedIPs = %s\n", subnet))
 	sb.WriteString("PersistentKeepalive = 25\n")
 	return sb.String()
 }
 
 func runStitchDevice(cmd *cobra.Command, args []string) error {
+	defer func() {
+		stitchDeviceSubnetFlag = ""
+	}()
+
 	name := strings.TrimSpace(args[0])
 	if name == "" {
 		return fmt.Errorf("device name cannot be empty")
@@ -250,7 +273,11 @@ func runStitchDevice(cmd *cobra.Command, args []string) error {
 	}
 
 	// 3. Generate WireGuard profile configuration
-	wgConf := GenerateWGConfigString(clientPriv, reg.VirtualIP, reg.DNS, reg.ServerPublicKey, serverEndpoint, psk)
+	subnet := stitchDeviceSubnetFlag
+	if subnet == "" {
+		subnet = "100.64.0.0/10"
+	}
+	wgConf := GenerateWGConfigStringWithSubnet(clientPriv, reg.VirtualIP, reg.DNS, reg.ServerPublicKey, serverEndpoint, psk, subnet)
 
 	outFile := stitchDeviceOutFlag
 	if outFile == "" {
@@ -261,11 +288,16 @@ func runStitchDevice(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save config to %s: %w", outFile, err)
 	}
 
+	mask := "10"
+	if parts := strings.Split(subnet, "/"); len(parts) == 2 {
+		mask = parts[1]
+	}
+
 	out := cmd.OutOrStdout()
 	fmt.Fprintln(out, "\n==================================================")
 	fmt.Fprintf(out, "    Device %q Paired Successfully!\n", name)
 	fmt.Fprintln(out, "==================================================")
-	fmt.Fprintf(out, "Virtual IP:       %s/10\n", reg.VirtualIP)
+	fmt.Fprintf(out, "Virtual IP:       %s/%s\n", reg.VirtualIP, mask)
 	fmt.Fprintf(out, "DNS Gateway:      %s\n", reg.DNS)
 	fmt.Fprintf(out, "Server Endpoint:  %s\n", serverEndpoint)
 	fmt.Fprintf(out, "Config File:      %s\n", outFile)
@@ -297,20 +329,81 @@ func generatePin() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()+100000), nil
 }
 
-func startEphemeralWebPortal(name, pin, confContent, confFilename string) {
+func generateEphemeralTLSCert(ips ...net.IP) (tls.Certificate, error) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	serialNumber, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	validIPs := []net.IP{net.ParseIP("127.0.0.1"), net.IPv6loopback}
+	for _, ip := range ips {
+		if ip != nil {
+			validIPs = append(validIPs, ip)
+		}
+	}
+
+	template := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			CommonName:   "Fabric Ephemeral Pairing Portal",
+			Organization: []string{"Fabric"},
+		},
+		NotBefore:             time.Now().Add(-1 * time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
+		IPAddresses:           validIPs,
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+
+	return tls.Certificate{
+		Certificate: [][]byte{derBytes},
+		PrivateKey:  priv,
+	}, nil
+}
+
+// EphemeralPortal represents a running TLS pairing web portal.
+type EphemeralPortal struct {
+	URL      string
+	Server   *http.Server
+	Listener net.Listener
+	Stop     func()
+}
+
+// StartEphemeralWebPortal spawns a TLS-encrypted ephemeral web portal for onboarding headless/TV devices.
+func StartEphemeralWebPortal(name, pin, confContent, confFilename string) (*EphemeralPortal, error) {
 	ln, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
-		return
+		return nil, fmt.Errorf("failed to bind ephemeral port: %w", err)
 	}
+
 	port := ln.Addr().(*net.TCPAddr).Port
-
 	localIP := getLocalOutboundIP()
-	portalURL := fmt.Sprintf("http://%s:%d/pair/%s", localIP, port, name)
 
-	fmt.Println("\n🌐 Ephemeral Pairing Portal:")
-	fmt.Printf("  URL: %s\n", portalURL)
-	fmt.Printf("  PIN: %s\n", pin)
-	fmt.Println("  (Link expires automatically in 5 minutes)")
+	tlsCert, err := generateEphemeralTLSCert(net.ParseIP(localIP))
+	if err != nil {
+		_ = ln.Close()
+		return nil, fmt.Errorf("failed to generate ephemeral TLS cert: %w", err)
+	}
+
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{tlsCert},
+		MinVersion:   tls.VersionTLS12,
+	}
+	tlsLn := tls.NewListener(ln, tlsConfig)
+
+	portalURL := fmt.Sprintf("https://%s:%d/pair/%s", localIP, port, name)
 
 	pngQR, _ := qrcode.Encode(confContent, qrcode.Medium, 256)
 	pngQRB64 := base64.StdEncoding.EncodeToString(pngQR)
@@ -320,7 +413,7 @@ func startEphemeralWebPortal(name, pin, confContent, confFilename string) {
 	stopPortal := func() {
 		once.Do(func() {
 			_ = srv.Close()
-			_ = ln.Close()
+			_ = tlsLn.Close()
 		})
 	}
 
@@ -361,10 +454,9 @@ button:hover { background: #1d4ed8; }
   <h1>Fabric Device Pairing</h1>
   <p>Scan with WireGuard on <strong>{{.Name}}</strong></p>
   <div class="qr"><img src="data:image/png;base64,{{.QRB64}}" alt="WireGuard QR Code" /></div>
-  <p>Or download profile configuration:</p>
+  <p>Or enter pairing PIN to download configuration:</p>
   <form method="POST">
-    <div class="pin-box">PIN: {{.PIN}}</div>
-    <input type="hidden" name="pin" value="{{.PIN}}" />
+    <input type="text" name="pin" placeholder="Enter 6-digit PIN" maxlength="6" autocomplete="off" required style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 10px; font-size: 18px; text-align: center; color: #f8fafc; letter-spacing: 4px; width: 100%; box-sizing: border-box; margin-bottom: 10px;" />
     <button type="submit">Download {{.Name}}.conf</button>
   </form>
 </div>
@@ -381,7 +473,7 @@ button:hover { background: #1d4ed8; }
 	srv.Handler = mux
 
 	go func() {
-		_ = srv.Serve(ln)
+		_ = srv.Serve(tlsLn)
 	}()
 
 	// Auto-expire after 5 minutes
@@ -389,6 +481,26 @@ button:hover { background: #1d4ed8; }
 		time.Sleep(5 * time.Minute)
 		stopPortal()
 	}()
+
+	return &EphemeralPortal{
+		URL:      portalURL,
+		Server:   srv,
+		Listener: tlsLn,
+		Stop:     stopPortal,
+	}, nil
+}
+
+func startEphemeralWebPortal(name, pin, confContent, confFilename string) {
+	portal, err := StartEphemeralWebPortal(name, pin, confContent, confFilename)
+	if err != nil {
+		fmt.Printf("⚠️ Failed to start ephemeral pairing web portal: %v\n", err)
+		return
+	}
+
+	fmt.Println("\n🌐 Ephemeral Pairing Portal (TLS):")
+	fmt.Printf("  URL: %s\n", portal.URL)
+	fmt.Printf("  PIN: %s\n", pin)
+	fmt.Println("  (Link expires automatically in 5 minutes)")
 }
 
 func getLocalOutboundIP() string {

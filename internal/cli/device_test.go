@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -188,3 +191,142 @@ func TestStitchDeviceCommand(t *testing.T) {
 		t.Errorf("conf file missing AllowedIPs:\n%s", confStr)
 	}
 }
+
+func TestEphemeralWebPortalZeroCleartextHTTPS(t *testing.T) {
+	name := "test-appletv"
+	pin := "789123"
+	conf := "[Interface]\nPrivateKey = testkey\nAddress = 100.64.128.5/10\n"
+	filename := "test-appletv.conf"
+
+	portal, err := StartEphemeralWebPortal(name, pin, conf, filename)
+	if err != nil {
+		t.Fatalf("StartEphemeralWebPortal failed: %v", err)
+	}
+	defer portal.Stop()
+
+	// Invariant: Zero-Cleartext Invariant (Must be https://)
+	if !strings.HasPrefix(portal.URL, "https://") {
+		t.Fatalf("expected https:// URL to satisfy Zero-Cleartext Invariant, got %q", portal.URL)
+	}
+
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: tr, Timeout: 3 * time.Second}
+
+	// 1. GET Portal HTML
+	resp, err := client.Get(portal.URL)
+	if err != nil {
+		t.Fatalf("failed to GET portal URL: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "Fabric Device Pairing") {
+		t.Errorf("HTML page missing expected content: %s", string(body))
+	}
+	if strings.Contains(string(body), `type="hidden" name="pin"`) {
+		t.Errorf("HTML page must not leak pre-filled hidden PIN in form: %s", string(body))
+	}
+	if !strings.Contains(string(body), `name="pin"`) || !strings.Contains(string(body), `type="text"`) {
+		t.Errorf("HTML page must render an interactive text input for PIN: %s", string(body))
+	}
+
+	// 2. POST with invalid PIN
+	postDataInvalid := url.Values{"pin": {"000000"}}
+	respInvalid, err := client.PostForm(portal.URL, postDataInvalid)
+	if err != nil {
+		t.Fatalf("failed to POST invalid PIN: %v", err)
+	}
+	_ = respInvalid.Body.Close()
+	if respInvalid.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401 Unauthorized for bad PIN, got %d", respInvalid.StatusCode)
+	}
+
+	// 3. POST with valid PIN
+	postDataValid := url.Values{"pin": {pin}}
+	respValid, err := client.PostForm(portal.URL, postDataValid)
+	if err != nil {
+		t.Fatalf("failed to POST valid PIN: %v", err)
+	}
+	validBody, _ := io.ReadAll(respValid.Body)
+	_ = respValid.Body.Close()
+	if respValid.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK for valid PIN, got %d", respValid.StatusCode)
+	}
+	if string(validBody) != conf {
+		t.Errorf("expected conf %q, got %q", conf, string(validBody))
+	}
+	disp := respValid.Header.Get("Content-Disposition")
+	if !strings.Contains(disp, filename) {
+		t.Errorf("expected Content-Disposition to contain %q, got %q", filename, disp)
+	}
+}
+
+func TestStitchDeviceWithSubnetFlag(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if (r.URL.Path == "/api/v1/devices" || r.URL.Path == "/devices") && r.Method == http.MethodPost {
+			resp := map[string]interface{}{
+				"status":           "registered",
+				"device_name":      "ipad-pro",
+				"virtual_ip":       "10.42.128.5",
+				"dns_gateway":      "10.42.0.1",
+				"server_public_key": "AbCdEfGhIjKlMnOpQrStUvWxYz1234567890=",
+				"server_endpoint":  "vpn.fabric.io:51820",
+				"subnet":           "10.42.0.0/16",
+			}
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("FABRIC_SYS_CONFIG_DIR", tmpDir)
+	caFile := filepath.Join(tmpDir, "ca.crt")
+	pemBlock := &pem.Block{Type: "CERTIFICATE", Bytes: ts.Certificate().Raw}
+	_ = os.WriteFile(caFile, pem.EncodeToMemory(pemBlock), 0644)
+
+	cfg := &Config{
+		Host:   ts.URL,
+		Token:  "test-token",
+		CACert: caFile,
+	}
+	_ = SaveConfig(cfg)
+
+	outFile := filepath.Join(tmpDir, "ipad-pro.conf")
+	var outBuf bytes.Buffer
+	rootCmd.SetOut(&outBuf)
+	rootCmd.SetArgs([]string{"stitch", "device", "ipad-pro", "--out", outFile, "--web=false", "--subnet", "10.42.0.0/16"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("fabric stitch device --subnet failed: %v", err)
+	}
+
+	confBytes, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("failed to read generated conf file: %v", err)
+	}
+
+	confStr := string(confBytes)
+	if !strings.Contains(confStr, "AllowedIPs = 10.42.0.0/16") {
+		t.Errorf("conf file missing custom AllowedIPs 10.42.0.0/16, got:\n%s", confStr)
+	}
+	if !strings.Contains(confStr, "Address = 10.42.128.5/16") {
+		t.Errorf("conf file missing subnet mask /16 in Address, got:\n%s", confStr)
+	}
+}
+
+func TestDeviceRmCanonicalCommandStrictAliases(t *testing.T) {
+	if len(deviceRmCmd.Aliases) != 0 {
+		t.Errorf("device rm command must adhere to canonical verb invariant (no non-canonical aliases), got: %+v", deviceRmCmd.Aliases)
+	}
+}
+
+
+

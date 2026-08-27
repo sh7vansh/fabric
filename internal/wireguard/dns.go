@@ -5,31 +5,45 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/miekg/dns"
 )
 
 // DNSServer provides an in-memory RFC 1035 DNS server attached directly to the userspace netstack.
 type DNSServer struct {
-	server     *dns.Server
-	packetConn net.PacketConn
-	ipam       *IPAMManager
-	meshDomain string
-	mu         sync.RWMutex
-	closed     bool
+	server      *dns.Server
+	packetConn  net.PacketConn
+	ipam        *IPAMManager
+	meshDomain  string
+	upstreamDNS string
+	dnsClient   *dns.Client
+	mu          sync.RWMutex
+	closed      bool
 }
 
 // NewDNSServer creates and starts an in-memory DNS server listening on the provided virtual PacketConn.
 func NewDNSServer(packetConn net.PacketConn, ipam *IPAMManager, meshDomain string) (*DNSServer, error) {
+	return NewDNSServerWithUpstream(packetConn, ipam, meshDomain, "")
+}
+
+// NewDNSServerWithUpstream creates and starts an in-memory DNS server with recursive upstream forwarding.
+func NewDNSServerWithUpstream(packetConn net.PacketConn, ipam *IPAMManager, meshDomain, upstreamDNS string) (*DNSServer, error) {
 	if meshDomain == "" {
 		meshDomain = "fabric.mesh"
 	}
 	meshDomain = strings.TrimPrefix(meshDomain, ".")
 
+	if upstreamDNS != "" && !strings.Contains(upstreamDNS, ":") {
+		upstreamDNS = upstreamDNS + ":53"
+	}
+
 	s := &DNSServer{
-		packetConn: packetConn,
-		ipam:       ipam,
-		meshDomain: strings.ToLower(meshDomain),
+		packetConn:  packetConn,
+		ipam:        ipam,
+		meshDomain:  strings.ToLower(meshDomain),
+		upstreamDNS: upstreamDNS,
+		dnsClient:   &dns.Client{Timeout: 2 * time.Second},
 	}
 
 	mux := dns.NewServeMux()
@@ -100,6 +114,12 @@ func (s *DNSServer) handleDNSQuery(w dns.ResponseWriter, r *dns.Msg) {
 		}
 
 		if !matchedDomain {
+			if s.upstreamDNS != "" {
+				if upstreamResp, _, err := s.dnsClient.Exchange(r, s.upstreamDNS); err == nil && upstreamResp != nil {
+					_ = w.WriteMsg(upstreamResp)
+					return
+				}
+			}
 			// Non-mesh query -> NameError
 			m.Rcode = dns.RcodeNameError
 			continue
@@ -111,8 +131,8 @@ func (s *DNSServer) handleDNSQuery(w dns.ResponseWriter, r *dns.Msg) {
 			prefix = ""
 		}
 
-		// Handle server/gateway root domain queries: fabric, server.fabric, gateway.fabric
-		if prefix == "" || prefix == "server" || prefix == "gateway" {
+		// Handle server root domain queries: fabric, server.fabric
+		if prefix == "" || prefix == "server" {
 			if q.Qtype == dns.TypeA {
 				m.Answer = append(m.Answer, &dns.A{
 					Hdr: dns.RR_Header{

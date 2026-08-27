@@ -62,6 +62,29 @@ func (b *TCPBridge) ListenPort(port int) error {
 	return nil
 }
 
+// ListenPorts binds virtual TCP listeners on multiple specified ports.
+func (b *TCPBridge) ListenPorts(ports ...int) error {
+	for _, port := range ports {
+		if err := b.ListenPort(port); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ListenRange binds virtual TCP listeners across a contiguous range of ports [startPort, endPort].
+func (b *TCPBridge) ListenRange(startPort, endPort int) error {
+	if startPort <= 0 || endPort > 65535 || startPort > endPort {
+		return fmt.Errorf("invalid port range %d-%d", startPort, endPort)
+	}
+	for port := startPort; port <= endPort; port++ {
+		if err := b.ListenPort(port); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (b *TCPBridge) serveListener(ln net.Listener, port int) {
 	for {
 		conn, err := ln.Accept()
@@ -99,6 +122,12 @@ func (b *TCPBridge) handleInboundStream(clientConn net.Conn, defaultPort int) {
 	}
 
 	hostname, found := b.engine.ipam.LookupHostnameByIP(targetIP)
+	if !found {
+		if devName, devFound := b.engine.ipam.LookupDeviceByIP(targetIP); devFound {
+			hostname = devName
+			found = true
+		}
+	}
 	if !found {
 		return
 	}

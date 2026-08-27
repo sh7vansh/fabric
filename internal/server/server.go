@@ -396,7 +396,7 @@ func (s *Server) registerRoutes() {
 			return
 		}
 		if s.wgEngine == nil {
-			http.Error(w, "WireGuard gateway is disabled", http.StatusServiceUnavailable)
+			http.Error(w, "WireGuard engine is not enabled on this Server", http.StatusServiceUnavailable)
 			return
 		}
 		var body struct {
@@ -451,7 +451,7 @@ func (s *Server) registerRoutes() {
 					return
 				}
 				if s.wgEngine == nil {
-					http.Error(w, "WireGuard gateway disabled", http.StatusServiceUnavailable)
+					http.Error(w, "WireGuard engine is not enabled on this Server", http.StatusServiceUnavailable)
 					return
 				}
 				dev, ok := s.wgEngine.Store().Get(name)
@@ -469,7 +469,7 @@ func (s *Server) registerRoutes() {
 					return
 				}
 				if s.wgEngine == nil {
-					http.Error(w, "WireGuard gateway disabled", http.StatusServiceUnavailable)
+					http.Error(w, "WireGuard engine is not enabled on this Server", http.StatusServiceUnavailable)
 					return
 				}
 				if err := s.wgEngine.RemoveDevice(name); err != nil {

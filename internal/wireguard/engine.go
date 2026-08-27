@@ -127,8 +127,8 @@ func NewEngine(cfg EngineConfig, ipam *IPAMManager, store *DeviceStore, proxyRou
 	}
 
 	localAddresses := []netip.Addr{serverAddr}
-	// Add overlay thread IP range so netstack accepts traffic destined for thread virtual IPs
-	for octet3 := 0; octet3 <= 15; octet3++ {
+	// Add full overlay IP range so netstack accepts traffic for all Threads and Devices (100.64.0.2 - 100.64.255.254)
+	for octet3 := 0; octet3 <= 255; octet3++ {
 		for octet4 := 1; octet4 <= 254; octet4++ {
 			if octet3 == 0 && octet4 == 1 {
 				continue // serverAddr already added

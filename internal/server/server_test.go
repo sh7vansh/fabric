@@ -405,5 +405,74 @@ func TestServerDevicesRESTAPI(t *testing.T) {
 	}
 }
 
+func TestServerDeviceEndpointsDisabledWireGuardErrorConformance(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "fabric-server-test-disabled-wg-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	caDir := filepath.Join(tmpDir, "ca")
+	srv, err := server.New(server.Config{
+		Domain:            "fabric.test",
+		Port:              8443,
+		CADir:             caDir,
+		Token:             "cluster-tok",
+		AdminToken:        "admin-tok",
+		WireGuardDisabled: true,
+	})
+	if err != nil {
+		t.Fatalf("server.New failed: %v", err)
+	}
+	defer srv.Close()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		_ = srv.ServeTLS(ln)
+	}()
+
+	serverPort := ln.Addr().(*net.TCPAddr).Port
+	caCertPath := filepath.Join(caDir, "ca.crt")
+	tlsCfg, err := pki.BuildMTLSConfig(caCertPath)
+	if err != nil {
+		t.Fatalf("BuildMTLSConfig failed: %v", err)
+	}
+
+	baseURL := fmt.Sprintf("https://127.0.0.1:%d", serverPort)
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: tlsCfg,
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	postBody := strings.NewReader(`{"name":"ipad","public_key":"dummy"}`)
+	reqPost, _ := http.NewRequest("POST", baseURL+"/api/v1/devices", postBody)
+	reqPost.Header.Set("Authorization", "Bearer admin-tok")
+	reqPost.Header.Set("Content-Type", "application/json")
+	respPost, err := client.Do(reqPost)
+	if err != nil {
+		t.Fatalf("POST /api/v1/devices failed: %v", err)
+	}
+	defer respPost.Body.Close()
+
+	if respPost.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 Service Unavailable, got %d", respPost.StatusCode)
+	}
+
+	bodyBytes, _ := io.ReadAll(respPost.Body)
+	bodyStr := strings.TrimSpace(string(bodyBytes))
+	expectedError := "WireGuard engine is not enabled on this Server"
+	if bodyStr != expectedError {
+		t.Errorf("expected canonical error %q, got %q", expectedError, bodyStr)
+	}
+}
+
+
 
 
