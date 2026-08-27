@@ -331,22 +331,24 @@ func (t *ThreadDaemon) dialAndServe(ctx context.Context, u *url.URL, sessionID s
 		var syncMsg protocol.ThreadSync
 		if err := json.Unmarshal(env, &syncMsg); err == nil {
 			threadsToSync := syncMsg.Threads
-			if len(threadsToSync) == 0 {
-				threadsToSync = syncMsg.Nodes
+			if len(threadsToSync) > 0 && t.dnsMgr != nil {
+				t.dnsMgr.SyncThreads(threadsToSync, t.cfg.ServerURL)
 			}
-			t.dnsMgr.SyncNodes(threadsToSync, t.cfg.ServerURL)
 		}
 	})
 
 	router.HandleFunc(string(protocol.TypeNodeSync), func(s net.Conn, env []byte) {
 		defer s.Close()
 		var syncMsg protocol.NodeSync
-		if err := json.Unmarshal(env, &syncMsg); err == nil {
-			threadsToSync := syncMsg.Threads
-			if len(threadsToSync) == 0 {
-				threadsToSync = syncMsg.Nodes
-			}
-			t.dnsMgr.SyncNodes(threadsToSync, t.cfg.ServerURL)
+		if err := json.Unmarshal(env, &syncMsg); err != nil {
+			return
+		}
+		threadsToSync := syncMsg.Threads
+		if len(threadsToSync) == 0 {
+			threadsToSync = syncMsg.Nodes
+		}
+		if len(threadsToSync) > 0 && t.dnsMgr != nil {
+			t.dnsMgr.SyncThreads(threadsToSync, t.cfg.ServerURL)
 		}
 	})
 

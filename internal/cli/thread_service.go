@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"fabric/internal/service"
-
 	"github.com/spf13/cobra"
 )
 
@@ -32,8 +30,8 @@ var threadServiceInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install and enable the fabric-thread service",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		mgr := service.NewInitManager()
-		return mgr.InstallService("thread")
+		mgr := GetServiceManager()
+		return mgr.Install("thread", nil)
 	},
 }
 
@@ -41,8 +39,8 @@ var threadServiceUninstallCmd = &cobra.Command{
 	Use:   "uninstall",
 	Short: "Stop, disable, and remove the fabric-thread service",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		mgr := service.NewInitManager()
-		return mgr.UninstallService("thread")
+		mgr := GetServiceManager()
+		return mgr.Uninstall("thread")
 	},
 }
 
@@ -51,7 +49,7 @@ func newThreadServiceActionCmd(action, desc string) *cobra.Command {
 		Use:   action,
 		Short: desc,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mgr := service.NewInitManager()
+			mgr := GetServiceManager()
 			return mgr.HandleAction(action, "thread")
 		},
 	}

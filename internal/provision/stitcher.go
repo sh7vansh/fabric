@@ -3,9 +3,12 @@ package provision
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -14,8 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"io"
-	"net/http"
 
 	"fabric/internal/pki"
 	"fabric/internal/protocol"
@@ -495,8 +496,8 @@ func GenerateStitchScript(opts StitchHostOptions, serverURL string) string {
 		listenAddr = port
 	}
 
-	mgr := service.NewInitManager()
-	return mgr.RenderBootstrapScript(service.BootstrapScriptOptions{
+	renderer := service.NewBootstrapRenderer()
+	return renderer.RenderBootstrapScript(service.BootstrapScriptOptions{
 		ServerURL:     serverURL,
 		SocketURL:     serverURL,
 		ThreadName:    opts.ThreadName,
@@ -521,8 +522,17 @@ type KeyPromptFunc func(target string, availableKeys []string) (string, error)
 // ProgressFunc reports status during batch or multi-stage operations.
 type ProgressFunc func(current, total int, target, msg string)
 
-// DirectProberFunc is a callback that verifies direct mTLS connectivity to an inverted node.
-type DirectProberFunc func(targetAddr, caPath string, timeout time.Duration) error
+// ThreadVerifier is a callback that queries the Server for connected threads.
+type ThreadVerifier func(serverURL, token string) ([]protocol.ThreadMetadata, error)
+
+// NodeVerifierFunc is a backward-compatible alias for ThreadVerifier.
+type NodeVerifierFunc = ThreadVerifier
+
+// DirectProber is a callback that verifies direct mTLS connectivity to a remote thread.
+type DirectProber func(targetAddr, caPath string, timeout time.Duration) error
+
+// DirectProberFunc is a backward-compatible alias for DirectProber.
+type DirectProberFunc = DirectProber
 
 // ProvisionResult stores the outcome of provisioning a target host into the mesh.
 type ProvisionResult struct {
@@ -530,28 +540,29 @@ type ProvisionResult struct {
 	Hostname string
 	Success  bool
 	Error    error
-	Node     *protocol.NodeMetadata
+	Thread   *protocol.ThreadMetadata
+	Node     *protocol.ThreadMetadata
 }
 
-// Provisioner provides an autonomous engine for provisioning remote nodes into the mesh.
+// Provisioner provides an autonomous engine for provisioning remote threads into the Fabric mesh.
 type Provisioner struct {
 	exec       RemoteExecutor
-	verifier   NodeVerifierFunc
-	prober     DirectProberFunc
+	verifier   ThreadVerifier
+	prober     DirectProber
 	keyPrompt  KeyPromptFunc
 	onProgress ProgressFunc
 }
 
 // NewProvisioner creates a new Provisioner.
-func NewProvisioner(exec RemoteExecutor, verifier NodeVerifierFunc) *Provisioner {
+func NewProvisioner(exec RemoteExecutor, verifier ThreadVerifier) *Provisioner {
 	return &Provisioner{
 		exec:     exec,
 		verifier: verifier,
 	}
 }
 
-// WithDirectProber sets a custom direct probe callback for inverted node verification.
-func (p *Provisioner) WithDirectProber(fn DirectProberFunc) *Provisioner {
+// WithDirectProber sets a custom direct probe callback for remote thread verification.
+func (p *Provisioner) WithDirectProber(fn DirectProber) *Provisioner {
 	p.prober = fn
 	return p
 }
@@ -592,16 +603,11 @@ func DiscoverLocalSSHKeys() []string {
 	return keys
 }
 
-// StitchHost is a backward-compatible alias for ExecuteStitchHost.
-func StitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier NodeVerifierFunc, prober ...DirectProberFunc) (*protocol.NodeMetadata, error) {
-	return ExecuteStitchHost(opts, exec, verifier, prober...)
-}
-
-// Provision stitches a single remote target host into the mesh with automatic key retry.
-func (p *Provisioner) Provision(opts StitchHostOptions) (*protocol.NodeMetadata, error) {
+// StitchHost stitches a single remote target host into the mesh with automatic key retry and context cancellation.
+func (p *Provisioner) StitchHost(ctx context.Context, opts StitchHostOptions) (*protocol.ThreadMetadata, error) {
 	opts.Normalize()
-	node, err := ExecuteStitchHost(opts, p.exec, p.verifier, p.prober)
-	if err != nil && strings.Contains(err.Error(), "exit status 255") && p.keyPrompt != nil {
+	thread, err := ExecuteStitchHost(opts, p.exec, p.verifier, p.prober)
+	if err != nil && (strings.Contains(err.Error(), "exit status 255") || strings.Contains(err.Error(), "Permission denied")) && p.keyPrompt != nil {
 		keys := DiscoverLocalSSHKeys()
 		if len(keys) > 0 {
 			chosenKey, promptErr := p.keyPrompt(opts.Target, keys)
@@ -611,11 +617,11 @@ func (p *Provisioner) Provision(opts StitchHostOptions) (*protocol.NodeMetadata,
 			}
 		}
 	}
-	return node, err
+	return thread, err
 }
 
-// ProvisionBatch stitches multiple remote target hosts into the mesh concurrently.
-func (p *Provisioner) ProvisionBatch(targets []StitchHostOptions) ([]ProvisionResult, error) {
+// StitchBatch stitches multiple remote target hosts into the mesh concurrently with context cancellation.
+func (p *Provisioner) StitchBatch(ctx context.Context, targets []StitchHostOptions) ([]ProvisionResult, error) {
 	if len(targets) == 0 {
 		return nil, nil
 	}
@@ -648,24 +654,38 @@ func (p *Provisioner) ProvisionBatch(targets []StitchHostOptions) ([]ProvisionRe
 		go func() {
 			defer wg.Done()
 			for j := range jobs {
+				select {
+				case <-ctx.Done():
+					mu.Lock()
+					results[j.index] = ProvisionResult{
+						Target:  j.opts.Target,
+						Success: false,
+						Error:   ctx.Err(),
+					}
+					mu.Unlock()
+					continue
+				default:
+				}
+
 				mu.Lock()
 				if p.onProgress != nil {
 					p.onProgress(completed+1, len(targets), j.opts.Target, "stitching")
 				}
 				mu.Unlock()
 
-				node, err := p.Provision(j.opts)
+				thread, err := p.StitchHost(ctx, j.opts)
 				res := ProvisionResult{
 					Target: j.opts.Target,
-					Node:   node,
+					Thread: thread,
+					Node:   thread,
 				}
 				if err != nil {
 					res.Success = false
 					res.Error = err
 				} else {
 					res.Success = true
-					if node != nil {
-						res.Hostname = node.Hostname
+					if thread != nil {
+						res.Hostname = thread.Hostname
 					} else {
 						res.Hostname = j.opts.Target
 					}
@@ -689,11 +709,23 @@ func (p *Provisioner) ProvisionBatch(targets []StitchHostOptions) ([]ProvisionRe
 	return results, nil
 }
 
-// NodeVerifierFunc is a callback that queries the Socket for connected nodes.
-type NodeVerifierFunc func(socketURL, token string) ([]protocol.NodeMetadata, error)
+// Provision is a backward-compatible alias for StitchHost without context.
+func (p *Provisioner) Provision(opts StitchHostOptions) (*protocol.ThreadMetadata, error) {
+	return p.StitchHost(context.Background(), opts)
+}
+
+// ProvisionBatch is a backward-compatible alias for StitchBatch without context.
+func (p *Provisioner) ProvisionBatch(targets []StitchHostOptions) ([]ProvisionResult, error) {
+	return p.StitchBatch(context.Background(), targets)
+}
+
+// StitchHost is a backward-compatible alias for ExecuteStitchHost.
+func StitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier ThreadVerifier, prober ...DirectProber) (*protocol.ThreadMetadata, error) {
+	return ExecuteStitchHost(opts, exec, verifier, prober...)
+}
 
 // ExecuteStitchHost performs the full bootstrap and mesh join verification workflow.
-func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier NodeVerifierFunc, prober ...DirectProberFunc) (*protocol.NodeMetadata, error) {
+func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier ThreadVerifier, prober ...DirectProber) (*protocol.ThreadMetadata, error) {
 	opts.Normalize()
 
 	serverURL := opts.ServerURL
@@ -871,8 +903,8 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 				fmt.Printf("[+] Automatically switching remote thread to Remote Mode (:%s)...\n", listenPort)
 			}
 
-			mgr := service.NewInitManager()
-			switchScript := mgr.RenderRemoteSwitchScript(listenPort)
+			renderer := service.NewBootstrapRenderer()
+			switchScript := renderer.RenderRemoteSwitchScript(listenPort)
 			if err := exec.Run(switchScript); err != nil {
 				return nil, fmt.Errorf("failed to switch thread to remote mode: %w", err)
 			}
@@ -887,12 +919,12 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 			if !opts.SilentOutput {
 				fmt.Print(".")
 			}
-			nodes, err := verifier(serverURL, opts.Token)
+			threads, err := verifier(serverURL, opts.Token)
 			if err != nil {
 				continue
 			}
 
-			for _, n := range nodes {
+			for _, n := range threads {
 				remoteHost := n.RemoteIP
 				if h, _, err := net.SplitHostPort(n.RemoteIP); err == nil {
 					remoteHost = h
@@ -908,7 +940,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 	}
 }
 
-func verifyDirectRemoteProbe(proberFn DirectProberFunc, targetProbeAddr, caCertPath, targetHostOnly, listenPort, remoteHostname, remoteOS, remoteArch string, opts StitchHostOptions, isFallback bool) (*protocol.NodeMetadata, error) {
+func verifyDirectRemoteProbe(proberFn DirectProberFunc, targetProbeAddr, caCertPath, targetHostOnly, listenPort, remoteHostname, remoteOS, remoteArch string, opts StitchHostOptions, isFallback bool) (*protocol.ThreadMetadata, error) {
 	prefix := "Direct"
 	if isFallback {
 		prefix = "Fallback direct"
@@ -943,7 +975,7 @@ func verifyDirectRemoteProbe(proberFn DirectProberFunc, targetProbeAddr, caCertP
 		domain = "fabric.mesh"
 	}
 
-	return &protocol.NodeMetadata{
+	return &protocol.ThreadMetadata{
 		ID:          "direct-" + displayHostname,
 		Hostname:    displayHostname,
 		RemoteIP:    targetProbeAddr,

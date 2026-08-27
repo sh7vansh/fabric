@@ -164,3 +164,29 @@ func TestFabricDNSManager_AtomicWriteRecoveryAcrossMounts(t *testing.T) {
 
 	mgr.Teardown()
 }
+
+func TestFabricDNSManagerSyncNodesAlias(t *testing.T) {
+	tempDir := t.TempDir()
+	hostsPath := filepath.Join(tempDir, "hosts")
+	_ = os.WriteFile(hostsPath, []byte("127.0.0.1 localhost\n"), 0644)
+
+	mgr := NewFabricDNSManager("fabric.mesh")
+	mgr.hostsPath = hostsPath
+	mgr.useResolved = false
+
+	nodes := []protocol.ThreadMetadata{
+		{Hostname: "legacy-node"},
+	}
+
+	mgr.SyncNodes(nodes, "http://10.0.0.1:8080")
+
+	data, err := os.ReadFile(hostsPath)
+	if err != nil {
+		t.Fatalf("failed to read hosts file: %v", err)
+	}
+	if !strings.Contains(string(data), "legacy-node.fabric.mesh") {
+		t.Errorf("expected legacy-node in hosts file via SyncNodes alias, got:\n%s", string(data))
+	}
+
+	mgr.Teardown()
+}

@@ -87,6 +87,64 @@ type Config struct {
 	DirectAddress string
 	DirectThreads map[string]DirectThreadEntry
 	ThreadName    string
+	Registry      *ThreadRegistry
+}
+
+func (c *Config) initRegistry() {
+	if c.Registry == nil {
+		c.Registry = NewThreadRegistry()
+		if c.DirectThreads != nil {
+			for k, v := range c.DirectThreads {
+				c.Registry.Set(k, v)
+			}
+		}
+	}
+}
+
+// GetDirectThread retrieves a direct thread by hostname from registry or direct map.
+func (c *Config) GetDirectThread(hostname string) (DirectThreadEntry, bool) {
+	if c == nil {
+		return DirectThreadEntry{}, false
+	}
+	c.initRegistry()
+	return c.Registry.Get(hostname)
+}
+
+// ListDirectThreads returns all registered direct threads.
+func (c *Config) ListDirectThreads() map[string]DirectThreadEntry {
+	if c == nil {
+		return make(map[string]DirectThreadEntry)
+	}
+	c.initRegistry()
+	return c.Registry.List()
+}
+
+// SetDirectThread registers a direct thread in the registry and DirectThreads map.
+func (c *Config) SetDirectThread(name string, entry DirectThreadEntry) {
+	if c == nil {
+		return
+	}
+	c.initRegistry()
+	c.Registry.Set(name, entry)
+	if c.DirectThreads == nil {
+		c.DirectThreads = make(map[string]DirectThreadEntry)
+	}
+	c.DirectThreads[name] = entry
+}
+
+// GetDirectNode is a backward-compatible alias for GetDirectThread.
+func (c *Config) GetDirectNode(hostname string) (DirectNodeEntry, bool) {
+	return c.GetDirectThread(hostname)
+}
+
+// ListDirectNodes is a backward-compatible alias for ListDirectThreads.
+func (c *Config) ListDirectNodes() map[string]DirectNodeEntry {
+	return c.ListDirectThreads()
+}
+
+// SetDirectNode is a backward-compatible alias for SetDirectThread.
+func (c *Config) SetDirectNode(name string, entry DirectNodeEntry) {
+	c.SetDirectThread(name, entry)
 }
 
 type FileConfig struct {
@@ -399,7 +457,7 @@ func RegisterDirectThread(name, address string, tags []string, extra ...string) 
 		Tags:         tags,
 		RegisteredAt: time.Now().UTC(),
 	}
-	cfg.DirectThreads[name] = entry
+	cfg.SetDirectThread(name, entry)
 	return SaveConfig(cfg)
 }
 
@@ -411,13 +469,10 @@ func RegisterDirectNode(name, address string, tags []string, extra ...string) er
 // LookupDirectThread retrieves a registered direct thread from configuration.
 func LookupDirectThread(hostname string) (DirectThreadEntry, bool) {
 	cfg := GetConfig()
-	if cfg == nil || cfg.DirectThreads == nil {
+	if cfg == nil {
 		return DirectThreadEntry{}, false
 	}
-	if entry, ok := cfg.DirectThreads[hostname]; ok {
-		return entry, true
-	}
-	return DirectThreadEntry{}, false
+	return cfg.GetDirectThread(hostname)
 }
 
 // LookupDirectNode is a backward-compatible alias for LookupDirectThread.

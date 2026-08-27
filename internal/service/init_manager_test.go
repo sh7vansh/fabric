@@ -271,4 +271,92 @@ func TestRenderInvertedSwitchScript_FirewallConfiguration(t *testing.T) {
 	}
 }
 
+func TestBootstrapRendererPure(t *testing.T) {
+	renderer := NewBootstrapRenderer()
+	opts := BootstrapScriptOptions{
+		ServerURL:     "wss://server.internal:8443/ws",
+		ThreadName:    "pure-edge",
+		Token:         "pure-tok",
+		Domain:        "pure.mesh",
+		Tags:          []string{"pure", "test"},
+		ThreadPayload: "b64payload",
+		CAPayload:     "b64ca",
+		CertPayload:   "b64cert",
+		KeyPayload:    "b64key",
+		ListenAddr:    ":9443",
+		Mode:          "remote",
+	}
+
+	script := renderer.RenderBootstrapScript(opts)
+	if !strings.Contains(script, "FABRIC_THREAD_NAME=pure-edge") && !strings.Contains(script, "FABRIC_SERVER_URL=wss://server.internal:8443/ws") {
+		// Verify environment payload encoded
+		if !strings.Contains(script, `ENV_B64="`) {
+			t.Errorf("expected ENV_B64 in pure rendered script")
+		}
+	}
+	if !strings.Contains(script, "PAYLOAD=\"b64payload\"") {
+		t.Errorf("expected payload in script")
+	}
+	if !strings.Contains(script, "CA_PAYLOAD=\"b64ca\"") {
+		t.Errorf("expected CA payload in script")
+	}
+
+	switchScript := renderer.RenderRemoteSwitchScript("9443")
+	if !strings.Contains(switchScript, `PORT=":9443"`) {
+		t.Errorf("expected PORT=:9443 in switch script, got %s", switchScript)
+	}
+
+	supervisor := renderer.GenerateSupervisorScript("/run/test.pid", "/etc/test.env", "/bin/test")
+	if !strings.Contains(supervisor, `PIDFILE="/run/test.pid"`) {
+		t.Errorf("expected PIDFILE in supervisor script")
+	}
+}
+
+func TestMemoryServiceAdapterLifecycle(t *testing.T) {
+	var mgr ServiceManager = NewMemoryServiceAdapter()
+
+	// 1. Install
+	err := mgr.Install("thread", ConfigEnv{"FABRIC_TOKEN": "secret-tok"})
+	if err != nil {
+		t.Fatalf("Install failed: %v", err)
+	}
+
+	// 2. Status
+	status, err := mgr.Status("thread")
+	if err != nil {
+		t.Fatalf("Status failed: %v", err)
+	}
+	if !status.Active || !status.Running {
+		t.Errorf("expected service to be active and running, got %+v", status)
+	}
+
+	// 3. Action stop
+	if err := mgr.Stop("thread"); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+	status, _ = mgr.Status("thread")
+	if status.Active {
+		t.Errorf("expected stopped service to not be active")
+	}
+
+	// 4. Action restart
+	if err := mgr.Restart("thread"); err != nil {
+		t.Fatalf("Restart failed: %v", err)
+	}
+	status, _ = mgr.Status("thread")
+	if !status.Active {
+		t.Errorf("expected restarted service to be active")
+	}
+
+	// 5. Uninstall
+	if err := mgr.Uninstall("thread"); err != nil {
+		t.Fatalf("Uninstall failed: %v", err)
+	}
+	status, _ = mgr.Status("thread")
+	if status.Active {
+		t.Errorf("expected uninstalled service to not be active")
+	}
+}
+
+
 

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"fabric/internal/service"
 )
 
 func TestMain(m *testing.M) {
@@ -378,3 +380,66 @@ func TestInitThreadInteractiveRequiresServerAndToken(t *testing.T) {
 		t.Errorf("expected token remote-cluster-tok, got %s", cfg.Token)
 	}
 }
+
+func TestServiceManagerInjectionEndToEnd(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	memAdapter := service.NewMemoryServiceAdapter()
+	SetServiceManager(memAdapter)
+	defer SetServiceManager(nil)
+
+	// 1. Run `fabric thread service install`
+	{
+		var stdoutBuf, stderrBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetErr(&stderrBuf)
+		rootCmd.SetArgs([]string{"thread", "service", "install"})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("thread service install failed: %v", err)
+		}
+		if !memAdapter.Installed["thread"] {
+			t.Errorf("expected thread service to be recorded as installed in memory adapter")
+		}
+	}
+
+	// 2. Run `fabric thread service status`
+	{
+		var stdoutBuf, stderrBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetErr(&stderrBuf)
+		rootCmd.SetArgs([]string{"thread", "service", "status"})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("thread service status failed: %v", err)
+		}
+	}
+
+	// 3. Run `fabric thread service stop`
+	{
+		var stdoutBuf, stderrBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetErr(&stderrBuf)
+		rootCmd.SetArgs([]string{"thread", "service", "stop"})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("thread service stop failed: %v", err)
+		}
+		if memAdapter.State["thread"] != "stopped" {
+			t.Errorf("expected state stopped, got %s", memAdapter.State["thread"])
+		}
+	}
+
+	// 4. Run `fabric uninstall -y`
+	{
+		var stdoutBuf, stderrBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetErr(&stderrBuf)
+		rootCmd.SetArgs([]string{"uninstall", "-y"})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("uninstall failed: %v", err)
+		}
+		if memAdapter.Installed["thread"] {
+			t.Errorf("expected thread service to be uninstalled")
+		}
+	}
+}
+

@@ -1,6 +1,7 @@
 package provision
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -666,5 +667,112 @@ func TestStitchHostWrapper(t *testing.T) {
 		t.Errorf("unexpected node from StitchHost wrapper: %+v", node)
 	}
 }
+
+func TestProvisionerStitchBatchAndContext(t *testing.T) {
+	mockExec := &mockExecutor{}
+	verifier := func(serverURL, token string) ([]protocol.ThreadMetadata, error) {
+		return []protocol.ThreadMetadata{
+			{Hostname: "batch-host-1", Status: "online"},
+			{Hostname: "batch-host-2", Status: "online"},
+		}, nil
+	}
+
+	pro := NewProvisioner(mockExec, verifier)
+	targets := []StitchHostOptions{
+		{Target: "batch-host-1", ServerURL: "wss://srv:8443/ws", Token: "tok", BinaryData: []byte("bin")},
+		{Target: "batch-host-2", ServerURL: "wss://srv:8443/ws", Token: "tok", BinaryData: []byte("bin")},
+	}
+
+	results, err := pro.StitchBatch(context.Background(), targets)
+	if err != nil {
+		t.Fatalf("StitchBatch failed: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	for _, r := range results {
+		if !r.Success {
+			t.Errorf("expected success for %s, got err: %v", r.Target, r.Error)
+		}
+		if r.Thread == nil || r.Node == nil {
+			t.Errorf("expected populated Thread/Node metadata in result")
+		}
+	}
+}
+
+type authFailExecutor struct {
+	mu           sync.Mutex
+	attempts     int
+	usedKey      string
+	failAttempts int
+}
+
+func (a *authFailExecutor) Run(script string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.attempts++
+	if a.attempts <= a.failAttempts {
+		return fmt.Errorf("ssh: exit status 255 (Permission denied (publickey))")
+	}
+	return nil
+}
+
+func (a *authFailExecutor) QueryArch() (string, string, error) {
+	return "linux", "amd64", nil
+}
+
+func TestProvisionerKeyRetryEscalation(t *testing.T) {
+	// Setup temporary fake ~/.ssh directory
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	sshDir := filepath.Join(tmpHome, ".ssh")
+	_ = os.MkdirAll(sshDir, 0700)
+	fakeKeyPath := filepath.Join(sshDir, "id_ed25519")
+	_ = os.WriteFile(fakeKeyPath, []byte("fake-key-bytes"), 0600)
+
+	exec := &authFailExecutor{failAttempts: 1}
+	verifier := func(serverURL, token string) ([]protocol.ThreadMetadata, error) {
+		return []protocol.ThreadMetadata{
+			{Hostname: "retry-target", Status: "online"},
+		}, nil
+	}
+
+	promptCalled := false
+	pro := NewProvisioner(exec, verifier).WithKeyPrompt(func(target string, availableKeys []string) (string, error) {
+		promptCalled = true
+		if len(availableKeys) > 0 {
+			return availableKeys[0], nil
+		}
+		return "", nil
+	})
+
+	opts := StitchHostOptions{
+		Target:     "retry-target",
+		ServerURL:  "wss://srv:8443/ws",
+		ThreadName: "retry-target",
+		Token:      "tok",
+		BinaryData: []byte("bin"),
+	}
+
+	thread, err := pro.StitchHost(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("StitchHost retry failed: %v", err)
+	}
+	if !promptCalled {
+		t.Errorf("expected KeyPrompt callback to be invoked on SSH auth failure")
+	}
+	if thread == nil || thread.Hostname != "retry-target" {
+		t.Errorf("unexpected thread metadata after retry: %+v", thread)
+	}
+}
+
+func TestFormatSSHError_FirewallHint(t *testing.T) {
+	err := fmt.Errorf("exit status 255: Connection refused")
+	formatted := FormatSSHError("192.168.1.100", "2222", err, "Connection refused")
+	if !strings.Contains(formatted.Error(), "port 2222/TCP may be closed, blocked by a firewall") {
+		t.Errorf("expected firewall diagnostic hint in SSH error, got: %v", formatted)
+	}
+}
+
 
 

@@ -2,9 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"fabric/internal/protocol"
@@ -314,6 +316,69 @@ func TestConfigCommand(t *testing.T) {
 		if !strings.Contains(out, "control.fabric.internal") {
 			t.Errorf("expected view to contain control.fabric.internal, got: %s", out)
 		}
+	}
+}
+
+func TestThreadRegistryDetailed(t *testing.T) {
+	reg := NewThreadRegistry()
+	reg.Set("Worker-Alpha", DirectThreadEntry{
+		Address:  "192.168.1.50:8443",
+		Hostname: "worker-alpha",
+		Domain:   "fabric.mesh",
+		Tags:     []string{"gpu", "remote", "prod"},
+	})
+	reg.Set("DB-Node", DirectThreadEntry{
+		Address:  "192.168.1.60:8443",
+		Hostname: "db-1",
+		Domain:   "fabric.mesh",
+		Tags:     []string{"database", "remote"},
+	})
+
+	// 1. Case-insensitive key lookup
+	entry, ok := reg.Get("worker-alpha")
+	if !ok || entry.Address != "192.168.1.50:8443" {
+		t.Fatalf("expected to find worker-alpha case-insensitively, got %v", entry)
+	}
+
+	// 2. FQDN lookup
+	entryFQDN, okFQDN := reg.Get("db-1.fabric.mesh")
+	if !okFQDN || entryFQDN.Address != "192.168.1.60:8443" {
+		t.Fatalf("expected to find db-1 via FQDN, got %v", entryFQDN)
+	}
+
+	// 3. Tag search
+	gpuNodes := reg.FindByTag("gpu")
+	if len(gpuNodes) != 1 || gpuNodes[0].Hostname != "worker-alpha" {
+		t.Errorf("expected 1 gpu node, got %d", len(gpuNodes))
+	}
+	dbNodes := reg.FindByTag("database")
+	if len(dbNodes) != 1 || dbNodes[0].Hostname != "db-1" {
+		t.Errorf("expected 1 db node, got %d", len(dbNodes))
+	}
+
+	// 4. Concurrent access safety
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(2)
+		go func(idx int) {
+			defer wg.Done()
+			reg.Set(fmt.Sprintf("node-%d", idx), DirectThreadEntry{
+				Address:  fmt.Sprintf("10.0.0.%d:8443", idx),
+				Hostname: fmt.Sprintf("node-%d", idx),
+				Tags:     []string{"worker"},
+			})
+		}(i)
+		go func(idx int) {
+			defer wg.Done()
+			_, _ = reg.Get("worker-alpha")
+			_ = reg.FindByTag("worker")
+			_ = reg.List()
+		}(i)
+	}
+	wg.Wait()
+
+	if reg.Len() < 20 {
+		t.Errorf("expected at least 20 entries, got %d", reg.Len())
 	}
 }
 

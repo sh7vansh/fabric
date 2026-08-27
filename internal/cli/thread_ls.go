@@ -84,14 +84,14 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 	}()
 
 	client := NewClient(GetConfig())
-	nodes, err := client.ListNodes()
+	threads, err := client.ListThreads()
 	if err != nil {
 		return err
 	}
 
 	if tagFilterFlag != "" {
-		var filtered []protocol.NodeMetadata
-		for _, n := range nodes {
+		var filtered []protocol.ThreadMetadata
+		for _, n := range threads {
 			for _, t := range n.Tags {
 				if t == tagFilterFlag {
 					filtered = append(filtered, n)
@@ -99,21 +99,21 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 				}
 			}
 		}
-		nodes = filtered
+		threads = filtered
 	}
 
 	if peerFilterFlag != "" {
-		var filtered []protocol.NodeMetadata
-		for _, n := range nodes {
+		var filtered []protocol.ThreadMetadata
+		for _, n := range threads {
 			if strings.EqualFold(n.ServerID, peerFilterFlag) || strings.EqualFold(n.GatewayID, peerFilterFlag) {
 				filtered = append(filtered, n)
 			}
 		}
-		nodes = filtered
+		threads = filtered
 	}
 
 	if quietFlag {
-		for _, n := range nodes {
+		for _, n := range threads {
 			fmt.Fprintln(cmd.OutOrStdout(), n.Hostname)
 		}
 		return nil
@@ -121,7 +121,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 
 	if formatFlag != "" {
 		if strings.ToLower(formatFlag) == "json" {
-			b, err := json.MarshalIndent(nodes, "", "  ")
+			b, err := json.MarshalIndent(threads, "", "  ")
 			if err != nil {
 				return err
 			}
@@ -133,7 +133,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("invalid format template: %w", err)
 		}
-		for _, n := range nodes {
+		for _, n := range threads {
 			if err := tmpl.Execute(cmd.OutOrStdout(), n); err != nil {
 				return err
 			}
@@ -143,7 +143,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 
 	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "THREAD\tHOSTNAME\tPLATFORM\tSERVER\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
-	for _, n := range nodes {
+	for _, n := range threads {
 		uptime := ""
 		if t, err := time.Parse(time.RFC3339, n.ConnectedAt); err == nil {
 			uptime = time.Since(t).Round(time.Second).String()

@@ -36,7 +36,7 @@ func runPort(cmd *cobra.Command, args []string) error {
 
 	if len(args) == 1 {
 		// Inspection mode
-		meta, err := client.GetNode(threadName)
+		meta, err := client.GetThread(threadName)
 		if err != nil {
 			return err
 		}

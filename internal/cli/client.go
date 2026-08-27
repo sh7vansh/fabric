@@ -41,8 +41,9 @@ type ExecOptions struct {
 	Concurrency int
 }
 
-// NodeExecResult stores execution telemetry for a single targeted node.
-type NodeExecResult struct {
+// ThreadExecResult stores execution telemetry for a single targeted thread.
+type ThreadExecResult struct {
+	Thread   string
 	Node     string
 	Success  bool
 	ExitCode string
@@ -50,14 +51,23 @@ type NodeExecResult struct {
 	Error    error
 }
 
-// FleetResult aggregates execution results across all targeted nodes.
-type FleetResult struct {
-	Results        []NodeExecResult
+// NodeExecResult is a backward-compatible alias for ThreadExecResult.
+type NodeExecResult = ThreadExecResult
+
+// FleetThreadResult aggregates execution results across all targeted threads.
+type FleetThreadResult struct {
+	Results        []ThreadExecResult
 	Total          int
 	SucceededCount int
 	FailedCount    int
 	HasFailure     bool
 }
+
+// FleetResult is a backward-compatible alias for FleetThreadResult.
+type FleetResult = FleetThreadResult
+
+// MeshClient is a canonical alias for Client.
+type MeshClient = Client
 
 // LinePrefixedWriter buffers streamed output chunks and prints complete lines prefixed with the node identifier.
 type LinePrefixedWriter struct {
@@ -138,18 +148,9 @@ func (c *Client) DialWebSocketForNode(targetNode string) (*websocket.Conn, error
 		if !strings.Contains(targetHost, "://") {
 			targetHost = "wss://" + targetHost
 		}
-	} else if targetNode != "" && c.Config != nil && c.Config.DirectThreads != nil {
-		if entry, ok := c.Config.DirectThreads[targetNode]; ok && entry.Address != "" {
+	} else if targetNode != "" && c.Config != nil {
+		if entry, ok := c.Config.GetDirectThread(targetNode); ok && entry.Address != "" {
 			targetHost = entry.Address
-		} else {
-			// Check if targetNode matches entry.Hostname or domain suffix
-			for k, entry := range c.Config.DirectThreads {
-				if k == targetNode || entry.Hostname == targetNode ||
-					(entry.Domain != "" && strings.TrimSuffix(targetNode, "."+entry.Domain) == entry.Hostname) {
-					targetHost = entry.Address
-					break
-				}
-			}
 		}
 		if !strings.Contains(targetHost, "://") {
 			targetHost = "wss://" + targetHost
@@ -395,11 +396,11 @@ func (c *Client) RemoveDevice(name string) error {
 	return nil
 }
 
-// ListNodes retrieves metadata for all connected mesh nodes, merging direct inverted nodes.
-func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
-	var nodes []protocol.NodeMetadata
+// ListThreads retrieves metadata for all connected threads in the Fabric, merging direct registered threads.
+func (c *Client) ListThreads() ([]protocol.ThreadMetadata, error) {
+	var threads []protocol.ThreadMetadata
 	var socketErr error
-	var socketNode *protocol.NodeMetadata
+	var socketThread *protocol.ThreadMetadata
 
 	socketHost := "localhost:8443"
 	socketDomain := "fabric.mesh"
@@ -409,16 +410,40 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 		}
 	}
 
-	resp, err := c.DoHTTP("GET", "/nodes", nil)
+	// Try GET /threads first, fallback to GET /nodes on 404
+	resp, err := c.DoHTTP("GET", "/threads", nil)
 	if err == nil {
 		defer resp.Body.Close()
 		if resp.StatusCode == http.StatusOK {
-			_ = json.NewDecoder(resp.Body).Decode(&nodes)
+			_ = json.NewDecoder(resp.Body).Decode(&threads)
+		} else if resp.StatusCode == http.StatusNotFound {
+			// Fallback to /nodes
+			if nResp, nErr := c.DoHTTP("GET", "/nodes", nil); nErr == nil {
+				defer nResp.Body.Close()
+				if nResp.StatusCode == http.StatusOK {
+					_ = json.NewDecoder(nResp.Body).Decode(&threads)
+				} else {
+					socketErr = fmt.Errorf("failed to list threads: HTTP %s", nResp.Status)
+				}
+			} else {
+				socketErr = nErr
+			}
 		} else {
-			socketErr = fmt.Errorf("failed to list nodes: HTTP %s", resp.Status)
+			socketErr = fmt.Errorf("failed to list threads: HTTP %s", resp.Status)
 		}
 	} else {
-		socketErr = err
+		// Try /nodes fallback on connection failure or other error
+		if nResp, nErr := c.DoHTTP("GET", "/nodes", nil); nErr == nil {
+			defer nResp.Body.Close()
+			if nResp.StatusCode == http.StatusOK {
+				_ = json.NewDecoder(nResp.Body).Decode(&threads)
+				socketErr = nil
+			} else {
+				socketErr = fmt.Errorf("failed to list threads: HTTP %s", nResp.Status)
+			}
+		} else {
+			socketErr = err
+		}
 	}
 
 	// Always probe socket /version to check if socket control plane is alive
@@ -433,7 +458,7 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 				socketDomain = verInfo.Domain
 			}
 
-			socketNode = &protocol.NodeMetadata{
+			socketThread = &protocol.ThreadMetadata{
 				ID:          "socket",
 				Hostname:    "socket",
 				RemoteIP:    socketHost,
@@ -445,15 +470,16 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 		}
 	}
 
-	// Merge direct nodes from local configuration
-	if c.Config != nil && len(c.Config.DirectThreads) > 0 {
+	// Merge direct threads from local configuration
+	directThreads := c.Config.ListDirectThreads()
+	if len(directThreads) > 0 {
 		seen := make(map[string]bool)
 		seenAddr := make(map[string]bool)
-		for _, n := range nodes {
+		for _, n := range threads {
 			seen[n.Hostname] = true
 			seenAddr[n.RemoteIP] = true
 		}
-		for name, entry := range c.Config.DirectThreads {
+		for name, entry := range directThreads {
 			// Skip FQDN duplicates in listing if base hostname or address is already listed
 			if strings.Count(name, ".") > 1 && entry.Hostname != "" && name != entry.Hostname {
 				continue
@@ -475,7 +501,7 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 					osName = "linux"
 				}
 
-				nodes = append(nodes, protocol.NodeMetadata{
+				threads = append(threads, protocol.ThreadMetadata{
 					ID:          "direct-" + displayHost,
 					Hostname:    displayHost,
 					RemoteIP:    entry.Address,
@@ -490,9 +516,9 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 		}
 	}
 
-	if socketNode == nil {
+	if socketThread == nil {
 		if c.Config != nil && c.Config.Host != "" && c.Config.Host != "wss://localhost:8443/ws" && c.Config.Host != "localhost:8443" {
-			socketNode = &protocol.NodeMetadata{
+			socketThread = &protocol.ThreadMetadata{
 				ID:       "socket",
 				Hostname: "socket",
 				RemoteIP: socketHost,
@@ -500,8 +526,8 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 				Tags:     []string{"relay"},
 				Domain:   socketDomain,
 			}
-		} else if len(c.Config.DirectThreads) > 0 || detectLocalNode() != nil {
-			socketNode = &protocol.NodeMetadata{
+		} else if len(directThreads) > 0 || detectLocalNode() != nil {
+			socketThread = &protocol.ThreadMetadata{
 				ID:       "socket",
 				Hostname: "socket",
 				RemoteIP: "none (direct mTLS)",
@@ -512,11 +538,11 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 		}
 	}
 
-	if socketErr != nil && len(nodes) == 0 {
+	if socketErr != nil && len(threads) == 0 {
 		if localNode := detectLocalNode(); localNode != nil {
-			res := []protocol.NodeMetadata{}
-			if socketNode != nil {
-				res = append(res, *socketNode)
+			res := []protocol.ThreadMetadata{}
+			if socketThread != nil {
+				res = append(res, *socketThread)
 			}
 			res = append(res, *localNode)
 			return res, nil
@@ -524,14 +550,19 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 		return nil, fmt.Errorf("%w\n  👉 Tip: If you are logged into a managed thread, inspect local daemon status with 'fabric thread service status'. To query the Fabric, run 'fabric ps' from your workstation or pass --server.", socketErr)
 	}
 
-	if socketNode != nil {
-		nodes = append([]protocol.NodeMetadata{*socketNode}, nodes...)
+	if socketThread != nil {
+		threads = append([]protocol.ThreadMetadata{*socketThread}, threads...)
 	}
 
-	return nodes, nil
+	return threads, nil
 }
 
-func detectLocalNode() *protocol.NodeMetadata {
+// ListNodes is a backward-compatible alias for ListThreads.
+func (c *Client) ListNodes() ([]protocol.ThreadMetadata, error) {
+	return c.ListThreads()
+}
+
+func detectLocalNode() *protocol.ThreadMetadata {
 	envCandidates := []string{
 		"/etc/fabric/node.env",
 	}
@@ -578,7 +609,7 @@ func detectLocalNode() *protocol.NodeMetadata {
 				ip = "127.0.0.1"
 			}
 
-			return &protocol.NodeMetadata{
+			return &protocol.ThreadMetadata{
 				ID:          "local-" + hostname,
 				Hostname:    hostname,
 				RemoteIP:    ip,
@@ -594,46 +625,33 @@ func detectLocalNode() *protocol.NodeMetadata {
 	return nil
 }
 
-// GetNode retrieves metadata for a single mesh node from socket or local direct registry.
-func (c *Client) GetNode(hostname string) (*protocol.NodeMetadata, error) {
-	if c.Config != nil && c.Config.DirectThreads != nil {
-		var matchedEntry *DirectThreadEntry
-		displayHost := hostname
-		if entry, ok := c.Config.DirectThreads[hostname]; ok {
-			matchedEntry = &entry
-			if entry.Hostname != "" {
-				displayHost = entry.Hostname
+// GetThread retrieves metadata for a single mesh thread from socket or local direct registry.
+func (c *Client) GetThread(hostname string) (*protocol.ThreadMetadata, error) {
+	if c.Config != nil {
+		if entry, ok := c.Config.GetDirectThread(hostname); ok {
+			displayHost := entry.Hostname
+			if displayHost == "" {
+				displayHost = hostname
 			}
-		} else {
-			for k, entry := range c.Config.DirectThreads {
-				if k == hostname || entry.Hostname == hostname || (entry.Domain != "" && strings.TrimSuffix(hostname, "."+entry.Domain) == entry.Hostname) {
-					matchedEntry = &entry
-					displayHost = entry.Hostname
-					break
-				}
-			}
-		}
-
-		if matchedEntry != nil {
-			domain := matchedEntry.Domain
+			domain := entry.Domain
 			if domain == "" {
 				domain = "fabric.mesh"
 			}
-			osName := matchedEntry.OS
+			osName := entry.OS
 			if osName == "" {
 				osName = "linux"
 			}
 
-			return &protocol.NodeMetadata{
+			return &protocol.ThreadMetadata{
 				ID:          "direct-" + displayHost,
 				Hostname:    displayHost,
-				RemoteIP:    matchedEntry.Address,
+				RemoteIP:    entry.Address,
 				Status:      "online [MODE: remote]",
 				OS:          osName,
-				Arch:        matchedEntry.Arch,
-				Tags:        matchedEntry.Tags,
+				Arch:        entry.Arch,
+				Tags:        entry.Tags,
 				Domain:      domain,
-				ConnectedAt: matchedEntry.RegisteredAt.Format(time.RFC3339),
+				ConnectedAt: entry.RegisteredAt.Format(time.RFC3339),
 			}, nil
 		}
 	}
@@ -646,25 +664,50 @@ func (c *Client) GetNode(hostname string) (*protocol.NodeMetadata, error) {
 		}
 	}
 
-	resp, err := c.DoHTTP("GET", "/nodes/"+hostname, nil)
-	if err != nil {
-		return nil, err
+	// Try GET /threads/{hostname} first
+	resp, err := c.DoHTTP("GET", "/threads/"+hostname, nil)
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			var meta protocol.ThreadMetadata
+			if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+				return nil, err
+			}
+			return &meta, nil
+		} else if resp.StatusCode != http.StatusNotFound {
+			return nil, fmt.Errorf("failed to get thread %s: HTTP %s", hostname, resp.Status)
+		}
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
+	// Fallback to GET /nodes/{hostname}
+	respNode, errNode := c.DoHTTP("GET", "/nodes/"+hostname, nil)
+	if errNode != nil {
+		if err != nil {
+			return nil, err
+		}
+		return nil, errNode
+	}
+	defer respNode.Body.Close()
+
+	if respNode.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("thread '%s' not found", hostname)
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get thread %s: HTTP %s", hostname, resp.Status)
+	if respNode.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get thread %s: HTTP %s", hostname, respNode.Status)
 	}
 
-	var meta protocol.NodeMetadata
-	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
+	var meta protocol.ThreadMetadata
+	if err := json.NewDecoder(respNode.Body).Decode(&meta); err != nil {
 		return nil, err
 	}
 	return &meta, nil
 }
+
+// GetNode is a backward-compatible alias for GetThread.
+func (c *Client) GetNode(hostname string) (*protocol.ThreadMetadata, error) {
+	return c.GetThread(hostname)
+}
+
 
 // Execute opens multiplexed stream(s) and executes a command across single nodes or parallel node fleets.
 func (c *Client) Execute(opts ExecOptions, in io.Reader, out, errOut io.Writer) (*FleetResult, error) {
@@ -676,7 +719,8 @@ func (c *Client) Execute(opts ExecOptions, in io.Reader, out, errOut io.Writer) 
 	err := c.executeSingle(opts, in, out, errOut)
 	duration := time.Since(startTime).Round(time.Millisecond)
 
-	res := NodeExecResult{
+	res := ThreadExecResult{
+		Thread:   opts.Target,
 		Node:     opts.Target,
 		Duration: duration,
 	}
@@ -689,8 +733,8 @@ func (c *Client) Execute(opts ExecOptions, in io.Reader, out, errOut io.Writer) 
 		} else {
 			res.ExitCode = "ERR"
 		}
-		return &FleetResult{
-			Results:        []NodeExecResult{res},
+		return &FleetThreadResult{
+			Results:        []ThreadExecResult{res},
 			Total:          1,
 			SucceededCount: 0,
 			FailedCount:    1,
@@ -700,8 +744,8 @@ func (c *Client) Execute(opts ExecOptions, in io.Reader, out, errOut io.Writer) 
 
 	res.Success = true
 	res.ExitCode = "0"
-	return &FleetResult{
-		Results:        []NodeExecResult{res},
+	return &FleetThreadResult{
+		Results:        []ThreadExecResult{res},
 		Total:          1,
 		SucceededCount: 1,
 		FailedCount:    0,
@@ -709,14 +753,14 @@ func (c *Client) Execute(opts ExecOptions, in io.Reader, out, errOut io.Writer) 
 	}, nil
 }
 
-func (c *Client) executeFleet(opts ExecOptions, out, errOut io.Writer) (*FleetResult, error) {
-	allNodes, err := c.ListNodes()
+func (c *Client) executeFleet(opts ExecOptions, out, errOut io.Writer) (*FleetThreadResult, error) {
+	allThreads, err := c.ListThreads()
 	if err != nil {
 		return nil, fmt.Errorf("failed to query active Fabric threads: %w", err)
 	}
 
-	var targets []protocol.NodeMetadata
-	for _, n := range allNodes {
+	var targets []protocol.ThreadMetadata
+	for _, n := range allThreads {
 		if n.ID == "socket" || strings.Contains(n.Status, "control-plane") || strings.HasPrefix(n.Status, "standalone") {
 			continue
 		}
@@ -747,13 +791,13 @@ func (c *Client) executeFleet(opts ExecOptions, out, errOut io.Writer) (*FleetRe
 	}
 
 	sem := make(chan struct{}, concurrency)
-	results := make([]NodeExecResult, len(targets))
+	results := make([]ThreadExecResult, len(targets))
 	var wg sync.WaitGroup
 	var outMu sync.Mutex
 
 	for i, node := range targets {
 		wg.Add(1)
-		go func(idx int, targetMeta protocol.NodeMetadata) {
+		go func(idx int, targetMeta protocol.ThreadMetadata) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -764,60 +808,69 @@ func (c *Client) executeFleet(opts ExecOptions, out, errOut io.Writer) (*FleetRe
 
 			singleOpts := opts
 			singleOpts.Target = targetMeta.Hostname
-			singleOpts.AllocatePTY = false
-			singleOpts.Interactive = false
 			singleOpts.All = false
 			singleOpts.Tag = ""
 
-			err := c.executeSingle(singleOpts, nil, stdoutWriter, stderrWriter)
+			execErr := c.executeSingle(singleOpts, nil, stdoutWriter, stderrWriter)
 			stdoutWriter.Flush()
 			stderrWriter.Flush()
 
 			duration := time.Since(startTime).Round(time.Millisecond)
-
-			res := NodeExecResult{
+			r := ThreadExecResult{
+				Thread:   targetMeta.Hostname,
 				Node:     targetMeta.Hostname,
 				Duration: duration,
 			}
-
-			if err != nil {
-				res.Success = false
-				res.Error = err
-				if strings.HasPrefix(err.Error(), "exit code ") {
-					res.ExitCode = strings.TrimPrefix(err.Error(), "exit code ")
+			if execErr != nil {
+				r.Success = false
+				r.Error = execErr
+				if strings.HasPrefix(execErr.Error(), "exit code ") {
+					r.ExitCode = strings.TrimPrefix(execErr.Error(), "exit code ")
 				} else {
-					res.ExitCode = "ERR"
+					r.ExitCode = "ERR"
 				}
 			} else {
-				res.Success = true
-				res.ExitCode = "0"
+				r.Success = true
+				r.ExitCode = "0"
 			}
 
-			results[idx] = res
+			outMu.Lock()
+			results[idx] = r
+			outMu.Unlock()
 		}(i, node)
 	}
 
 	wg.Wait()
 
-	fleetRes := &FleetResult{
-		Results: results,
-		Total:   len(results),
-	}
-
+	succeeded := 0
+	failed := 0
+	hasFailure := false
 	for _, r := range results {
 		if r.Success {
-			fleetRes.SucceededCount++
+			succeeded++
 		} else {
-			fleetRes.FailedCount++
-			fleetRes.HasFailure = true
+			failed++
+			hasFailure = true
 		}
 	}
 
-	if fleetRes.HasFailure {
-		return fleetRes, fmt.Errorf("fleet execution failed on 1 or more threads")
+	if hasFailure {
+		return &FleetThreadResult{
+			Results:        results,
+			Total:          len(results),
+			SucceededCount: succeeded,
+			FailedCount:    failed,
+			HasFailure:     true,
+		}, fmt.Errorf("fleet execution failed on 1 or more threads")
 	}
 
-	return fleetRes, nil
+	return &FleetThreadResult{
+		Results:        results,
+		Total:          len(results),
+		SucceededCount: succeeded,
+		FailedCount:    0,
+		HasFailure:     false,
+	}, nil
 }
 
 func (c *Client) executeSingle(opts ExecOptions, in io.Reader, out, errOut io.Writer) error {
