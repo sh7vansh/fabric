@@ -19,11 +19,14 @@ import (
 	"github.com/miekg/dns"
 )
 
-// NodeSession wraps a connected node's multiplexer session and telemetry metadata.
-type NodeSession struct {
+// ThreadSession wraps a connected thread's multiplexer session and telemetry metadata.
+type ThreadSession struct {
 	Mux      *protocol.StreamMultiplexer
-	Metadata protocol.NodeMetadata
+	Metadata protocol.ThreadMetadata
 }
+
+// NodeSession is a backward-compatible alias for ThreadSession.
+type NodeSession = ThreadSession
 
 // Config configures the MeshRelay control-plane.
 type Config struct {
@@ -381,6 +384,11 @@ func (r *Relay) ValidateAdminToken(provided string) bool {
 	return false
 }
 
+// RegisterThread registers an active thread connection, displacing any existing session for the hostname.
+func (r *Relay) RegisterThread(meta protocol.ThreadMetadata, mux *protocol.StreamMultiplexer) (*ThreadSession, error) {
+	return r.RegisterNode(meta, mux)
+}
+
 // RegisterNode registers an active node connection, displacing any existing session for the hostname.
 func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMultiplexer) (*NodeSession, error) {
 	if meta.Hostname == "" {
@@ -463,6 +471,11 @@ func (r *Relay) UnregisterNode(hostname string) {
 	}
 	go r.BroadcastSync()
 	go r.BroadcastThreadWithdraw(hostname)
+}
+
+// GetThread returns a copy of thread metadata if online (local or remote).
+func (r *Relay) GetThread(hostname string) (*protocol.ThreadMetadata, bool) {
+	return r.GetNode(hostname)
 }
 
 // GetNode returns a copy of node metadata if online (local or remote).

@@ -47,21 +47,6 @@ over persistent outbound WebSocket tunnels without requiring inbound ports.`,
   fabric help workflows`,
 }
 
-var nodeCmd = &cobra.Command{
-	Use:     "node",
-	Short:   "Manage fabric nodes (deprecated, use 'fabric thread')",
-	GroupID: "cluster",
-	Example: `  # List all active online nodes
-  fabric node ls
-
-  # Show detailed telemetry and metadata for worker-1
-  fabric node inspect worker-1`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		WarnDeprecated("fabric node", "fabric thread")
-		return runThreadLs(cmd, args)
-	},
-}
-
 func init() {
 	rootCmd.AddGroup(
 		&cobra.Group{
@@ -97,21 +82,12 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&remoteFlag, "remote", "", "Directly connect to a listening thread (e.g. 192.168.1.10:8443)")
 	rootCmd.PersistentFlags().StringVar(&directFlag, "direct", "", "Directly connect to a listening node (deprecated, use --remote)")
 
-	nodeCmd.GroupID = "cluster"
-	setupCmd.GroupID = "system"
-
 	rootCmd.AddCommand(execCmd)
 	rootCmd.AddCommand(psCmd)
 	rootCmd.AddCommand(cpCmd)
 	rootCmd.AddCommand(portCmd)
 	rootCmd.AddCommand(threadCmd)
-	rootCmd.AddCommand(nodeCmd)
 	rootCmd.AddCommand(initCmd)
-	rootCmd.AddCommand(agentCmd)
-	rootCmd.AddCommand(setupCmd)
-
-	nodeCmd.AddCommand(nodeLsCmd)
-	nodeCmd.AddCommand(nodeInspectCmd)
 }
 
 func Execute() {

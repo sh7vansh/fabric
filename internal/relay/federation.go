@@ -19,8 +19,8 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// GatewayPeerSession manages an active multiplexed peering session to another fabric-server peer.
-type GatewayPeerSession struct {
+// ServerPeerSession manages an active multiplexed peering session to another fabric-server peer.
+type ServerPeerSession struct {
 	ServerID     string
 	GatewayID    string
 	Domain       string
@@ -38,8 +38,8 @@ type GatewayPeerSession struct {
 	mu      sync.Mutex
 }
 
-// ServerPeerSession is the canonical name for GatewayPeerSession.
-type ServerPeerSession = GatewayPeerSession
+// GatewayPeerSession is a backward-compatible alias for ServerPeerSession.
+type GatewayPeerSession = ServerPeerSession
 
 // RemoteNodeEntry maps a remote thread hostname to its hosting server.
 type RemoteNodeEntry struct {

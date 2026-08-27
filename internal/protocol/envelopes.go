@@ -54,54 +54,74 @@ type ExecRequest struct {
 	TimeoutSeconds int          `json:"timeout_seconds,omitempty"`
 }
 
-type NodeMetadata struct {
-	ID          string   `json:"id"`
+type ThreadMetadata struct {
+	ID          string   `json:"id,omitempty"`
+	NodeID      string   `json:"node_id,omitempty"`
+	ThreadName  string   `json:"thread_name,omitempty"`
 	SessionID   string   `json:"session_id,omitempty"`
-	Hostname    string   `json:"hostname"`
-	Domain      string   `json:"domain"`
-	OS          string   `json:"os"`
-	Arch        string   `json:"arch"`
-	Version     string   `json:"version"`
-	RemoteIP    string   `json:"remote_ip"`
-	Status      string   `json:"status"` // "online"
-	ConnectedAt string   `json:"connected_at"`
-	LastSeen    string   `json:"last_seen"`
-	Uptime      string   `json:"uptime"`
+	Hostname    string   `json:"hostname,omitempty"`
+	Domain      string   `json:"domain,omitempty"`
+	OS          string   `json:"os,omitempty"`
+	Arch        string   `json:"arch,omitempty"`
+	Version     string   `json:"version,omitempty"`
+	RemoteIP    string   `json:"remote_ip,omitempty"`
+	Status      string   `json:"status,omitempty"` // "online"
+	ConnectedAt string   `json:"connected_at,omitempty"`
+	LastSeen    string   `json:"last_seen,omitempty"`
+	Uptime      string   `json:"uptime,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
 	ServerID    string   `json:"server_id,omitempty"`
 	GatewayID   string   `json:"gateway_id,omitempty"`
 }
 
-type ThreadMetadata = NodeMetadata
+type NodeMetadata = ThreadMetadata
 
-func (n *NodeMetadata) UnmarshalJSON(data []byte) error {
-	type Alias NodeMetadata
+func (t *ThreadMetadata) UnmarshalJSON(data []byte) error {
+	type Alias ThreadMetadata
 	aux := &struct {
 		*Alias
 	}{
-		Alias: (*Alias)(n),
+		Alias: (*Alias)(t),
 	}
 	if err := json.Unmarshal(data, aux); err != nil {
 		return err
 	}
-	if n.ServerID == "" && n.GatewayID != "" {
-		n.ServerID = n.GatewayID
+	if t.Hostname == "" && t.ThreadName != "" {
+		t.Hostname = t.ThreadName
 	}
-	if n.GatewayID == "" && n.ServerID != "" {
-		n.GatewayID = n.ServerID
+	if t.ThreadName == "" && t.Hostname != "" {
+		t.ThreadName = t.Hostname
+	}
+	if t.ID == "" && t.NodeID != "" {
+		t.ID = t.NodeID
+	}
+	if t.ID == "" && t.Hostname != "" {
+		t.ID = t.Hostname
+	}
+	if t.ServerID == "" && t.GatewayID != "" {
+		t.ServerID = t.GatewayID
+	}
+	if t.GatewayID == "" && t.ServerID != "" {
+		t.GatewayID = t.ServerID
 	}
 	return nil
 }
 
-func (n NodeMetadata) MarshalJSON() ([]byte, error) {
-	type Alias NodeMetadata
-	if n.ServerID == "" && n.GatewayID != "" {
-		n.ServerID = n.GatewayID
+func (t ThreadMetadata) MarshalJSON() ([]byte, error) {
+	type Alias ThreadMetadata
+	if t.ThreadName == "" && t.Hostname != "" {
+		t.ThreadName = t.Hostname
 	}
-	if n.GatewayID == "" && n.ServerID != "" {
-		n.GatewayID = n.ServerID
+	if t.Hostname == "" && t.ThreadName != "" {
+		t.Hostname = t.ThreadName
 	}
-	return json.Marshal(Alias(n))
+	if t.ServerID == "" && t.GatewayID != "" {
+		t.ServerID = t.GatewayID
+	}
+	if t.GatewayID == "" && t.ServerID != "" {
+		t.GatewayID = t.ServerID
+	}
+	return json.Marshal(Alias(t))
 }
 
 const (
@@ -109,12 +129,15 @@ const (
 	TypeDNSQuery    EnvelopeType = "dns_query"
 	TypeDNSResponse EnvelopeType = "dns_response"
 	TypeNodeSync    EnvelopeType = "node_sync"
+	TypeThreadSync  EnvelopeType = "thread_sync"
 )
 
 type NodeSync struct {
-	Type  EnvelopeType   `json:"type"` // "node_sync"
-	Nodes []NodeMetadata `json:"nodes"`
+	Type  EnvelopeType     `json:"type"` // "node_sync" or "thread_sync"
+	Nodes []ThreadMetadata `json:"nodes"`
 }
+
+type ThreadSync = NodeSync
 
 type DNSQuery struct {
 	Type      EnvelopeType `json:"type"` // "dns_query"
@@ -238,24 +261,25 @@ func (s ServerHeartbeat) MarshalJSON() ([]byte, error) {
 	return json.Marshal(Alias(s))
 }
 
-type ServerPeerInfo struct {
+type ServerMetadata struct {
 	ServerID     string   `json:"server_id,omitempty"`
 	GatewayID    string   `json:"gateway_id,omitempty"`
-	Domain       string   `json:"domain"`
-	Region       string   `json:"region"`
-	Capabilities []string `json:"capabilities"`
-	Status       string   `json:"status"`
-	Topology     string   `json:"topology"` // "core" or "leaf"
-	RTT          string   `json:"rtt"`
-	ThreadCount  int      `json:"thread_count"`
-	ConnectedAt  string   `json:"connected_at"`
-	Endpoint     string   `json:"endpoint"`
+	Domain       string   `json:"domain,omitempty"`
+	Region       string   `json:"region,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
+	Status       string   `json:"status,omitempty"`
+	Topology     string   `json:"topology,omitempty"` // "core" or "leaf"
+	RTT          string   `json:"rtt,omitempty"`
+	ThreadCount  int      `json:"thread_count,omitempty"`
+	ConnectedAt  string   `json:"connected_at,omitempty"`
+	Endpoint     string   `json:"endpoint,omitempty"`
 }
 
-type GatewayPeerInfo = ServerPeerInfo
+type ServerPeerInfo = ServerMetadata
+type GatewayPeerInfo = ServerMetadata
 
-func (s *ServerPeerInfo) UnmarshalJSON(data []byte) error {
-	type Alias ServerPeerInfo
+func (s *ServerMetadata) UnmarshalJSON(data []byte) error {
+	type Alias ServerMetadata
 	aux := &struct {
 		*Alias
 	}{
@@ -273,8 +297,8 @@ func (s *ServerPeerInfo) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (s ServerPeerInfo) MarshalJSON() ([]byte, error) {
-	type Alias ServerPeerInfo
+func (s ServerMetadata) MarshalJSON() ([]byte, error) {
+	type Alias ServerMetadata
 	if s.ServerID == "" && s.GatewayID != "" {
 		s.ServerID = s.GatewayID
 	}
@@ -285,12 +309,12 @@ func (s ServerPeerInfo) MarshalJSON() ([]byte, error) {
 }
 
 type ThreadAdvertise struct {
-	Type      EnvelopeType   `json:"type"` // "thread_advertise"
-	ServerID  string         `json:"server_id,omitempty"`
-	GatewayID string         `json:"gateway_id,omitempty"`
-	Nodes     []NodeMetadata `json:"nodes"`
-	Epoch     uint64         `json:"epoch,omitempty"`
-	Checksum  uint32         `json:"checksum,omitempty"`
+	Type      EnvelopeType     `json:"type"` // "thread_advertise"
+	ServerID  string           `json:"server_id,omitempty"`
+	GatewayID string           `json:"gateway_id,omitempty"`
+	Nodes     []ThreadMetadata `json:"nodes"`
+	Epoch     uint64           `json:"epoch,omitempty"`
+	Checksum  uint32           `json:"checksum,omitempty"`
 }
 
 func (a *ThreadAdvertise) UnmarshalJSON(data []byte) error {

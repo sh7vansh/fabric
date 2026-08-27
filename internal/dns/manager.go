@@ -1,4 +1,4 @@
-package meshdns
+package dns
 
 import (
 	"encoding/base64"
@@ -34,9 +34,9 @@ type dnsCacheEntry struct {
 
 var hostsFileLock sync.Mutex
 
-// SystemDNSManager is a deep module encapsulating local stub DNS resolution,
+// FabricDNSManager is a deep module encapsulating local stub DNS resolution,
 // systemd-resolved split-DNS configuration, and fallback /etc/hosts manipulation.
-type SystemDNSManager struct {
+type FabricDNSManager struct {
 	domain      string
 	listenAddr  string
 	hostsPath   string
@@ -54,9 +54,12 @@ type SystemDNSManager struct {
 	serverMux     sync.Mutex
 }
 
-// NewSystemDNSManager creates a new SystemDNSManager for the specified mesh domain.
-func NewSystemDNSManager(domain string) *SystemDNSManager {
-	mgr := &SystemDNSManager{
+// SystemDNSManager is a backward-compatible alias for FabricDNSManager.
+type SystemDNSManager = FabricDNSManager
+
+// NewFabricDNSManager creates a new FabricDNSManager for the specified fabric domain.
+func NewFabricDNSManager(domain string) *FabricDNSManager {
+	mgr := &FabricDNSManager{
 		domain:        domain,
 		listenAddr:    defaultListenAddr,
 		hostsPath:     defaultHostsPath,
@@ -69,7 +72,12 @@ func NewSystemDNSManager(domain string) *SystemDNSManager {
 	return mgr
 }
 
-func (m *SystemDNSManager) evictionLoop() {
+// NewSystemDNSManager is a backward-compatible alias constructor for NewFabricDNSManager.
+func NewSystemDNSManager(domain string) *FabricDNSManager {
+	return NewFabricDNSManager(domain)
+}
+
+func (m *FabricDNSManager) evictionLoop() {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -90,14 +98,14 @@ func (m *SystemDNSManager) evictionLoop() {
 }
 
 // SetMultiplexer attaches an active StreamMultiplexer for routing unresolved mesh DNS queries.
-func (m *SystemDNSManager) SetMultiplexer(mux *protocol.StreamMultiplexer) {
+func (m *FabricDNSManager) SetMultiplexer(mux *protocol.StreamMultiplexer) {
 	m.cacheMux.Lock()
 	defer m.cacheMux.Unlock()
 	m.mux = mux
 }
 
 // Start initializes the local UDP DNS listener and configures the OS resolver routing.
-func (m *SystemDNSManager) Start() error {
+func (m *FabricDNSManager) Start() error {
 	// 1. Initial cleanup of previous stale state
 	m.Teardown()
 
@@ -125,15 +133,13 @@ func (m *SystemDNSManager) Start() error {
 	return nil
 }
 
-// SyncNodes updates the host name resolution table when the Socket broadcasts connected nodes.
-func (m *SystemDNSManager) SyncNodes(nodes []protocol.NodeMetadata, socketURL string) {
+// SyncThreads updates the host name resolution table when the server broadcasts connected threads.
+func (m *FabricDNSManager) SyncThreads(threads []protocol.ThreadMetadata, serverURL string) {
 	if m.useResolved {
-		// systemd-resolved dynamically queries the local stub resolver; no static hosts update needed
 		return
 	}
 
-	// Fallback to /etc/hosts block
-	u, err := url.Parse(socketURL)
+	u, err := url.Parse(serverURL)
 	if err != nil {
 		return
 	}
@@ -142,13 +148,23 @@ func (m *SystemDNSManager) SyncNodes(nodes []protocol.NodeMetadata, socketURL st
 	if err != nil || len(ips) == 0 {
 		return
 	}
-	socketIP := ips[0].String()
+	serverIP := ips[0].String()
 
-	m.updateHostsBlock(nodes, socketIP)
+	m.updateHostsBlock(threads, serverIP)
+}
+
+// SyncNodes is a backward-compatible alias for SyncThreads.
+func (m *FabricDNSManager) SyncNodes(nodes []protocol.NodeMetadata, socketURL string) {
+	m.SyncThreads(nodes, socketURL)
+}
+
+// Stop cleanly terminates the DNS manager (alias for Teardown).
+func (m *FabricDNSManager) Stop() {
+	m.Teardown()
 }
 
 // Teardown cleanly reverts OS DNS configuration, cleans /etc/hosts blocks, and shuts down the DNS server.
-func (m *SystemDNSManager) Teardown() {
+func (m *FabricDNSManager) Teardown() {
 	m.cacheLoopOnce.Do(func() {
 		if m.stopCacheLoop != nil {
 			close(m.stopCacheLoop)
@@ -170,8 +186,8 @@ func (m *SystemDNSManager) Teardown() {
 	m.serverMux.Unlock()
 }
 
-// HandleDNSResponse routes a response from the Socket back to waiting DNS query sessions.
-func (m *SystemDNSManager) HandleDNSResponse(resp protocol.DNSResponse) {
+// HandleDNSResponse routes a response from the Server back to waiting DNS query sessions.
+func (m *FabricDNSManager) HandleDNSResponse(resp protocol.DNSResponse) {
 	if resp.RCode == dns.RcodeSuccess && resp.TTL > 0 {
 		replyWire, err := base64.StdEncoding.DecodeString(resp.Data)
 		if err == nil {
@@ -201,7 +217,7 @@ func (m *SystemDNSManager) HandleDNSResponse(resp protocol.DNSResponse) {
 }
 
 // ServeDNS handles incoming RFC 1035 UDP DNS queries on localhost:53535.
-func (m *SystemDNSManager) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
+func (m *FabricDNSManager) ServeDNS(w dns.ResponseWriter, req *dns.Msg) {
 	if len(req.Question) == 0 {
 		dns.HandleFailed(w, req)
 		return
@@ -304,7 +320,7 @@ func HasSystemdResolved() bool {
 	return err == nil
 }
 
-func (m *SystemDNSManager) configureSystemdResolved() error {
+func (m *FabricDNSManager) configureSystemdResolved() error {
 	exec.Command("resolvectl", "revert", "lo").Run()
 
 	cmd := exec.Command("resolvectl", "domain", "lo", "~"+m.domain)
@@ -325,11 +341,11 @@ func (m *SystemDNSManager) configureSystemdResolved() error {
 	return nil
 }
 
-func (m *SystemDNSManager) revertSystemdResolved() {
+func (m *FabricDNSManager) revertSystemdResolved() {
 	exec.Command("resolvectl", "revert", "lo").Run()
 }
 
-func (m *SystemDNSManager) readAndStripHostsBlock() ([]string, error) {
+func (m *FabricDNSManager) readAndStripHostsBlock() ([]string, error) {
 	content, err := os.ReadFile(m.hostsPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -363,14 +379,14 @@ func (m *SystemDNSManager) readAndStripHostsBlock() ([]string, error) {
 	return newLines, nil
 }
 
-func (m *SystemDNSManager) commitHostsLines(lines []string) error {
+func (m *FabricDNSManager) commitHostsLines(lines []string) error {
 	if len(lines) > 0 {
 		lines = append(lines, "")
 	}
 	return m.writeHostsFileAtomic(strings.Join(lines, "\n"))
 }
 
-func (m *SystemDNSManager) updateHostsBlock(nodes []protocol.NodeMetadata, socketIP string) {
+func (m *FabricDNSManager) updateHostsBlock(threads []protocol.ThreadMetadata, serverIP string) {
 	hostsFileLock.Lock()
 	defer hostsFileLock.Unlock()
 
@@ -380,10 +396,14 @@ func (m *SystemDNSManager) updateHostsBlock(nodes []protocol.NodeMetadata, socke
 	}
 
 	newLines = append(newLines, hostsBlockStart)
-	for _, n := range nodes {
+	for _, t := range threads {
+		hostname := t.Hostname
+		if hostname == "" {
+			hostname = t.ThreadName
+		}
 		// Strict RFC 1123 DNS hostname validation to prevent /etc/hosts injection
-		if protocol.IsValidHostname(n.Hostname) {
-			newLines = append(newLines, socketIP+" "+n.Hostname+"."+m.domain)
+		if protocol.IsValidHostname(hostname) {
+			newLines = append(newLines, serverIP+" "+hostname+"."+m.domain)
 		}
 	}
 	newLines = append(newLines, hostsBlockEnd)
@@ -391,7 +411,7 @@ func (m *SystemDNSManager) updateHostsBlock(nodes []protocol.NodeMetadata, socke
 	_ = m.commitHostsLines(newLines)
 }
 
-func (m *SystemDNSManager) cleanHostsBlock() {
+func (m *FabricDNSManager) cleanHostsBlock() {
 	hostsFileLock.Lock()
 	defer hostsFileLock.Unlock()
 
@@ -403,7 +423,7 @@ func (m *SystemDNSManager) cleanHostsBlock() {
 	_ = m.commitHostsLines(newLines)
 }
 
-func (m *SystemDNSManager) writeHostsFileAtomic(content string) error {
+func (m *FabricDNSManager) writeHostsFileAtomic(content string) error {
 	dir := filepath.Dir(m.hostsPath)
 	tmpFile, err := os.CreateTemp(dir, ".hosts.fabric.tmp-*")
 	if err != nil {

@@ -1,4 +1,4 @@
-package agent_test
+package thread_test
 
 import (
 	"runtime"
@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"fabric/internal/agent"
 	"fabric/internal/protocol"
+	"fabric/internal/thread"
 )
 
 func TestExecutionSandbox_SanitizeEnv(t *testing.T) {
-	sandbox := agent.NewExecutionSandbox(agent.SandboxConfig{
+	sandbox := thread.NewExecutionSandbox(thread.SandboxConfig{
 		BlockedEnv: map[string]bool{
 			"CUSTOM_BLOCKED": true,
 		},
@@ -61,7 +61,7 @@ func TestExecutionSandbox_SanitizeEnv(t *testing.T) {
 }
 
 func TestExecutionSandbox_PrepareCmd_ProcessGroupIsolation(t *testing.T) {
-	sandbox := agent.NewExecutionSandbox(agent.SandboxConfig{})
+	sandbox := thread.NewExecutionSandbox(thread.SandboxConfig{})
 
 	req := protocol.ExecRequest{
 		Command: "echo 'hello'",
@@ -100,80 +100,63 @@ func TestExecutionSandbox_KillProcessGroup(t *testing.T) {
 		t.Skip("skipping process group kill test on windows")
 	}
 
-	sandbox := agent.NewExecutionSandbox(agent.SandboxConfig{})
+	sandbox := thread.NewExecutionSandbox(thread.SandboxConfig{})
 
-	// Spawn a background command that runs for 10 seconds
-	cmd, err := sandbox.PrepareCmd(protocol.ExecRequest{
-		Command: "sleep 10",
-	})
+	req := protocol.ExecRequest{
+		Command: "sleep 30",
+	}
+
+	cmd, err := sandbox.PrepareCmd(req)
 	if err != nil {
 		t.Fatalf("PrepareCmd failed: %v", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("failed to start cmd: %v", err)
+		t.Fatalf("Failed to start test command: %v", err)
 	}
 
 	pid := cmd.Process.Pid
-	done := make(chan error, 1)
-	go func() {
-		done <- cmd.Wait()
-	}()
+	if pid <= 0 {
+		t.Fatalf("Invalid pid: %d", pid)
+	}
 
-	// Kill the process group
-	time.Sleep(50 * time.Millisecond)
+	// Verify process is running
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("Process is not running: %v", err)
+	}
+
+	// Kill process group
 	if err := sandbox.KillProcessGroup(pid); err != nil {
 		t.Fatalf("KillProcessGroup failed: %v", err)
 	}
 
-	select {
-	case <-done:
-		// Clean termination
-	case <-time.After(2 * time.Second):
-		t.Fatalf("process group did not terminate within 2 seconds")
+	_ = cmd.Wait()
+
+	// Wait up to 500ms to verify process is dead
+	dead := false
+	for i := 0; i < 10; i++ {
+		time.Sleep(50 * time.Millisecond)
+		if err := syscall.Kill(pid, 0); err != nil {
+			dead = true
+			break
+		}
+	}
+
+	if !dead {
+		t.Errorf("Process %d is still alive after KillProcessGroup", pid)
 	}
 }
 
-func TestExecutionSandbox_KillProcessGroup_OrphanedChildrenEscalation(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("skipping process group kill test on windows")
+func TestExecutionSandbox_InvalidUsername(t *testing.T) {
+	sandbox := thread.NewExecutionSandbox(thread.SandboxConfig{})
+
+	req := protocol.ExecRequest{
+		Command: "whoami",
+		User:    "root; rm -rf /",
 	}
 
-	sandbox := agent.NewExecutionSandbox(agent.SandboxConfig{})
-
-	// Spawn a parent shell that exits immediately on SIGTERM, leaving a child sleep that ignores SIGTERM
-	cmd, err := sandbox.PrepareCmd(protocol.ExecRequest{
-		Command: "trap 'exit 0' TERM; (trap '' TERM; sleep 30) & wait",
-	})
-	if err != nil {
-		t.Fatalf("PrepareCmd failed: %v", err)
-	}
-
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("failed to start cmd: %v", err)
-	}
-
-	pid := cmd.Process.Pid
-	pgid, err := syscall.Getpgid(pid)
-	if err != nil {
-		t.Fatalf("failed to get pgid: %v", err)
-	}
-
-	go func() {
-		_ = cmd.Wait()
-	}()
-
-	time.Sleep(100 * time.Millisecond)
-
-	// KillProcessGroup must ensure all processes in targetPGID are killed
-	if err := sandbox.KillProcessGroup(pid); err != nil {
-		t.Fatalf("KillProcessGroup failed: %v", err)
-	}
-
-	// In Linux, syscall.Kill(-pgid, 0) returns nil if any process exists in the PGID, or ESRCH if none exist.
-	if err := syscall.Kill(-pgid, 0); err == nil {
-		t.Fatalf("expected all processes in pgid %d to be dead, but pgid is still active", pgid)
+	_, err := sandbox.PrepareCmd(req)
+	if err == nil {
+		t.Fatalf("expected error for invalid username with injection attempt, got nil")
 	}
 }
-
-

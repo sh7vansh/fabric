@@ -1,4 +1,4 @@
-package agent
+package thread
 
 import (
 	"bytes"
@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"fabric/internal/meshdns"
+	"fabric/internal/dns"
 	"fabric/internal/protocol"
 )
 
-func TestAgentHandleExecStdout(t *testing.T) {
-	ag := New(Config{
+func TestThreadHandleExecStdout(t *testing.T) {
+	th := New(Config{
 		Domain:   "fabric.mesh",
 		Hostname: "test-node",
 	})
@@ -29,11 +29,11 @@ func TestAgentHandleExecStdout(t *testing.T) {
 	defer clientConn.Close()
 
 	req := protocol.ExecRequest{
-		Command: "echo 'hello fabric agent'",
+		Command: "echo 'hello fabric thread'",
 	}
 	env, _ := json.Marshal(req)
 
-	go ag.HandleExec(serverConn, env)
+	go th.HandleExec(serverConn, env)
 
 	var stdoutCaptured []byte
 	var exitReceived bool
@@ -57,18 +57,18 @@ func TestAgentHandleExecStdout(t *testing.T) {
 	if !exitReceived {
 		t.Errorf("expected exit frame to be received")
 	}
-	if string(stdoutCaptured) != "hello fabric agent\n" {
-		t.Errorf("expected 'hello fabric agent\\n', got %q", string(stdoutCaptured))
+	if string(stdoutCaptured) != "hello fabric thread\n" {
+		t.Errorf("expected 'hello fabric thread\\n', got %q", string(stdoutCaptured))
 	}
 }
 
-func TestAgentHandleCopyDownloadAndUpload(t *testing.T) {
-	ag := New(Config{
+func TestThreadHandleCopyDownloadAndUpload(t *testing.T) {
+	th := New(Config{
 		Domain:   "fabric.mesh",
 		Hostname: "test-node",
 	})
 
-	tmpDir, err := os.MkdirTemp("", "fabric-agent-copy-test-*")
+	tmpDir, err := os.MkdirTemp("", "fabric-thread-copy-test-*")
 	if err != nil {
 		t.Fatalf("MkdirTemp failed: %v", err)
 	}
@@ -77,7 +77,7 @@ func TestAgentHandleCopyDownloadAndUpload(t *testing.T) {
 	testFile := filepath.Join(tmpDir, "sample.txt")
 	_ = os.WriteFile(testFile, []byte("mesh file contents"), 0644)
 
-	// 1. Test Download from Agent
+	// 1. Test Download from Thread
 	sConn1, cConn1 := net.Pipe()
 
 	reqDownload := protocol.CopyRequest{
@@ -86,9 +86,9 @@ func TestAgentHandleCopyDownloadAndUpload(t *testing.T) {
 	}
 	envDownload, _ := json.Marshal(reqDownload)
 
-	go ag.HandleCopy(sConn1, envDownload)
+	go th.HandleCopy(sConn1, envDownload)
 
-	extractDir, _ := os.MkdirTemp("", "fabric-agent-extract-*")
+	extractDir, _ := os.MkdirTemp("", "fabric-thread-extract-*")
 	defer os.RemoveAll(extractDir)
 
 	err = protocol.ExtractTar(cConn1, extractDir)
@@ -103,8 +103,8 @@ func TestAgentHandleCopyDownloadAndUpload(t *testing.T) {
 	}
 }
 
-func TestAgentHandleProxy(t *testing.T) {
-	ag := New(Config{
+func TestThreadHandleProxy(t *testing.T) {
+	th := New(Config{
 		Domain:   "fabric.mesh",
 		Hostname: "test-node",
 	})
@@ -139,7 +139,7 @@ func TestAgentHandleProxy(t *testing.T) {
 	}
 	env, _ := json.Marshal(req)
 
-	go ag.HandleProxy(sConn, env)
+	go th.HandleProxy(sConn, env)
 
 	// Send data through proxy client connection
 	if _, err := cConn.Write([]byte("ping proxy")); err != nil {
@@ -153,10 +153,10 @@ func TestAgentHandleProxy(t *testing.T) {
 	}
 }
 
-// TestAgentHandleProxy_Regression_NoInjectedBytes verifies that HandleProxy never writes
-// any control or response envelope (such as ProxyResponse JSON) before or during proxying.
-func TestAgentHandleProxy_Regression_NoInjectedBytes(t *testing.T) {
-	ag := New(Config{
+// TestThreadHandleProxy_Regression_NoInjectedBytes verifies that HandleProxy never writes
+// any control or response envelope before or during proxying.
+func TestThreadHandleProxy_Regression_NoInjectedBytes(t *testing.T) {
+	th := New(Config{
 		Domain:   "fabric.mesh",
 		Hostname: "test-node",
 	})
@@ -192,10 +192,9 @@ func TestAgentHandleProxy_Regression_NoInjectedBytes(t *testing.T) {
 	}
 	env, _ := json.Marshal(req)
 
-	go ag.HandleProxy(sConn, env)
+	go th.HandleProxy(sConn, env)
 
-	// Invariant: Before the client sends anything, the agent MUST NOT write any bytes (no ProxyResponse JSON).
-	// Set a short read deadline on cConn.
+	// Invariant: Before the client sends anything, the thread daemon MUST NOT write any bytes.
 	_ = cConn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
 	buf := make([]byte, 64)
 	n, readErr := cConn.Read(buf)
@@ -210,7 +209,7 @@ func TestAgentHandleProxy_Regression_NoInjectedBytes(t *testing.T) {
 	_ = cConn.SetReadDeadline(time.Time{})
 
 	// Now send client raw payload
-	clientPayload := []byte{0x16, 0x03, 0x01, 0x00, 0x05, 'H', 'E', 'L', 'L', 'O'} // Simulated TLS-like bytes
+	clientPayload := []byte{0x16, 0x03, 0x01, 0x00, 0x05, 'H', 'E', 'L', 'L', 'O'}
 	if _, err := cConn.Write(clientPayload); err != nil {
 		t.Fatalf("client write failed: %v", err)
 	}
@@ -235,10 +234,10 @@ func TestAgentHandleProxy_Regression_NoInjectedBytes(t *testing.T) {
 	}
 }
 
-// TestAgentHandleProxy_NoProxyResponseOnError verifies that validation and connection failures
-// cleanly close the stream without polluting it with ProxyResponse JSON.
-func TestAgentHandleProxy_NoProxyResponseOnError(t *testing.T) {
-	ag := New(Config{
+// TestThreadHandleProxy_NoProxyResponseOnError verifies that validation and connection failures
+// cleanly close the stream without polluting it.
+func TestThreadHandleProxy_NoProxyResponseOnError(t *testing.T) {
+	th := New(Config{
 		Domain:   "fabric.mesh",
 		Hostname: "test-node",
 	})
@@ -251,12 +250,12 @@ func TestAgentHandleProxy_NoProxyResponseOnError(t *testing.T) {
 	}
 	env1, _ := json.Marshal(req1)
 
-	go ag.HandleProxy(sConn1, env1)
+	go th.HandleProxy(sConn1, env1)
 
 	buf1 := make([]byte, 256)
 	n1, err1 := cConn1.Read(buf1)
 	if n1 > 0 {
-		t.Fatalf("HandleProxy wrote %d bytes on validation error: %q (must not write JSON on data stream)", n1, string(buf1[:n1]))
+		t.Fatalf("HandleProxy wrote %d bytes on validation error: %q", n1, string(buf1[:n1]))
 	}
 	if err1 == nil {
 		t.Fatalf("expected EOF / stream close on validation error")
@@ -267,16 +266,16 @@ func TestAgentHandleProxy_NoProxyResponseOnError(t *testing.T) {
 	sConn2, cConn2 := net.Pipe()
 	req2 := protocol.ProxyRequest{
 		TargetHost: "127.0.0.1",
-		TargetPort: 65432, // Unused port
+		TargetPort: 65432,
 	}
 	env2, _ := json.Marshal(req2)
 
-	go ag.HandleProxy(sConn2, env2)
+	go th.HandleProxy(sConn2, env2)
 
 	buf2 := make([]byte, 256)
 	n2, err2 := cConn2.Read(buf2)
 	if n2 > 0 {
-		t.Fatalf("HandleProxy wrote %d bytes on dial error: %q (must not write JSON on data stream)", n2, string(buf2[:n2]))
+		t.Fatalf("HandleProxy wrote %d bytes on dial error: %q", n2, string(buf2[:n2]))
 	}
 	if err2 == nil {
 		t.Fatalf("expected EOF / stream close on dial error")
@@ -284,10 +283,9 @@ func TestAgentHandleProxy_NoProxyResponseOnError(t *testing.T) {
 	cConn2.Close()
 }
 
-
-func TestAgentContextCancellation(t *testing.T) {
-	dnsMgr := meshdns.NewSystemDNSManager("fabric.mesh")
-	ag := New(Config{
+func TestThreadContextCancellation(t *testing.T) {
+	dnsMgr := dns.NewFabricDNSManager("fabric.mesh")
+	th := New(Config{
 		ServerURL:    "wss://127.0.0.1:65530/ws",
 		Domain:       "fabric.mesh",
 		Token:        "tok",
@@ -301,7 +299,7 @@ func TestAgentContextCancellation(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- ag.Run(ctx)
+		errCh <- th.Run(ctx)
 	}()
 
 	time.Sleep(60 * time.Millisecond)
@@ -313,12 +311,12 @@ func TestAgentContextCancellation(t *testing.T) {
 			t.Errorf("expected nil on context cancel, got %v", err)
 		}
 	case <-time.After(500 * time.Millisecond):
-		t.Errorf("agent did not terminate cleanly on context cancellation")
+		t.Errorf("thread daemon did not terminate cleanly on context cancellation")
 	}
 }
 
-func TestAgentHandleExecUserValidation(t *testing.T) {
-	ag := New(Config{
+func TestThreadHandleExecUserValidation(t *testing.T) {
+	th := New(Config{
 		Domain:   "fabric.mesh",
 		Hostname: "test-node",
 	})
@@ -341,7 +339,7 @@ func TestAgentHandleExecUserValidation(t *testing.T) {
 		}
 		env, _ := json.Marshal(req)
 
-		go ag.HandleExec(sConn, env)
+		go th.HandleExec(sConn, env)
 
 		var stderrCaptured []byte
 		var exitCode string
@@ -369,8 +367,8 @@ func TestAgentHandleExecUserValidation(t *testing.T) {
 	}
 }
 
-func TestAgentCheckOrigin(t *testing.T) {
-	ag := New(Config{
+func TestThreadCheckOrigin(t *testing.T) {
+	th := New(Config{
 		Domain:   "fabric.mesh",
 		Hostname: "test-node",
 	})
@@ -393,7 +391,7 @@ func TestAgentCheckOrigin(t *testing.T) {
 			req.Header.Set("Origin", tc.origin)
 		}
 		req.Host = tc.host
-		if !ag.CheckOrigin(req) {
+		if !th.CheckOrigin(req) {
 			t.Errorf("expected CheckOrigin to accept origin=%q with host=%q", tc.origin, tc.host)
 		}
 	}
@@ -411,14 +409,14 @@ func TestAgentCheckOrigin(t *testing.T) {
 		req, _ := http.NewRequest("GET", "/ws", nil)
 		req.Header.Set("Origin", tc.origin)
 		req.Host = tc.host
-		if ag.CheckOrigin(req) {
+		if th.CheckOrigin(req) {
 			t.Errorf("expected CheckOrigin to reject origin=%q with host=%q", tc.origin, tc.host)
 		}
 	}
 }
 
-func TestAgentHandleExecStreamCloseKillsProcessGroup(t *testing.T) {
-	ag := New(Config{
+func TestThreadHandleExecStreamCloseKillsProcessGroup(t *testing.T) {
+	th := New(Config{
 		Domain:   "fabric.mesh",
 		Hostname: "test-node",
 	})
@@ -433,7 +431,7 @@ func TestAgentHandleExecStreamCloseKillsProcessGroup(t *testing.T) {
 
 	doneCh := make(chan struct{})
 	go func() {
-		ag.HandleExec(serverConn, env)
+		th.HandleExec(serverConn, env)
 		close(doneCh)
 	}()
 
@@ -460,7 +458,7 @@ func TestAgentHandleExecStreamCloseKillsProcessGroup(t *testing.T) {
 	// Close client connection
 	clientConn.Close()
 
-	// Wait for HandleExec to complete and verify process is killed within 1s
+	// Wait for HandleExec to complete and verify process is killed within 1.5s
 	select {
 	case <-doneCh:
 	case <-time.After(1500 * time.Millisecond):
@@ -517,7 +515,7 @@ func TestSanitizeEnv_BlockedKeys(t *testing.T) {
 }
 
 func TestHandleExec_TimeoutBoundary(t *testing.T) {
-	ag := New(Config{
+	th := New(Config{
 		Domain:   "fabric.mesh",
 		Hostname: "test-node",
 	})
@@ -528,18 +526,17 @@ func TestHandleExec_TimeoutBoundary(t *testing.T) {
 
 	req := protocol.ExecRequest{
 		Command:        "sleep 10",
-		TimeoutSeconds: 1, // 1 second timeout
+		TimeoutSeconds: 1,
 	}
 	env, _ := json.Marshal(req)
 
 	doneCh := make(chan struct{})
 	go func() {
-		ag.HandleExec(serverConn, env)
+		th.HandleExec(serverConn, env)
 		close(doneCh)
 	}()
 
 	start := time.Now()
-	// Read frames until exit or EOF
 	var stderrBuf bytes.Buffer
 	for {
 		frame, err := protocol.ReadFrame(clientConn)
@@ -568,8 +565,3 @@ func TestHandleExec_TimeoutBoundary(t *testing.T) {
 		t.Errorf("expected timeout notice in stderr, got: %q", stderrBuf.String())
 	}
 }
-
-
-
-
-

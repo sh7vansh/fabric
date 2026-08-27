@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"fabric/internal/agent"
 	"fabric/internal/pki"
 	"fabric/internal/relay"
+	"fabric/internal/thread"
 )
 
 func getFreePort(t *testing.T) int {
@@ -41,7 +41,7 @@ func waitForPort(addr string, timeout time.Duration) error {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return fmt.Errorf("timeout waiting for %s to become ready", addr)
+	return fmt.Errorf("timeout waiting for port %s", addr)
 }
 
 func setupTestPKI(t *testing.T) (string, func()) {
@@ -62,6 +62,7 @@ func setupTestPKI(t *testing.T) (string, func()) {
 		os.RemoveAll(tmpDir)
 		t.Fatalf("failed to mint client cert: %v", err)
 	}
+
 	var certPEM, keyPEM []byte
 	for _, c := range clientCert.Certificate {
 		certPEM = append(certPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c})...)
@@ -82,7 +83,7 @@ func setupTestPKIAndAgent(t *testing.T, hostname string) (string, string, func()
 	t.Helper()
 	tmpDir, pkiCleanup := setupTestPKI(t)
 
-	ag := agent.New(agent.Config{
+	th := thread.New(thread.Config{
 		ServerURL:     "wss://dummy",
 		ListenAddress: "127.0.0.1:0",
 		Domain:        "fabric.test",
@@ -94,12 +95,12 @@ func setupTestPKIAndAgent(t *testing.T, hostname string) (string, string, func()
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		ag.ListenAndServe(ctx)
+		th.ListenAndServe(ctx)
 	}()
 
 	var listenAddr string
 	for i := 0; i < 50; i++ {
-		addr := ag.ListenAddr()
+		addr := th.ListenAddr()
 		if addr != "" && addr != "127.0.0.1:0" {
 			listenAddr = addr
 			break
@@ -109,7 +110,7 @@ func setupTestPKIAndAgent(t *testing.T, hostname string) (string, string, func()
 	if listenAddr == "" {
 		cancel()
 		pkiCleanup()
-		t.Fatalf("agent listener failed to start")
+		t.Fatalf("thread listener failed to start")
 	}
 
 	cleanup := func() {
@@ -371,13 +372,13 @@ func TestPortForwarding_RelayMode(t *testing.T) {
 	go relayServer.Serve(tlsRelayLn)
 	defer relayServer.Close()
 
-	// 2. Start Agent connected to Relay
-	ag := agent.New(agent.Config{
-		ServerURL:     fmt.Sprintf("wss://127.0.0.1:%d/ws", relayPort),
-		Domain:        "fabric.test",
-		Hostname:      "node-relay-1",
-		Token:         "test-token",
-		CACertPath:    tmpDir + "/ca.crt",
+	// 2. Start Thread connected to Relay
+	th := thread.New(thread.Config{
+		ServerURL:    fmt.Sprintf("wss://127.0.0.1:%d/ws", relayPort),
+		Domain:       "fabric.test",
+		Hostname:     "node-relay-1",
+		Token:        "test-token",
+		CACertPath:   tmpDir + "/ca.crt",
 		InitialRetry: 20 * time.Millisecond,
 		MaxBackoff:   50 * time.Millisecond,
 	})
@@ -386,7 +387,7 @@ func TestPortForwarding_RelayMode(t *testing.T) {
 	defer cancel()
 
 	go func() {
-		ag.Run(ctx)
+		th.Run(ctx)
 	}()
 
 	// Wait for node to register in relay

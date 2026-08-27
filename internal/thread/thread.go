@@ -1,4 +1,4 @@
-package agent
+package thread
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"fabric/internal/meshdns"
+	"fabric/internal/dns"
 	"fabric/internal/pki"
 	"fabric/internal/protocol"
 	"fabric/internal/version"
@@ -36,24 +36,27 @@ type Config struct {
 	Hostname      string
 	Version       string
 	Tags          []string
-	DNSManager    *meshdns.SystemDNSManager
+	DNSManager    *dns.FabricDNSManager
 	Sandbox       ExecutionSandbox
 	MaxBackoff    time.Duration
 	InitialRetry  time.Duration
 }
 
-// Agent is the deep autonomous thread daemon module managing connection resilience,
+// ThreadDaemon is the deep autonomous thread daemon module managing connection resilience,
 // command execution, PTY sessions, file transfers, proxying, and DNS coordination.
-type Agent struct {
+type ThreadDaemon struct {
 	cfg              Config
-	dnsMgr           *meshdns.SystemDNSManager
+	dnsMgr           *dns.FabricDNSManager
 	sandbox          ExecutionSandbox
 	mu               sync.RWMutex
 	actualListenAddr string
 }
 
-// New creates and initializes a new ThreadDaemon Agent.
-func New(cfg Config) *Agent {
+// Agent is a backward-compatible alias for ThreadDaemon.
+type Agent = ThreadDaemon
+
+// New creates and initializes a new ThreadDaemon.
+func New(cfg Config) *ThreadDaemon {
 	if cfg.Domain == "" {
 		cfg.Domain = version.DefaultDomain
 	}
@@ -73,7 +76,7 @@ func New(cfg Config) *Agent {
 
 	dnsMgr := cfg.DNSManager
 	if dnsMgr == nil {
-		dnsMgr = meshdns.NewSystemDNSManager(cfg.Domain)
+		dnsMgr = dns.NewFabricDNSManager(cfg.Domain)
 	}
 
 	sandbox := cfg.Sandbox
@@ -81,7 +84,7 @@ func New(cfg Config) *Agent {
 		sandbox = NewExecutionSandbox(SandboxConfig{})
 	}
 
-	return &Agent{
+	return &ThreadDaemon{
 		cfg:     cfg,
 		dnsMgr:  dnsMgr,
 		sandbox: sandbox,
@@ -89,30 +92,30 @@ func New(cfg Config) *Agent {
 }
 
 // Sandbox returns the attached ExecutionSandbox.
-func (a *Agent) Sandbox() ExecutionSandbox {
-	return a.sandbox
+func (t *ThreadDaemon) Sandbox() ExecutionSandbox {
+	return t.sandbox
 }
 
-// DNSManager returns the attached SystemDNSManager.
-func (a *Agent) DNSManager() *meshdns.SystemDNSManager {
-	return a.dnsMgr
+// DNSManager returns the attached FabricDNSManager.
+func (t *ThreadDaemon) DNSManager() *dns.FabricDNSManager {
+	return t.dnsMgr
 }
 
 // ListenAddr returns the actual bound listening address.
-func (a *Agent) ListenAddr() string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if a.actualListenAddr != "" {
-		return a.actualListenAddr
+func (t *ThreadDaemon) ListenAddr() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.actualListenAddr != "" {
+		return t.actualListenAddr
 	}
-	return a.cfg.ListenAddress
+	return t.cfg.ListenAddress
 }
 
 // CheckOrigin validates the incoming WebSocket request Origin header.
-func (a *Agent) CheckOrigin(req *http.Request) bool {
+func (t *ThreadDaemon) CheckOrigin(req *http.Request) bool {
 	origin := req.Header.Get("Origin")
 	if origin == "" {
-		// Non-browser direct CLI or agent client
+		// Non-browser direct CLI or thread client
 		return true
 	}
 
@@ -134,7 +137,7 @@ func (a *Agent) CheckOrigin(req *http.Request) bool {
 		return true
 	}
 
-	domain := strings.ToLower(a.cfg.Domain)
+	domain := strings.ToLower(t.cfg.Domain)
 	if domain != "" {
 		if originHost == domain || strings.HasSuffix(originHost, "."+domain) {
 			return true
@@ -145,8 +148,8 @@ func (a *Agent) CheckOrigin(req *http.Request) bool {
 }
 
 // ListenAndServe starts a public listener for direct Inverted Connection Mode.
-func (a *Agent) ListenAndServe(ctx context.Context) error {
-	tlsCfg, err := pki.BuildMTLSConfig(a.cfg.CACertPath)
+func (t *ThreadDaemon) ListenAndServe(ctx context.Context) error {
+	tlsCfg, err := pki.BuildMTLSConfig(t.cfg.CACertPath)
 	if err != nil {
 		return fmt.Errorf("failed to build TLS config for listener: %w", err)
 	}
@@ -156,14 +159,14 @@ func (a *Agent) ListenAndServe(ctx context.Context) error {
 	tlsCfg.ClientCAs = tlsCfg.RootCAs
 
 	upgrader := websocket.Upgrader{
-		CheckOrigin: a.CheckOrigin,
+		CheckOrigin: t.CheckOrigin,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			log.Printf("[Agent] Direct listener upgrade error: %v", err)
+			log.Printf("[Thread] Direct listener upgrade error: %v", err)
 			return
 		}
 
@@ -173,23 +176,23 @@ func (a *Agent) ListenAndServe(ctx context.Context) error {
 			return
 		}
 
-		a.dnsMgr.SetMultiplexer(streamMux)
+		t.dnsMgr.SetMultiplexer(streamMux)
 		router := protocol.NewRouter(streamMux.Session)
-		router.HandleFunc(string(protocol.TypeExecRequest), a.HandleExec)
-		router.HandleFunc(string(protocol.TypeCopyRequest), a.HandleCopy)
-		router.HandleFunc(string(protocol.TypeProxyRequest), a.HandleProxy)
-		
+		router.HandleFunc(string(protocol.TypeExecRequest), t.HandleExec)
+		router.HandleFunc(string(protocol.TypeCopyRequest), t.HandleCopy)
+		router.HandleFunc(string(protocol.TypeProxyRequest), t.HandleProxy)
+
 		go router.Accept()
 	})
 
-	ln, err := net.Listen("tcp", a.cfg.ListenAddress)
+	ln, err := net.Listen("tcp", t.cfg.ListenAddress)
 	if err != nil {
 		return fmt.Errorf("failed to bind listen address: %w", err)
 	}
-	a.mu.Lock()
-	a.actualListenAddr = ln.Addr().String()
-	a.mu.Unlock()
-	log.Printf("[Agent] Started direct listener on %s", a.actualListenAddr)
+	t.mu.Lock()
+	t.actualListenAddr = ln.Addr().String()
+	t.mu.Unlock()
+	log.Printf("[Thread] Started direct listener on %s", t.actualListenAddr)
 
 	server := &http.Server{
 		Handler:   mux,
@@ -204,50 +207,50 @@ func (a *Agent) ListenAndServe(ctx context.Context) error {
 	return server.ServeTLS(ln, "", "")
 }
 
-// Run executes the agent daemon loop until the provided context is canceled.
-func (a *Agent) Run(ctx context.Context) error {
-	if err := a.dnsMgr.Start(); err != nil {
-		log.Printf("[Agent] Warning: DNS manager start failed: %v", err)
+// Run executes the thread daemon loop until the provided context is canceled.
+func (t *ThreadDaemon) Run(ctx context.Context) error {
+	if err := t.dnsMgr.Start(); err != nil {
+		log.Printf("[Thread] Warning: DNS manager start failed: %v", err)
 	}
-	defer a.dnsMgr.Teardown()
+	defer t.dnsMgr.Teardown()
 
-	if a.cfg.ListenAddress != "" {
-		if a.cfg.ServerURL == "" || a.cfg.ServerURL == "none" {
-			log.Printf("[Agent] Running in pure Inverted Mode (listener: %s)...", a.cfg.ListenAddress)
-			return a.ListenAndServe(ctx)
+	if t.cfg.ListenAddress != "" {
+		if t.cfg.ServerURL == "" || t.cfg.ServerURL == "none" {
+			log.Printf("[Thread] Running in pure Inverted Mode (listener: %s)...", t.cfg.ListenAddress)
+			return t.ListenAndServe(ctx)
 		}
 		go func() {
-			if err := a.ListenAndServe(ctx); err != nil && err != context.Canceled {
-				log.Printf("[Agent] ListenAndServe error: %v", err)
+			if err := t.ListenAndServe(ctx); err != nil && err != context.Canceled {
+				log.Printf("[Thread] ListenAndServe error: %v", err)
 			}
 		}()
 	}
 
-	u, err := pki.NormalizeURL(a.cfg.ServerURL)
+	u, err := pki.NormalizeURL(t.cfg.ServerURL)
 	if err != nil {
 		return fmt.Errorf("invalid server url: %w", err)
 	}
 
-	backoff := a.cfg.InitialRetry
-	sessionID := fmt.Sprintf("thread-%s-%d", a.cfg.Hostname, time.Now().UnixNano())
+	backoff := t.cfg.InitialRetry
+	sessionID := fmt.Sprintf("thread-%s-%d", t.cfg.Hostname, time.Now().UnixNano())
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("[Agent] Context canceled, stopping agent daemon...")
+			log.Println("[Thread] Context canceled, stopping thread daemon...")
 			return nil
 		default:
 		}
 
-		err := a.dialAndServe(ctx, u, sessionID)
+		err := t.dialAndServe(ctx, u, sessionID)
 		if ctx.Err() != nil {
 			return nil
 		}
 
 		if err != nil {
-			log.Printf("[Agent] Session error: %v. Reconnecting in %v...", err, backoff)
+			log.Printf("[Thread] Session error: %v. Reconnecting in %v...", err, backoff)
 		} else {
-			log.Printf("[Agent] Session closed. Reconnecting in %v...", backoff)
+			log.Printf("[Thread] Session closed. Reconnecting in %v...", backoff)
 		}
 
 		select {
@@ -257,24 +260,24 @@ func (a *Agent) Run(ctx context.Context) error {
 		}
 
 		backoff *= 2
-		if backoff > a.cfg.MaxBackoff {
-			backoff = a.cfg.MaxBackoff
+		if backoff > t.cfg.MaxBackoff {
+			backoff = t.cfg.MaxBackoff
 		}
 	}
 }
 
-func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) error {
-	dialer, err := pki.NewSecureDialer(a.cfg.CACertPath)
+func (t *ThreadDaemon) dialAndServe(ctx context.Context, u *url.URL, sessionID string) error {
+	dialer, err := pki.NewSecureDialer(t.cfg.CACertPath)
 	if err != nil {
 		return fmt.Errorf("failed to build secure TLS dialer: %w", err)
 	}
 
 	header := http.Header{}
-	if a.cfg.Token != "" {
-		header.Add("Authorization", "Bearer "+a.cfg.Token)
+	if t.cfg.Token != "" {
+		header.Add("Authorization", "Bearer "+t.cfg.Token)
 	}
 
-	log.Printf("[Agent] Connecting to %s (mTLS enabled)...", u.String())
+	log.Printf("[Thread] Connecting to %s (mTLS enabled)...", u.String())
 	conn, _, err := dialer.DialContext(ctx, u.String(), header)
 	if err != nil {
 		return err
@@ -291,7 +294,7 @@ func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) 
 		return fmt.Errorf("multiplexer init error: %w", err)
 	}
 
-	a.dnsMgr.SetMultiplexer(mux)
+	t.dnsMgr.SetMultiplexer(mux)
 
 	// Send handshake
 	stream, err := mux.Session.Open()
@@ -302,14 +305,14 @@ func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) 
 	hs := protocol.Handshake{
 		Type:            protocol.TypeHandshake,
 		SessionID:       sessionID,
-		Hostname:        a.cfg.Hostname,
-		Domain:          a.cfg.Domain,
-		Token:           a.cfg.Token,
+		Hostname:        t.cfg.Hostname,
+		Domain:          t.cfg.Domain,
+		Token:           t.cfg.Token,
 		OS:              runtime.GOOS,
 		Arch:            runtime.GOARCH,
-		Version:         a.cfg.Version,
+		Version:         t.cfg.Version,
 		ProtocolVersion: version.ProtocolVersion,
-		Tags:            a.cfg.Tags,
+		Tags:            t.cfg.Tags,
 	}
 
 	b, _ := json.Marshal(hs)
@@ -319,7 +322,7 @@ func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) 
 	}
 	stream.Close()
 
-	log.Println("[Agent] Handshake sent successfully. Listening for router events...")
+	log.Println("[Thread] Handshake sent successfully. Listening for router events...")
 
 	router := protocol.NewRouter(mux.Session)
 
@@ -327,7 +330,7 @@ func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) 
 		defer s.Close()
 		var syncMsg protocol.NodeSync
 		if err := json.Unmarshal(env, &syncMsg); err == nil {
-			a.dnsMgr.SyncNodes(syncMsg.Nodes, a.cfg.ServerURL)
+			t.dnsMgr.SyncNodes(syncMsg.Nodes, t.cfg.ServerURL)
 		}
 	})
 
@@ -335,13 +338,13 @@ func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) 
 		defer s.Close()
 		var resp protocol.DNSResponse
 		if err := json.Unmarshal(env, &resp); err == nil {
-			a.dnsMgr.HandleDNSResponse(resp)
+			t.dnsMgr.HandleDNSResponse(resp)
 		}
 	})
 
-	router.HandleFunc(string(protocol.TypeExecRequest), a.HandleExec)
-	router.HandleFunc(string(protocol.TypeCopyRequest), a.HandleCopy)
-	router.HandleFunc(string(protocol.TypeProxyRequest), a.HandleProxy)
+	router.HandleFunc(string(protocol.TypeExecRequest), t.HandleExec)
+	router.HandleFunc(string(protocol.TypeCopyRequest), t.HandleCopy)
+	router.HandleFunc(string(protocol.TypeProxyRequest), t.HandleProxy)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -358,7 +361,7 @@ func (a *Agent) dialAndServe(ctx context.Context, u *url.URL, sessionID string) 
 }
 
 // HandleExec executes an incoming command or interactive PTY session and streams stdio frames.
-func (a *Agent) HandleExec(stream net.Conn, env []byte) {
+func (t *ThreadDaemon) HandleExec(stream net.Conn, env []byte) {
 	defer stream.Close()
 
 	var req protocol.ExecRequest
@@ -366,7 +369,7 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 		return
 	}
 
-	cmd, err := a.sandbox.PrepareCmd(req)
+	cmd, err := t.sandbox.PrepareCmd(req)
 	if err != nil {
 		protocol.WriteFrame(stream, protocol.StreamStderr, []byte(fmt.Sprintf("%v\n", err)))
 		protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
@@ -382,7 +385,7 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 			if req.TimeoutSeconds > 0 {
 				timer := time.AfterFunc(time.Duration(req.TimeoutSeconds)*time.Second, func() {
 					if cmd.Process != nil {
-						_ = a.sandbox.KillProcessGroup(cmd.Process.Pid)
+						_ = t.sandbox.KillProcessGroup(cmd.Process.Pid)
 					}
 				})
 				defer timer.Stop()
@@ -403,7 +406,7 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 			pid := procPid
 			procMu.Unlock()
 			if pid > 0 {
-				_ = a.sandbox.KillProcessGroup(pid)
+				_ = t.sandbox.KillProcessGroup(pid)
 			}
 		})
 	}
@@ -559,7 +562,7 @@ func (a *Agent) HandleExec(stream net.Conn, env []byte) {
 }
 
 // HandleCopy handles tar streaming upload or download requests.
-func (a *Agent) HandleCopy(stream net.Conn, env []byte) {
+func (t *ThreadDaemon) HandleCopy(stream net.Conn, env []byte) {
 	defer stream.Close()
 
 	var req protocol.CopyRequest
@@ -569,21 +572,21 @@ func (a *Agent) HandleCopy(stream net.Conn, env []byte) {
 
 	if req.Direction == "download" {
 		if err := protocol.CreateTar(stream, req.RemotePath); err != nil {
-			log.Println("[Agent] Error creating tar for download:", err)
+			log.Println("[Thread] Error creating tar for download:", err)
 		}
 	} else if req.Direction == "upload" {
 		if err := protocol.ValidateDestinationPath(req.RemotePath); err != nil {
-			log.Printf("[Agent] Blocked upload to restricted destination %q: %v\n", req.RemotePath, err)
+			log.Printf("[Thread] Blocked upload to restricted destination %q: %v\n", req.RemotePath, err)
 			return
 		}
 		if err := protocol.ExtractTar(stream, req.RemotePath); err != nil {
-			log.Println("[Agent] Error extracting tar for upload:", err)
+			log.Println("[Thread] Error extracting tar for upload:", err)
 		}
 	}
 }
 
 // HandleProxy validates destination and proxies incoming TCP traffic.
-func (a *Agent) HandleProxy(stream net.Conn, env []byte) {
+func (t *ThreadDaemon) HandleProxy(stream net.Conn, env []byte) {
 	defer stream.Close()
 
 	var req protocol.ProxyRequest
@@ -593,17 +596,16 @@ func (a *Agent) HandleProxy(stream net.Conn, env []byte) {
 
 	targetAddr, err := protocol.ValidateProxyDestination(req.TargetHost, req.TargetPort)
 	if err != nil {
-		log.Println("[Agent] Blocked proxy request:", err)
+		log.Println("[Thread] Blocked proxy request:", err)
 		return
 	}
 
 	conn, err := net.Dial("tcp", targetAddr)
 	if err != nil {
-		log.Println("[Agent] Thread proxy dial error:", err)
+		log.Println("[Thread] Thread proxy dial error:", err)
 		return
 	}
 	defer conn.Close()
 
 	protocol.Proxy(stream, conn)
 }
-

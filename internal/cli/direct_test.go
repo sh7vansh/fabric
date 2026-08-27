@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"fabric/internal/agent"
 	"fabric/internal/pki"
+	"fabric/internal/thread"
 )
 
 func TestInvertedConnectionMode(t *testing.T) {
@@ -43,8 +43,8 @@ func TestInvertedConnectionMode(t *testing.T) {
 	os.WriteFile(tmpDir+"/client.crt", certPEM, 0644)
 	os.WriteFile(tmpDir+"/client.key", keyPEM, 0600)
 
-	// 2. Start Agent daemon with Inverted Connection Mode enabled on dynamic port
-	ag := agent.New(agent.Config{
+	// 2. Start Thread daemon with Inverted Connection Mode enabled on dynamic port
+	th := thread.New(thread.Config{
 		ServerURL:     "wss://dummy",
 		ListenAddress: "127.0.0.1:0", // dynamic port
 		Domain:        "fabric.test",
@@ -57,13 +57,13 @@ func TestInvertedConnectionMode(t *testing.T) {
 	defer cancel()
 
 	go func() {
-		ag.ListenAndServe(ctx)
+		th.ListenAndServe(ctx)
 	}()
 
 	// Wait for listener to bind and update its ListenAddress
 	var listenAddr string
 	for i := 0; i < 50; i++ {
-		addr := ag.ListenAddr()
+		addr := th.ListenAddr()
 		if addr != "" && addr != "127.0.0.1:0" {
 			listenAddr = addr
 			break
@@ -130,7 +130,7 @@ func TestTransparentDirectRoutingAndNodeListing(t *testing.T) {
 	os.WriteFile(tmpDir+"/client.crt", certPEM, 0644)
 	os.WriteFile(tmpDir+"/client.key", keyPEM, 0600)
 
-	ag := agent.New(agent.Config{
+	th := thread.New(thread.Config{
 		ServerURL:     "wss://dummy",
 		ListenAddress: "127.0.0.1:0",
 		Domain:        "fabric.test",
@@ -143,12 +143,12 @@ func TestTransparentDirectRoutingAndNodeListing(t *testing.T) {
 	defer cancel()
 
 	go func() {
-		ag.ListenAndServe(ctx)
+		th.ListenAndServe(ctx)
 	}()
 
 	var listenAddr string
 	for i := 0; i < 50; i++ {
-		addr := ag.ListenAddr()
+		addr := th.ListenAddr()
 		if addr != "" && addr != "127.0.0.1:0" {
 			listenAddr = addr
 			break

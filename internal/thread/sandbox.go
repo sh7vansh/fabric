@@ -1,4 +1,4 @@
-package agent
+package thread
 
 import (
 	"fmt"
@@ -38,23 +38,23 @@ var validEnvKeyRegex = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 var validUsernameRegex = regexp.MustCompile(`^[a-z_][a-z0-9_-]*[$]?$`)
 
 var defaultBlockedEnvKeys = map[string]bool{
-	"LD_PRELOAD":             true,
-	"LD_LIBRARY_PATH":        true,
-	"LD_AUDIT":               true,
-	"PYTHONPATH":             true,
-	"PYTHONHOME":             true,
-	"PERL5OPT":               true,
-	"PERLLIB":                true,
-	"PERL5LIB":               true,
-	"RUBYOPT":                true,
-	"RUBYLIB":                true,
-	"NODE_OPTIONS":           true,
-	"BASH_ENV":               true,
-	"ENV":                    true,
-	"PROMPT_COMMAND":         true,
-	"DYLD_LIBRARY_PATH":      true,
-	"DYLD_INSERT_LIBRARIES":  true,
-	"IFS":                    true,
+	"LD_PRELOAD":            true,
+	"LD_LIBRARY_PATH":       true,
+	"LD_AUDIT":              true,
+	"PYTHONPATH":            true,
+	"PYTHONHOME":            true,
+	"PERL5OPT":              true,
+	"PERLLIB":               true,
+	"PERL5LIB":              true,
+	"RUBYOPT":               true,
+	"RUBYLIB":               true,
+	"NODE_OPTIONS":          true,
+	"BASH_ENV":              true,
+	"ENV":                   true,
+	"PROMPT_COMMAND":        true,
+	"DYLD_LIBRARY_PATH":     true,
+	"DYLD_INSERT_LIBRARIES": true,
+	"IFS":                   true,
 }
 
 // ExecutionSandbox defines the contract for command sandboxing, credential dropping,
@@ -67,10 +67,10 @@ type ExecutionSandbox interface {
 
 // SandboxConfig configures execution sandboxing.
 type SandboxConfig struct {
-	DefaultUser   string
-	DefaultGroup  string
+	DefaultUser    string
+	DefaultGroup   string
 	DropPrivileges bool
-	BlockedEnv    map[string]bool
+	BlockedEnv     map[string]bool
 }
 
 // NativeSandbox is the default POSIX implementation of ExecutionSandbox.

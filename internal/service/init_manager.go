@@ -22,18 +22,19 @@ const (
 
 // BootstrapScriptOptions holds parameters needed to render the remote air-gapped bootstrap shell script.
 type BootstrapScriptOptions struct {
-	ServerURL   string
-	SocketURL   string
-	ListenAddr  string
-	Mode        string
-	Token       string
-	Domain      string
-	Tags        []string
-	NodePayload string
-	CliPayload  string
-	CAPayload   string
-	CertPayload string
-	KeyPayload  string
+	ServerURL     string
+	SocketURL     string
+	ListenAddr    string
+	Mode          string
+	Token         string
+	Domain        string
+	Tags          []string
+	ThreadPayload string
+	NodePayload   string
+	CliPayload    string
+	CAPayload     string
+	CertPayload   string
+	KeyPayload    string
 }
 
 // InitManager is the deep module encapsulating multi-tier init rules,
@@ -629,6 +630,11 @@ func (m *InitManager) RenderBootstrapScript(opts BootstrapScriptOptions) string 
 		}
 	}
 
+	threadPayload := opts.ThreadPayload
+	if threadPayload == "" {
+		threadPayload = opts.NodePayload
+	}
+
 	rawEnv := fmt.Sprintf("FABRIC_SERVER_URL=%s\nFABRIC_SOCKET_URL=%s\nFABRIC_MODE=%s\nFABRIC_LISTEN=%s\nFABRIC_TOKEN=%s\nFABRIC_DOMAIN=%s\nFABRIC_TAGS=%s\n",
 		serverURL, serverURL, mode, opts.ListenAddr, opts.Token, opts.Domain, tagsJoined)
 	envB64 := base64.StdEncoding.EncodeToString([]byte(rawEnv))
@@ -880,7 +886,7 @@ if [ "%s" = "remote" ]; then
         echo "[+] Configured iptables rule for port $PORT_NUM/tcp"
     fi
 fi
-`, opts.NodePayload, opts.CliPayload, opts.CAPayload, opts.CertPayload, opts.KeyPayload, envB64, mode, opts.ListenAddr)
+`, threadPayload, opts.CliPayload, opts.CAPayload, opts.CertPayload, opts.KeyPayload, envB64, mode, opts.ListenAddr)
 }
 
 // RenderRemoteSwitchScript renders a lightweight SSH command to switch an existing thread to remote mode.

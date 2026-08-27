@@ -200,13 +200,13 @@ func TestFederationEnvelopesJSON(t *testing.T) {
 	}
 
 	adv := ThreadAdvertise{
-		Type:      TypeThreadAdvertise,
-		ServerID:  "gw-us-east",
-		Nodes: []NodeMetadata{
+		Type:     TypeThreadAdvertise,
+		ServerID: "gw-us-east",
+		Nodes: []ThreadMetadata{
 			{
-				ID:        "worker-1",
-				Hostname:  "worker-1",
-				ServerID:  "gw-us-east",
+				ID:       "worker-1",
+				Hostname: "worker-1",
+				ServerID: "gw-us-east",
 			},
 		},
 	}
@@ -223,9 +223,9 @@ func TestFederationEnvelopesJSON(t *testing.T) {
 	}
 
 	with := ThreadWithdraw{
-		Type:      TypeThreadWithdraw,
-		ServerID:  "gw-us-east",
-		Hostname:  "worker-1",
+		Type:     TypeThreadWithdraw,
+		ServerID: "gw-us-east",
+		Hostname: "worker-1",
 	}
 	bWith, err := json.Marshal(with)
 	if err != nil {
@@ -237,5 +237,27 @@ func TestFederationEnvelopesJSON(t *testing.T) {
 	}
 	if with2.GatewayID != "gw-us-east" || with2.ServerID != "gw-us-east" || with2.Hostname != "worker-1" {
 		t.Errorf("Mismatch in ThreadWithdraw: %+v", with2)
+	}
+}
+
+func TestCanonicalMetadata(t *testing.T) {
+	// Test ThreadMetadata with thread_name and node_id fallbacks
+	rawLegacy := []byte(`{"node_id":"thread-99","thread_name":"alpha-thread","gateway_id":"srv-100","status":"online"}`)
+	var tm ThreadMetadata
+	if err := json.Unmarshal(rawLegacy, &tm); err != nil {
+		t.Fatalf("Failed to unmarshal legacy thread JSON: %v", err)
+	}
+	if tm.ID != "thread-99" || tm.Hostname != "alpha-thread" || tm.ThreadName != "alpha-thread" || tm.ServerID != "srv-100" {
+		t.Errorf("Unexpected unmarshaled ThreadMetadata: %+v", tm)
+	}
+
+	// Test ServerMetadata
+	rawServer := []byte(`{"server_id":"srv-us","domain":"mesh.fabric","status":"online"}`)
+	var sm ServerMetadata
+	if err := json.Unmarshal(rawServer, &sm); err != nil {
+		t.Fatalf("Failed to unmarshal ServerMetadata: %v", err)
+	}
+	if sm.ServerID != "srv-us" || sm.GatewayID != "srv-us" || sm.Domain != "mesh.fabric" {
+		t.Errorf("Unexpected unmarshaled ServerMetadata: %+v", sm)
 	}
 }

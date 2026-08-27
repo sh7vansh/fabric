@@ -2,8 +2,9 @@ package cli
 
 import (
 	"encoding/json"
-	"fabric/internal/protocol"
 	"fmt"
+
+	"fabric/internal/protocol"
 
 	"github.com/spf13/cobra"
 )
@@ -17,13 +18,6 @@ var threadInspectCmd = &cobra.Command{
   # Inspect multiple threads
   fabric thread inspect worker-1 worker-2`,
 	RunE: runThreadInspect,
-}
-
-func init() {
-	nodeInspectCmd.RunE = func(cmd *cobra.Command, args []string) error {
-		WarnDeprecated("fabric node inspect", "fabric thread inspect")
-		return runThreadInspect(cmd, args)
-	}
 }
 
 func runThreadInspect(cmd *cobra.Command, args []string) error {

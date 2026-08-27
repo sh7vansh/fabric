@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
+
+	"github.com/spf13/cobra"
 )
 
 var (
@@ -26,4 +29,210 @@ func WarnDeprecated(deprecated, replacement string) {
 	if deprecationWriter != nil {
 		fmt.Fprintf(deprecationWriter, "Warning: '%s' is deprecated. Use '%s' instead.\n", deprecated, replacement)
 	}
+}
+
+// Deprecated node commands
+var nodeCmd = &cobra.Command{
+	Use:     "node",
+	Short:   "Manage fabric nodes (deprecated, use 'fabric thread')",
+	GroupID: "cluster",
+	Example: `  # List all active online nodes
+  fabric node ls
+
+  # Show detailed telemetry and metadata for worker-1
+  fabric node inspect worker-1`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		WarnDeprecated("fabric node", "fabric thread")
+		return runThreadLs(cmd, args)
+	},
+}
+
+var nodeLsCmd = &cobra.Command{
+	Use:   "ls [flags]",
+	Short: "List all online nodes connected to the mesh (deprecated, use 'fabric thread ls')",
+	Example: `  # Table view of active nodes
+  fabric node ls
+
+  # Output in JSON format
+  fabric node ls --format json`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		WarnDeprecated("fabric node ls", "fabric thread ls")
+		return runThreadLs(cmd, args)
+	},
+}
+
+var nodeInspectCmd = &cobra.Command{
+	Use:   "inspect NODE [NODE...]",
+	Short: "Display detailed information for one or more nodes (deprecated, use 'fabric thread inspect')",
+	Example: `  # Inspect worker-1
+  fabric node inspect worker-1`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		WarnDeprecated("fabric node inspect", "fabric thread inspect")
+		return runThreadInspect(cmd, args)
+	},
+}
+
+// Deprecated agent commands
+var agentCmd = &cobra.Command{
+	Use:     "agent",
+	Short:   "Manage background fabric-thread service (deprecated, use 'fabric thread service')",
+	GroupID: "system",
+	Long: `Manage the lifecycle of the local fabric-thread background daemon service unit (deprecated).
+
+Please use 'fabric thread service' instead.`,
+	Example: `  # Install and start fabric-thread as a background service
+  fabric thread service install
+
+  # Check the status of the local thread service
+  fabric thread service status`,
+}
+
+var agentInstallCmd = &cobra.Command{
+	Use:   "install",
+	Short: "Install and enable service (deprecated, use 'fabric thread service install')",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		WarnDeprecated("fabric agent", "fabric thread service")
+		return InstallService("thread")
+	},
+}
+
+var agentUninstallCmd = &cobra.Command{
+	Use:   "uninstall",
+	Short: "Stop, disable, and remove service (deprecated, use 'fabric thread service uninstall')",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		WarnDeprecated("fabric agent", "fabric thread service")
+		return UninstallService("thread")
+	},
+}
+
+func newAgentActionCmd(action, desc string) *cobra.Command {
+	return &cobra.Command{
+		Use:   action,
+		Short: desc + " (deprecated, use 'fabric thread service " + action + "')",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			WarnDeprecated("fabric agent", "fabric thread service")
+			return HandleServiceAction(action, "thread")
+		},
+	}
+}
+
+// Deprecated service commands
+var serviceCmd = &cobra.Command{
+	Use:        "service",
+	Short:      "Manage background service units (deprecated, use 'fabric thread service')",
+	GroupID:    "system",
+	Deprecated: "use 'fabric thread service' instead.",
+	Long: `Manage the lifecycle of background service units (deprecated).
+
+Please use 'fabric thread service' instead.`,
+	Example: `  # Install and start fabric-thread as a background service
+  fabric thread service install
+
+  # Check the status of the local thread service
+  fabric thread service status`,
+}
+
+var serviceInstallCmd = &cobra.Command{
+	Use:   "install [role]",
+	Short: "Install and enable service (deprecated, use 'fabric thread service install')",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		WarnDeprecated("fabric service", "fabric thread service")
+		role := "thread"
+		if len(args) > 0 {
+			role = strings.ToLower(args[0])
+		}
+		if role == "node" || role == "agent" {
+			role = "thread"
+		}
+		return InstallService(role)
+	},
+}
+
+var serviceUninstallCmd = &cobra.Command{
+	Use:   "uninstall [role]",
+	Short: "Stop, disable, and remove service (deprecated, use 'fabric thread service uninstall')",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		WarnDeprecated("fabric service", "fabric thread service")
+		role := "thread"
+		if len(args) > 0 {
+			role = strings.ToLower(args[0])
+		}
+		if role == "node" || role == "agent" {
+			role = "thread"
+		}
+		return UninstallService(role)
+	},
+}
+
+func newServiceActionCmd(action, desc string) *cobra.Command {
+	return &cobra.Command{
+		Use:   action + " [role]",
+		Short: desc + " (deprecated, use 'fabric thread service " + action + "')",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			WarnDeprecated("fabric service", "fabric thread service")
+			role := "thread"
+			if len(args) > 0 {
+				role = strings.ToLower(args[0])
+			}
+			if role == "node" || role == "agent" {
+				role = "thread"
+			}
+			return HandleServiceAction(action, role)
+		},
+	}
+}
+
+// Deprecated setup command
+var setupCmd = &cobra.Command{
+	Use:        "setup [flags]",
+	Short:      "Interactive setup wizard (deprecated, use 'fabric init')",
+	GroupID:    "system",
+	Deprecated: "use 'fabric init' instead.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		WarnDeprecated("fabric setup", "fabric init")
+		return runInit(cmd, args)
+	},
+}
+
+func init() {
+	// Register flags for deprecated node commands
+	registerThreadListingFlags(nodeLsCmd)
+
+	nodeCmd.AddCommand(nodeLsCmd)
+	nodeCmd.AddCommand(nodeInspectCmd)
+
+	// Register agent subcommands
+	agentCmd.AddCommand(agentInstallCmd)
+	agentCmd.AddCommand(newAgentActionCmd("start", "Start the service"))
+	agentCmd.AddCommand(newAgentActionCmd("stop", "Stop the service"))
+	agentCmd.AddCommand(newAgentActionCmd("restart", "Restart the service"))
+	agentCmd.AddCommand(newAgentActionCmd("status", "Check the status of the service"))
+	agentCmd.AddCommand(agentUninstallCmd)
+
+	// Register service subcommands
+	serviceCmd.AddCommand(serviceInstallCmd)
+	serviceCmd.AddCommand(newServiceActionCmd("start", "Start the service"))
+	serviceCmd.AddCommand(newServiceActionCmd("stop", "Stop the service"))
+	serviceCmd.AddCommand(newServiceActionCmd("restart", "Restart the service"))
+	serviceCmd.AddCommand(newServiceActionCmd("status", "Check the status of the service"))
+	serviceCmd.AddCommand(serviceUninstallCmd)
+
+	// Register flags for setup
+	setupCmd.Flags().StringVarP(&initServerFlag, "server", "s", "", "Fabric server WebSocket URL")
+	setupCmd.Flags().StringVarP(&initHostFlag, "host", "H", "", "Server URL (deprecated, use --server)")
+	setupCmd.Flags().StringVar(&initTokenFlag, "token", "", "Pre-shared cluster token")
+	setupCmd.Flags().StringVar(&initDomainFlag, "domain", "fabric.mesh", "Domain for Fabric DNS")
+	setupCmd.Flags().BoolVar(&initAutoToken, "auto-token", false, "Auto-generate a secure random token")
+	setupCmd.Flags().BoolVarP(&initNonInteract, "yes", "y", false, "Accept all defaults non-interactively")
+	setupCmd.Flags().BoolVar(&initTrustCA, "trust-ca", false, "Install Fabric Root CA into system trust store")
+	setupCmd.Flags().BoolVar(&initUntrustCA, "untrust-ca", false, "Remove Fabric Root CA from system trust store")
+
+	// Wire deprecated commands to rootCmd
+	rootCmd.AddCommand(nodeCmd)
+	rootCmd.AddCommand(agentCmd)
+	rootCmd.AddCommand(serviceCmd)
+	rootCmd.AddCommand(setupCmd)
 }

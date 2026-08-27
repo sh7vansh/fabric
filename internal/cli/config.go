@@ -31,8 +31,8 @@ func parseEnvFile(path string) map[string]string {
 	return res
 }
 
-// DirectNodeEntry stores registration metadata for an inverted mode node.
-type DirectNodeEntry struct {
+// DirectThreadEntry stores registration metadata for an inverted mode thread.
+type DirectThreadEntry struct {
 	Address      string    `json:"address"`
 	Hostname     string    `json:"hostname,omitempty"`
 	Domain       string    `json:"domain,omitempty"`
@@ -42,11 +42,15 @@ type DirectNodeEntry struct {
 	RegisteredAt time.Time `json:"registered_at"`
 }
 
+// DirectNodeEntry is a backward-compatible alias for DirectThreadEntry.
+type DirectNodeEntry = DirectThreadEntry
+
 type ContextConfig struct {
-	Host        string                     `json:"host"`
-	Token       string                     `json:"token"`
-	CACert      string                     `json:"ca_cert,omitempty"`
-	DirectNodes map[string]DirectNodeEntry `json:"direct_nodes,omitempty"`
+	Host          string                       `json:"host"`
+	Token         string                       `json:"token"`
+	CACert        string                       `json:"ca_cert,omitempty"`
+	DirectThreads map[string]DirectThreadEntry `json:"direct_threads,omitempty"`
+	DirectNodes   map[string]DirectNodeEntry   `json:"direct_nodes,omitempty"`
 }
 
 type Config struct {
@@ -54,21 +58,24 @@ type Config struct {
 	Token         string
 	CACert        string
 	DirectAddress string
+	DirectThreads map[string]DirectThreadEntry
 	DirectNodes   map[string]DirectNodeEntry
 	ThreadName    string
 }
 
 type FileConfig struct {
-	CurrentContext string                     `json:"current_context"`
-	Contexts       map[string]ContextConfig   `json:"contexts"`
-	DirectNodes    map[string]DirectNodeEntry `json:"direct_nodes,omitempty"`
+	CurrentContext string                       `json:"current_context"`
+	Contexts       map[string]ContextConfig     `json:"contexts"`
+	DirectThreads  map[string]DirectThreadEntry `json:"direct_threads,omitempty"`
+	DirectNodes    map[string]DirectNodeEntry   `json:"direct_nodes,omitempty"`
 }
 
 func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *Config {
 	cfg := &Config{
-		Host:        "wss://localhost:8443/ws",
-		Token:       "default-secret",
-		DirectNodes: make(map[string]DirectNodeEntry),
+		Host:          "wss://localhost:8443/ws",
+		Token:         "default-secret",
+		DirectThreads: make(map[string]DirectThreadEntry),
+		DirectNodes:   make(map[string]DirectNodeEntry),
 	}
 
 	var configFiles []string
@@ -107,8 +114,23 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 					if ctx.CACert != "" {
 						cfg.CACert = ctx.CACert
 					}
+					if ctx.DirectThreads != nil {
+						for k, v := range ctx.DirectThreads {
+							cfg.DirectThreads[k] = v
+							cfg.DirectNodes[k] = v
+						}
+					}
 					if ctx.DirectNodes != nil {
 						for k, v := range ctx.DirectNodes {
+							cfg.DirectThreads[k] = v
+							cfg.DirectNodes[k] = v
+						}
+					}
+				}
+				if fileCfg.DirectThreads != nil {
+					for k, v := range fileCfg.DirectThreads {
+						if _, exists := cfg.DirectThreads[k]; !exists {
+							cfg.DirectThreads[k] = v
 							cfg.DirectNodes[k] = v
 						}
 					}
@@ -116,6 +138,7 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 				if fileCfg.DirectNodes != nil {
 					for k, v := range fileCfg.DirectNodes {
 						if _, exists := cfg.DirectNodes[k]; !exists {
+							cfg.DirectThreads[k] = v
 							cfg.DirectNodes[k] = v
 						}
 					}
@@ -260,9 +283,18 @@ func SaveConfig(cfg *Config) error {
 		ctx.Host = cfg.Host
 		ctx.Token = cfg.Token
 		ctx.CACert = cfg.CACert
-		ctx.DirectNodes = cfg.DirectNodes
+		if cfg.DirectThreads != nil {
+			ctx.DirectThreads = cfg.DirectThreads
+			ctx.DirectNodes = cfg.DirectThreads
+			fileCfg.DirectThreads = cfg.DirectThreads
+			fileCfg.DirectNodes = cfg.DirectThreads
+		} else if cfg.DirectNodes != nil {
+			ctx.DirectThreads = cfg.DirectNodes
+			ctx.DirectNodes = cfg.DirectNodes
+			fileCfg.DirectThreads = cfg.DirectNodes
+			fileCfg.DirectNodes = cfg.DirectNodes
+		}
 		fileCfg.Contexts[ctxName] = ctx
-		fileCfg.DirectNodes = cfg.DirectNodes
 
 		b, err := json.MarshalIndent(fileCfg, "", "  ")
 		if err != nil {
@@ -290,18 +322,27 @@ func SaveConfig(cfg *Config) error {
 	return firstErr
 }
 
-// RegisterDirectNode records an inverted mode node into local direct registry config.
-func RegisterDirectNode(name, address string, tags []string, extra ...string) error {
+// RegisterDirectThread records a direct connection thread into local direct registry config.
+func RegisterDirectThread(name, address string, tags []string, extra ...string) error {
 	cfg := GetConfig()
+	if cfg.DirectThreads == nil {
+		cfg.DirectThreads = make(map[string]DirectThreadEntry)
+	}
 	if cfg.DirectNodes == nil {
 		cfg.DirectNodes = make(map[string]DirectNodeEntry)
 	}
+	hasRemoteTag := false
 	hasInvertedTag := false
 	for _, t := range tags {
+		if t == "remote" {
+			hasRemoteTag = true
+		}
 		if t == "inverted" {
 			hasInvertedTag = true
-			break
 		}
+	}
+	if !hasRemoteTag {
+		tags = append(tags, "remote")
 	}
 	if !hasInvertedTag {
 		tags = append(tags, "inverted")
@@ -324,7 +365,7 @@ func RegisterDirectNode(name, address string, tags []string, extra ...string) er
 		arch = extra[3]
 	}
 
-	cfg.DirectNodes[name] = DirectNodeEntry{
+	entry := DirectThreadEntry{
 		Address:      address,
 		Hostname:     hostname,
 		Domain:       domain,
@@ -333,17 +374,38 @@ func RegisterDirectNode(name, address string, tags []string, extra ...string) er
 		Tags:         tags,
 		RegisteredAt: time.Now().UTC(),
 	}
+	cfg.DirectThreads[name] = entry
+	cfg.DirectNodes[name] = entry
 	return SaveConfig(cfg)
 }
 
-// LookupDirectNode retrieves a registered direct node from configuration.
-func LookupDirectNode(hostname string) (DirectNodeEntry, bool) {
+// RegisterDirectNode is a backward-compatible alias for RegisterDirectThread.
+func RegisterDirectNode(name, address string, tags []string, extra ...string) error {
+	return RegisterDirectThread(name, address, tags, extra...)
+}
+
+// LookupDirectThread retrieves a registered direct thread from configuration.
+func LookupDirectThread(hostname string) (DirectThreadEntry, bool) {
 	cfg := GetConfig()
-	if cfg == nil || cfg.DirectNodes == nil {
-		return DirectNodeEntry{}, false
+	if cfg == nil {
+		return DirectThreadEntry{}, false
 	}
-	entry, ok := cfg.DirectNodes[hostname]
-	return entry, ok
+	if cfg.DirectThreads != nil {
+		if entry, ok := cfg.DirectThreads[hostname]; ok {
+			return entry, true
+		}
+	}
+	if cfg.DirectNodes != nil {
+		if entry, ok := cfg.DirectNodes[hostname]; ok {
+			return entry, true
+		}
+	}
+	return DirectThreadEntry{}, false
+}
+
+// LookupDirectNode is a backward-compatible alias for LookupDirectThread.
+func LookupDirectNode(hostname string) (DirectNodeEntry, bool) {
+	return LookupDirectThread(hostname)
 }
 
 

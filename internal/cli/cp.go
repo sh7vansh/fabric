@@ -7,6 +7,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var cpCmd = &cobra.Command{
+	Use:     "cp [flags] SRC_PATH DEST_PATH",
+	Short:   "Copy files/folders between a thread and the local filesystem",
+	GroupID: "core",
+	Long: `Stream files and directories between the local machine and remote fabric threads.
+
+Paths targeting remote threads use the format: <thread>:<path> (e.g. worker-1:/var/log).
+Transfers are compressed and streamed incrementally as Tar chunks over WebSocket envelopes.`,
+	Example: `  # Upload a local directory to a remote thread
+  fabric cp ./dist/ worker-1:/var/www/html/
+
+  # Download a remote file to the local directory
+  fabric cp worker-1:/var/log/syslog ./syslog.log`,
+}
+
 func init() {
 	cpCmd.RunE = runCp
 }

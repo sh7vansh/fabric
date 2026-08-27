@@ -68,19 +68,11 @@ func registerThreadListingFlags(cmd *cobra.Command) {
 
 func init() {
 	registerThreadListingFlags(threadLsCmd)
-	registerThreadListingFlags(psCmd)
-	registerThreadListingFlags(nodeLsCmd)
-
 	threadLsCmd.RunE = runThreadLs
-	psCmd.RunE = runThreadLs
-
-	nodeLsCmd.RunE = func(cmd *cobra.Command, args []string) error {
-		WarnDeprecated("fabric node ls", "fabric thread ls")
-		return runThreadLs(cmd, args)
-	}
 
 	threadCmd.AddCommand(threadLsCmd)
 	threadCmd.AddCommand(threadInspectCmd)
+	threadCmd.AddCommand(threadServiceCmd)
 }
 
 func runThreadLs(cmd *cobra.Command, args []string) error {
@@ -113,45 +105,43 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 	if peerFilterFlag != "" {
 		var filtered []protocol.NodeMetadata
 		for _, n := range nodes {
-			if n.GatewayID == peerFilterFlag || (n.GatewayID == "" && peerFilterFlag == "local") {
+			if strings.EqualFold(n.ServerID, peerFilterFlag) || strings.EqualFold(n.GatewayID, peerFilterFlag) {
 				filtered = append(filtered, n)
 			}
 		}
 		nodes = filtered
 	}
 
-	out := cmd.OutOrStdout()
-
-	if formatFlag == "json" {
-		b, _ := json.MarshalIndent(nodes, "", "  ")
-		fmt.Fprintln(out, string(b))
+	if quietFlag {
+		for _, n := range nodes {
+			fmt.Fprintln(cmd.OutOrStdout(), n.Hostname)
+		}
 		return nil
 	}
 
 	if formatFlag != "" {
-		tmpl, err := template.New("format").Parse(formatFlag)
-		if err != nil {
-			return err
-		}
-		for _, n := range nodes {
-			tmpl.Execute(out, n)
-			fmt.Fprintln(out)
-		}
-		return nil
-	}
-
-	if quietFlag {
-		for _, n := range nodes {
-			name := n.Hostname
-			if name == "" {
-				name = n.ID
+		if strings.ToLower(formatFlag) == "json" {
+			b, err := json.MarshalIndent(nodes, "", "  ")
+			if err != nil {
+				return err
 			}
-			fmt.Fprintln(out, name)
+			fmt.Fprintln(cmd.OutOrStdout(), string(b))
+			return nil
+		}
+
+		tmpl, err := template.New("format").Parse(formatFlag + "\n")
+		if err != nil {
+			return fmt.Errorf("invalid format template: %w", err)
+		}
+		for _, n := range nodes {
+			if err := tmpl.Execute(cmd.OutOrStdout(), n); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
 
-	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "THREAD\tHOSTNAME\tSERVER\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
 	for _, n := range nodes {
 		uptime := ""

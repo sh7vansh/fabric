@@ -9,7 +9,7 @@ import (
 	"strings"
 	"syscall"
 
-	"fabric/internal/agent"
+	"fabric/internal/thread"
 )
 
 func main() {
@@ -71,7 +71,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	th := agent.New(agent.Config{
+	th := thread.New(thread.Config{
 		ServerURL:     *serverURL,
 		ListenAddress: listenAddr,
 		Domain:        *domainFlag,

@@ -27,6 +27,7 @@ type StitchHostOptions struct {
 	Target        string
 	SSHPort       string
 	IdentityKey   string
+	ServerURL     string
 	SocketURL     string
 	Token         string
 	Domain        string
@@ -36,10 +37,10 @@ type StitchHostOptions struct {
 	CliBinaryData []byte
 	NoWait        bool
 	SilentOutput  bool
-	Mode          string        // "normal" or "inverted"
+	Mode          string        // "local" or "remote" (with "normal" / "inverted" fallback)
 	ListenPort    string        // default "8443"
-	NoFallback    bool          // disable auto-fallback from normal to inverted
-	VerifyTimeout time.Duration // timeout for socket connection verification (default 15s)
+	NoFallback    bool          // disable auto-fallback from local to remote
+	VerifyTimeout time.Duration // timeout for server connection verification (default 15s)
 	CADir         string        // optional CA directory
 }
 
@@ -459,16 +460,19 @@ func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
 
 	mgr := service.NewInitManager()
 	return mgr.RenderBootstrapScript(service.BootstrapScriptOptions{
-		SocketURL:   socketURL,
-		ListenAddr:  listenAddr,
-		Token:       opts.Token,
-		Domain:      opts.Domain,
-		Tags:        opts.Tags,
-		NodePayload: payload,
-		CliPayload:  cliPayload,
-		CAPayload:   caPayload,
-		CertPayload: certPayload,
-		KeyPayload:  keyPayload,
+		ServerURL:     socketURL,
+		SocketURL:     socketURL,
+		ListenAddr:    listenAddr,
+		Mode:          opts.Mode,
+		Token:         opts.Token,
+		Domain:        opts.Domain,
+		Tags:          opts.Tags,
+		ThreadPayload: payload,
+		NodePayload:   payload,
+		CliPayload:    cliPayload,
+		CAPayload:     caPayload,
+		CertPayload:   certPayload,
+		KeyPayload:    keyPayload,
 	})
 }
 
@@ -642,7 +646,10 @@ type NodeVerifierFunc func(socketURL, token string) ([]protocol.NodeMetadata, er
 
 // ExecuteStitchHost performs the full bootstrap and mesh join verification workflow.
 func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier NodeVerifierFunc, prober ...DirectProberFunc) (*protocol.NodeMetadata, error) {
-	socketURL := opts.SocketURL
+	socketURL := opts.ServerURL
+	if socketURL == "" {
+		socketURL = opts.SocketURL
+	}
 	if opts.Mode != "inverted" && opts.Mode != "remote" {
 		u, err := url.Parse(socketURL)
 		if err == nil {
