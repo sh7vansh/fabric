@@ -147,11 +147,45 @@ const (
 )
 
 type NodeSync struct {
-	Type  EnvelopeType     `json:"type"` // "node_sync" or "thread_sync"
-	Nodes []ThreadMetadata `json:"nodes"`
+	Type    EnvelopeType     `json:"type"` // "thread_sync" or "node_sync"
+	Threads []ThreadMetadata `json:"threads,omitempty"`
+	Nodes   []ThreadMetadata `json:"nodes,omitempty"`
 }
 
 type ThreadSync = NodeSync
+
+func (s *NodeSync) UnmarshalJSON(data []byte) error {
+	type Alias NodeSync
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(s),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if len(s.Threads) == 0 && len(s.Nodes) > 0 {
+		s.Threads = s.Nodes
+	}
+	if len(s.Nodes) == 0 && len(s.Threads) > 0 {
+		s.Nodes = s.Threads
+	}
+	return nil
+}
+
+func (s NodeSync) MarshalJSON() ([]byte, error) {
+	type Alias NodeSync
+	if s.Type == "" {
+		s.Type = TypeThreadSync
+	}
+	if len(s.Threads) == 0 && len(s.Nodes) > 0 {
+		s.Threads = s.Nodes
+	}
+	if len(s.Nodes) == 0 && len(s.Threads) > 0 {
+		s.Nodes = s.Threads
+	}
+	return json.Marshal(Alias(s))
+}
 
 type DNSQuery struct {
 	Type      EnvelopeType `json:"type"` // "dns_query"
@@ -326,7 +360,8 @@ type ThreadAdvertise struct {
 	Type      EnvelopeType     `json:"type"` // "thread_advertise"
 	ServerID  string           `json:"server_id,omitempty"`
 	GatewayID string           `json:"gateway_id,omitempty"`
-	Nodes     []ThreadMetadata `json:"nodes"`
+	Threads   []ThreadMetadata `json:"threads,omitempty"`
+	Nodes     []ThreadMetadata `json:"nodes,omitempty"`
 	Epoch     uint64           `json:"epoch,omitempty"`
 	Checksum  uint32           `json:"checksum,omitempty"`
 }
@@ -347,6 +382,12 @@ func (a *ThreadAdvertise) UnmarshalJSON(data []byte) error {
 	if a.GatewayID == "" && a.ServerID != "" {
 		a.GatewayID = a.ServerID
 	}
+	if len(a.Threads) == 0 && len(a.Nodes) > 0 {
+		a.Threads = a.Nodes
+	}
+	if len(a.Nodes) == 0 && len(a.Threads) > 0 {
+		a.Nodes = a.Threads
+	}
 	return nil
 }
 
@@ -360,6 +401,12 @@ func (a ThreadAdvertise) MarshalJSON() ([]byte, error) {
 	}
 	if a.GatewayID == "" && a.ServerID != "" {
 		a.GatewayID = a.ServerID
+	}
+	if len(a.Threads) == 0 && len(a.Nodes) > 0 {
+		a.Threads = a.Nodes
+	}
+	if len(a.Nodes) == 0 && len(a.Threads) > 0 {
+		a.Nodes = a.Threads
 	}
 	return json.Marshal(Alias(a))
 }

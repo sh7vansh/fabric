@@ -106,21 +106,21 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
-func TestDirectNodeRegistry(t *testing.T) {
+func TestDirectThreadRegistry(t *testing.T) {
 	tempHome := t.TempDir()
 	os.Setenv("HOME", tempHome)
 	defer os.Unsetenv("HOME")
 
-	// Register a direct node
-	err := RegisterDirectNode("edge-1", "192.168.1.99:8443", []string{"gateway"})
+	// Register a direct thread using canonical method
+	err := RegisterDirectThread("edge-1", "192.168.1.99:8443", []string{"gateway"})
 	if err != nil {
-		t.Fatalf("RegisterDirectNode failed: %v", err)
+		t.Fatalf("RegisterDirectThread failed: %v", err)
 	}
 
-	// Lookup direct node
-	entry, ok := LookupDirectNode("edge-1")
+	// Lookup direct thread
+	entry, ok := LookupDirectThread("edge-1")
 	if !ok {
-		t.Fatalf("LookupDirectNode failed to find registered node 'edge-1'")
+		t.Fatalf("LookupDirectThread failed to find registered thread 'edge-1'")
 	}
 	if entry.Address != "192.168.1.99:8443" {
 		t.Errorf("expected address 192.168.1.99:8443, got %s", entry.Address)
@@ -135,13 +135,78 @@ func TestDirectNodeRegistry(t *testing.T) {
 		t.Errorf("expected 'inverted' tag in entry: %v", entry.Tags)
 	}
 
+	// Test backward-compatible lookup alias
+	entryAlias, okAlias := LookupDirectNode("edge-1")
+	if !okAlias || entryAlias.Address != "192.168.1.99:8443" {
+		t.Errorf("expected LookupDirectNode to return registered entry")
+	}
+
 	// Reload config from disk
 	cfg := LoadConfig("", "", "")
-	if len(cfg.DirectNodes) != 1 {
-		t.Fatalf("expected 1 direct node in loaded config, got %d", len(cfg.DirectNodes))
+	if len(cfg.DirectThreads) != 1 {
+		t.Fatalf("expected 1 direct thread in loaded config, got %d", len(cfg.DirectThreads))
 	}
-	if cfg.DirectNodes["edge-1"].Address != "192.168.1.99:8443" {
-		t.Errorf("expected 192.168.1.99:8443 in loaded config, got %s", cfg.DirectNodes["edge-1"].Address)
+	if cfg.DirectThreads["edge-1"].Address != "192.168.1.99:8443" {
+		t.Errorf("expected 192.168.1.99:8443 in loaded config, got %s", cfg.DirectThreads["edge-1"].Address)
+	}
+}
+
+func TestDirectThreadsJSONBackwardCompatibility(t *testing.T) {
+	tempHome := t.TempDir()
+	os.Setenv("HOME", tempHome)
+	defer os.Unsetenv("HOME")
+
+	// Create legacy config file containing direct_nodes
+	configDir := filepath.Join(tempHome, ".fabric")
+	os.MkdirAll(configDir, 0755)
+	configFile := filepath.Join(configDir, "config.json")
+	legacyJSON := `{
+		"current_context": "default",
+		"contexts": {
+			"default": {
+				"host": "wss://remote:8443/ws",
+				"token": "file-secret",
+				"direct_nodes": {
+					"legacy-edge": {
+						"address": "10.10.0.5:8443",
+						"tags": ["remote", "edge"]
+					}
+				}
+			}
+		},
+		"direct_nodes": {
+			"global-legacy-edge": {
+				"address": "10.10.0.6:8443",
+				"tags": ["remote"]
+			}
+		}
+	}`
+	if err := os.WriteFile(configFile, []byte(legacyJSON), 0644); err != nil {
+		t.Fatalf("failed to write legacy config: %v", err)
+	}
+
+	cfg := LoadConfig("", "", "")
+	if len(cfg.DirectThreads) != 2 {
+		t.Fatalf("expected 2 direct threads loaded from legacy direct_nodes, got %d", len(cfg.DirectThreads))
+	}
+	if cfg.DirectThreads["legacy-edge"].Address != "10.10.0.5:8443" {
+		t.Errorf("expected legacy-edge address 10.10.0.5:8443, got %s", cfg.DirectThreads["legacy-edge"].Address)
+	}
+	if cfg.DirectThreads["global-legacy-edge"].Address != "10.10.0.6:8443" {
+		t.Errorf("expected global-legacy-edge address 10.10.0.6:8443, got %s", cfg.DirectThreads["global-legacy-edge"].Address)
+	}
+
+	// Persisting config should write direct_threads cleanly
+	if err := SaveConfig(cfg); err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	savedBytes, err := os.ReadFile(configFile)
+	if err != nil {
+		t.Fatalf("failed to read saved config: %v", err)
+	}
+	if !strings.Contains(string(savedBytes), `"direct_threads"`) {
+		t.Errorf("expected saved config to contain direct_threads key: %s", string(savedBytes))
 	}
 }
 

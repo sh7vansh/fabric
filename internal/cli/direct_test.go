@@ -159,12 +159,12 @@ func TestTransparentDirectRoutingAndNodeListing(t *testing.T) {
 		t.Fatalf("agent listener failed to start")
 	}
 
-	// 1. Configure CLI with DirectNodes registry (no explicit DirectAddress)
+	// 1. Configure CLI with DirectThreads registry (no explicit DirectAddress)
 	cfg := &Config{
 		Host:   "wss://dummy-unreachable-socket:9999/ws",
 		Token:  "test-token",
 		CACert: tmpDir + "/ca.crt",
-		DirectNodes: map[string]DirectNodeEntry{
+		DirectThreads: map[string]DirectThreadEntry{
 			"inv-node-1": {
 				Address:      listenAddr,
 				Tags:         []string{"remote", "gpu"},

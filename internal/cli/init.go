@@ -14,6 +14,7 @@ import (
 
 	"fabric/internal/firewall"
 	"fabric/internal/pki"
+	"fabric/internal/service"
 
 	"github.com/spf13/cobra"
 )
@@ -293,12 +294,13 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// 8. Write Service Environment Files and Start Services
 	var startedServices []string
+	initMgr := service.NewInitManager()
 	if role == "server" || role == "both" {
 		if err := writeRoleEnv("server", serverURL, token, domain, "local"); err == nil {
 			fmt.Println("[+] Configured server environment (~/.fabric/server.env)")
 		}
 		if !initNonInteract {
-			if err := InstallService("server"); err == nil {
+			if err := initMgr.InstallService("server"); err == nil {
 				startedServices = append(startedServices, "fabric-server")
 			}
 		}
@@ -309,7 +311,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 			fmt.Println("[+] Configured thread environment (~/.fabric/thread.env)")
 		}
 		if !initNonInteract {
-			if err := InstallService("thread"); err == nil {
+			if err := initMgr.InstallService("thread"); err == nil {
 				startedServices = append(startedServices, "fabric-thread")
 			}
 		}

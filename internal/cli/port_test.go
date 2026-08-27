@@ -152,7 +152,7 @@ func TestPortForwarding_PlainTCP(t *testing.T) {
 		Host:   "wss://dummy:9999/ws",
 		Token:  "test-token",
 		CACert: tmpDir + "/ca.crt",
-		DirectNodes: map[string]DirectNodeEntry{
+		DirectThreads: map[string]DirectThreadEntry{
 			"direct-aizen": {
 				Address:      listenAddr,
 				Tags:         []string{"inverted"},
@@ -242,7 +242,7 @@ func TestPortForwarding_HTTPS_NPM_SNI(t *testing.T) {
 		Host:   "wss://dummy:9999/ws",
 		Token:  "test-token",
 		CACert: tmpDir + "/ca.crt",
-		DirectNodes: map[string]DirectNodeEntry{
+		DirectThreads: map[string]DirectThreadEntry{
 			"direct-aizen": {
 				Address:      listenAddr,
 				Tags:         []string{"inverted"},

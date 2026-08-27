@@ -10,6 +10,7 @@ import (
 
 	"fabric/internal/firewall"
 	"fabric/internal/pki"
+	"fabric/internal/service"
 
 	"github.com/spf13/cobra"
 )
@@ -61,10 +62,11 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 	}
 
 	// 2. Uninstall services if they exist (silently ignore errors if not installed)
-	_ = UninstallService("thread")
-	_ = UninstallService("server")
-	_ = UninstallService("node")
-	_ = UninstallService("socket")
+	initMgr := service.NewInitManager()
+	_ = initMgr.UninstallService("thread")
+	_ = initMgr.UninstallService("server")
+	_ = initMgr.UninstallService("node")
+	_ = initMgr.UninstallService("socket")
 
 	// 3. Remove Root CA from system trust store (if it was installed)
 	trustStore := pki.NewSystemTrustStore()

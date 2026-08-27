@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 
+	"fabric/internal/service"
+
 	"github.com/spf13/cobra"
 )
 
@@ -92,7 +94,8 @@ var agentInstallCmd = &cobra.Command{
 	Short: "Install and enable service (deprecated, use 'fabric thread service install')",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		WarnDeprecated("fabric agent", "fabric thread service")
-		return InstallService("thread")
+		mgr := service.NewInitManager()
+		return mgr.InstallService("thread")
 	},
 }
 
@@ -101,7 +104,8 @@ var agentUninstallCmd = &cobra.Command{
 	Short: "Stop, disable, and remove service (deprecated, use 'fabric thread service uninstall')",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		WarnDeprecated("fabric agent", "fabric thread service")
-		return UninstallService("thread")
+		mgr := service.NewInitManager()
+		return mgr.UninstallService("thread")
 	},
 }
 
@@ -111,7 +115,8 @@ func newAgentActionCmd(action, desc string) *cobra.Command {
 		Short: desc + " (deprecated, use 'fabric thread service " + action + "')",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			WarnDeprecated("fabric agent", "fabric thread service")
-			return HandleServiceAction(action, "thread")
+			mgr := service.NewInitManager()
+			return mgr.HandleAction(action, "thread")
 		},
 	}
 }
@@ -153,7 +158,8 @@ var serviceInstallCmd = &cobra.Command{
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		WarnDeprecated("fabric service", "fabric thread service")
-		return InstallService(normalizeServiceRole(args))
+		mgr := service.NewInitManager()
+		return mgr.InstallService(normalizeServiceRole(args))
 	},
 }
 
@@ -163,7 +169,8 @@ var serviceUninstallCmd = &cobra.Command{
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		WarnDeprecated("fabric service", "fabric thread service")
-		return UninstallService(normalizeServiceRole(args))
+		mgr := service.NewInitManager()
+		return mgr.UninstallService(normalizeServiceRole(args))
 	},
 }
 
@@ -174,7 +181,8 @@ func newServiceActionCmd(action, desc string) *cobra.Command {
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			WarnDeprecated("fabric service", "fabric thread service")
-			return HandleServiceAction(action, normalizeServiceRole(args))
+			mgr := service.NewInitManager()
+			return mgr.HandleAction(action, normalizeServiceRole(args))
 		},
 	}
 }

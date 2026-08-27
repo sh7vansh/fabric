@@ -30,18 +30,20 @@ type NodeSession = ThreadSession
 
 // Config configures the MeshRelay control-plane.
 type Config struct {
-	Domain             string
-	Token              string
-	AdminToken         string
-	PingFreq           time.Duration
-	ServerID           string
-	GatewayID          string
-	Region             string
-	FederationCA       string
-	Peers              []string
-	LeafOf             string
-	OnNodeRegistered   func(meta protocol.NodeMetadata)
-	OnNodeUnregistered func(hostname string)
+	Domain               string
+	Token                string
+	AdminToken           string
+	PingFreq             time.Duration
+	ServerID             string
+	GatewayID            string
+	Region               string
+	FederationCA         string
+	Peers                []string
+	LeafOf               string
+	OnThreadRegistered   func(meta protocol.ThreadMetadata)
+	OnThreadUnregistered func(hostname string)
+	OnNodeRegistered     func(meta protocol.NodeMetadata)
+	OnNodeUnregistered   func(hostname string)
 }
 
 // Relay is the deep control-plane module managing mesh node registration,
@@ -50,23 +52,23 @@ type Relay struct {
 	domain       string
 	token        string
 	adminToken   string
-	nodes        map[string]*NodeSession
+	threads      map[string]*ThreadSession
 	mu           sync.RWMutex
 	closeCh      chan struct{}
 	closed       bool
 	closeMux     sync.Mutex
 
-	onNodeRegistered   func(meta protocol.NodeMetadata)
-	onNodeUnregistered func(hostname string)
+	onThreadRegistered   func(meta protocol.ThreadMetadata)
+	onThreadUnregistered func(hostname string)
 
 	// Federation fields
-	gatewayID    string
-	region       string
-	federationCA string
-	peers        map[string]*GatewayPeerSession
-	remoteNodes  map[string]RemoteNodeEntry
-	peerMu       sync.RWMutex
-	reconciler   *TopologyReconciler
+	gatewayID     string
+	region        string
+	federationCA  string
+	peers         map[string]*GatewayPeerSession
+	remoteThreads map[string]RemoteThreadEntry
+	peerMu        sync.RWMutex
+	reconciler    *TopologyReconciler
 }
 
 // New creates and initializes a new MeshRelay instance.
@@ -84,7 +86,6 @@ func New(cfg Config) *Relay {
 		serverID = "gw-" + strings.ReplaceAll(domain, ".", "-")
 	}
 
-
 	region := cfg.Region
 	if region == "" {
 		region = "default"
@@ -92,20 +93,29 @@ func New(cfg Config) *Relay {
 
 	adminToken := cfg.AdminToken
 
+	onThreadReg := cfg.OnThreadRegistered
+	if onThreadReg == nil && cfg.OnNodeRegistered != nil {
+		onThreadReg = cfg.OnNodeRegistered
+	}
+	onThreadUnreg := cfg.OnThreadUnregistered
+	if onThreadUnreg == nil && cfg.OnNodeUnregistered != nil {
+		onThreadUnreg = cfg.OnNodeUnregistered
+	}
+
 	r := &Relay{
-		domain:             domain,
-		token:              cfg.Token,
-		adminToken:         adminToken,
-		nodes:              make(map[string]*NodeSession),
-		closeCh:            make(chan struct{}),
-		onNodeRegistered:   cfg.OnNodeRegistered,
-		onNodeUnregistered: cfg.OnNodeUnregistered,
-		gatewayID:          serverID,
-		region:             region,
-		federationCA:       cfg.FederationCA,
-		peers:              make(map[string]*GatewayPeerSession),
-		remoteNodes:        make(map[string]RemoteNodeEntry),
-		reconciler:         NewTopologyReconciler(serverID),
+		domain:               domain,
+		token:                cfg.Token,
+		adminToken:           adminToken,
+		threads:              make(map[string]*ThreadSession),
+		closeCh:              make(chan struct{}),
+		onThreadRegistered:   onThreadReg,
+		onThreadUnregistered: onThreadUnreg,
+		gatewayID:            serverID,
+		region:               region,
+		federationCA:         cfg.FederationCA,
+		peers:                make(map[string]*GatewayPeerSession),
+		remoteThreads:        make(map[string]RemoteThreadEntry),
+		reconciler:           NewTopologyReconciler(serverID),
 	}
 
 	pingFreq := cfg.PingFreq
@@ -352,7 +362,7 @@ func (r *Relay) pingLoop(freq time.Duration) {
 		case <-ticker.C:
 			r.mu.Lock()
 			nowStr := time.Now().UTC().Format(time.RFC3339)
-			for _, state := range r.nodes {
+			for _, state := range r.threads {
 				state.Metadata.LastSeen = nowStr
 			}
 			r.mu.Unlock()
@@ -407,7 +417,7 @@ func (r *Relay) RegisterThread(meta protocol.ThreadMetadata, mux *protocol.Strea
 	meta.GatewayID = r.gatewayID
 
 	r.mu.Lock()
-	if existing, exists := r.nodes[meta.Hostname]; exists {
+	if existing, exists := r.threads[meta.Hostname]; exists {
 		if len(meta.Tags) == 0 && len(existing.Metadata.Tags) > 0 {
 			meta.Tags = existing.Metadata.Tags
 		}
@@ -421,12 +431,12 @@ func (r *Relay) RegisterThread(meta protocol.ThreadMetadata, mux *protocol.Strea
 		Mux:      mux,
 		Metadata: meta,
 	}
-	r.nodes[meta.Hostname] = sess
+	r.threads[meta.Hostname] = sess
 	r.reconciler.IncrementEpoch()
 	r.mu.Unlock()
 
-	if r.onNodeRegistered != nil {
-		r.onNodeRegistered(meta)
+	if r.onThreadRegistered != nil {
+		r.onThreadRegistered(meta)
 	}
 
 	go r.BroadcastSync()
@@ -437,13 +447,13 @@ func (r *Relay) RegisterThread(meta protocol.ThreadMetadata, mux *protocol.Strea
 		go func() {
 			<-mux.Session.CloseChan()
 			r.mu.Lock()
-			if curr, ok := r.nodes[meta.Hostname]; ok && curr.Mux == mux {
-				delete(r.nodes, meta.Hostname)
+			if curr, ok := r.threads[meta.Hostname]; ok && curr.Mux == mux {
+				delete(r.threads, meta.Hostname)
 				r.reconciler.IncrementEpoch()
 			}
 			r.mu.Unlock()
-			if r.onNodeUnregistered != nil {
-				r.onNodeUnregistered(meta.Hostname)
+			if r.onThreadUnregistered != nil {
+				r.onThreadUnregistered(meta.Hostname)
 			}
 			r.BroadcastSync()
 			r.BroadcastThreadWithdraw(meta.Hostname)
@@ -462,13 +472,13 @@ func (r *Relay) RegisterNode(meta protocol.NodeMetadata, mux *protocol.StreamMul
 // UnregisterThread removes a thread by hostname and triggers a sync broadcast.
 func (r *Relay) UnregisterThread(hostname string) {
 	r.mu.Lock()
-	if _, ok := r.nodes[hostname]; ok {
-		delete(r.nodes, hostname)
+	if _, ok := r.threads[hostname]; ok {
+		delete(r.threads, hostname)
 		r.reconciler.IncrementEpoch()
 	}
 	r.mu.Unlock()
-	if r.onNodeUnregistered != nil {
-		r.onNodeUnregistered(hostname)
+	if r.onThreadUnregistered != nil {
+		r.onThreadUnregistered(hostname)
 	}
 	go r.BroadcastSync()
 	go r.BroadcastThreadWithdraw(hostname)
@@ -483,7 +493,7 @@ func (r *Relay) UnregisterNode(hostname string) {
 // GetThread returns a copy of thread metadata if online (local or remote).
 func (r *Relay) GetThread(hostname string) (*protocol.ThreadMetadata, bool) {
 	r.mu.RLock()
-	state, ok := r.nodes[hostname]
+	state, ok := r.threads[hostname]
 	var metaCopy protocol.ThreadMetadata
 	if ok {
 		metaCopy = state.Metadata
@@ -494,12 +504,12 @@ func (r *Relay) GetThread(hostname string) (*protocol.ThreadMetadata, bool) {
 		return &metaCopy, true
 	}
 
-	// Check remote nodes
+	// Check remote threads
 	r.peerMu.RLock()
 	defer r.peerMu.RUnlock()
 
-	if rentry, exists := r.remoteNodes[hostname]; exists {
-		metaCopy := rentry.Node
+	if rentry, exists := r.remoteThreads[hostname]; exists {
+		metaCopy := rentry.Thread
 		return &metaCopy, true
 	}
 
@@ -507,9 +517,9 @@ func (r *Relay) GetThread(hostname string) (*protocol.ThreadMetadata, bool) {
 	if idx := strings.Index(hostname, "."); idx > 0 {
 		prefix := hostname[:idx]
 		rest := hostname[idx+1:]
-		for rHost, rentry := range r.remoteNodes {
+		for rHost, rentry := range r.remoteThreads {
 			if rHost == prefix && (rentry.GatewayID == rest || rentry.GatewayID+"."+r.domain == rest || rentry.GatewayID+".fabric" == rest) {
-				metaCopy := rentry.Node
+				metaCopy := rentry.Thread
 				return &metaCopy, true
 			}
 		}
@@ -524,9 +534,9 @@ func (r *Relay) GetNode(hostname string) (*protocol.NodeMetadata, bool) {
 	return r.GetThread(hostname)
 }
 
-func (r *Relay) listNodesLocked() []protocol.NodeMetadata {
-	list := make([]protocol.NodeMetadata, 0, len(r.nodes))
-	for _, state := range r.nodes {
+func (r *Relay) listThreadsLocked() []protocol.ThreadMetadata {
+	list := make([]protocol.ThreadMetadata, 0, len(r.threads))
+	for _, state := range r.threads {
 		meta := state.Metadata
 		if meta.GatewayID == "" {
 			meta.GatewayID = r.gatewayID
@@ -536,15 +546,19 @@ func (r *Relay) listNodesLocked() []protocol.NodeMetadata {
 	return list
 }
 
+func (r *Relay) listNodesLocked() []protocol.NodeMetadata {
+	return r.listThreadsLocked()
+}
+
 // ListThreads returns metadata for all currently connected local and federated threads.
-func (r *Relay) ListThreads() []protocol.NodeMetadata {
+func (r *Relay) ListThreads() []protocol.ThreadMetadata {
 	r.mu.RLock()
-	list := r.listNodesLocked()
+	list := r.listThreadsLocked()
 	r.mu.RUnlock()
 
 	r.peerMu.RLock()
-	for _, rentry := range r.remoteNodes {
-		list = append(list, rentry.Node)
+	for _, rentry := range r.remoteThreads {
+		list = append(list, rentry.Thread)
 	}
 	r.peerMu.RUnlock()
 
@@ -558,7 +572,7 @@ func (r *Relay) ListNodes() []protocol.NodeMetadata {
 	return r.ListThreads()
 }
 
-func (r *Relay) resolveTarget(targetHostname string) (isLocal bool, nodeSess *NodeSession, peerSess *GatewayPeerSession, cleanTarget string) {
+func (r *Relay) resolveTarget(targetHostname string) (isLocal bool, threadSess *ThreadSession, peerSess *GatewayPeerSession, cleanTarget string) {
 	cleanTarget = targetHostname
 	gwHint := ""
 
@@ -573,22 +587,22 @@ func (r *Relay) resolveTarget(targetHostname string) (isLocal bool, nodeSess *No
 		}
 	}
 
-	// 1. If gwHint is local gateway or empty, check local nodes
+	// 1. If gwHint is local gateway or empty, check local threads
 	if gwHint == "" || gwHint == r.gatewayID {
 		r.mu.RLock()
-		sess, ok := r.nodes[cleanTarget]
+		sess, ok := r.threads[cleanTarget]
 		r.mu.RUnlock()
 		if ok {
 			return true, sess, nil, cleanTarget
 		}
 	}
 
-	// 2. Check remote nodes
+	// 2. Check remote threads
 	r.peerMu.RLock()
 	defer r.peerMu.RUnlock()
 
 	if gwHint != "" {
-		for rHost, rentry := range r.remoteNodes {
+		for rHost, rentry := range r.remoteThreads {
 			if rHost == cleanTarget && rentry.GatewayID == gwHint {
 				return false, nil, rentry.PeerSession, cleanTarget
 			}
@@ -598,7 +612,7 @@ func (r *Relay) resolveTarget(targetHostname string) (isLocal bool, nodeSess *No
 		}
 	}
 
-	if rentry, ok := r.remoteNodes[cleanTarget]; ok {
+	if rentry, ok := r.remoteThreads[cleanTarget]; ok {
 		return false, nil, rentry.PeerSession, cleanTarget
 	}
 
@@ -607,10 +621,10 @@ func (r *Relay) resolveTarget(targetHostname string) (isLocal bool, nodeSess *No
 
 // RouteStream forwards an incoming stream and initial envelope to a target node (local or federated).
 func (r *Relay) RouteStream(targetHostname string, envelope []byte, srcStream net.Conn) error {
-	isLocal, localNode, peerSess, cleanTarget := r.resolveTarget(targetHostname)
+	isLocal, localThread, peerSess, cleanTarget := r.resolveTarget(targetHostname)
 
-	if isLocal && localNode != nil {
-		targetStream, err := localNode.Mux.Session.Open()
+	if isLocal && localThread != nil {
+		targetStream, err := localThread.Mux.Session.Open()
 		if err != nil {
 			srcStream.Close()
 			return fmt.Errorf("failed to open stream to target node %s: %w", cleanTarget, err)
@@ -681,17 +695,17 @@ func (r *Relay) RouteStream(targetHostname string, envelope []byte, srcStream ne
 func (r *Relay) RouteProxyStream(targetHostname string, envelope []byte, srcStream net.Conn) error {
 	if targetHostname == "" {
 		r.mu.RLock()
-		for _, n := range r.nodes {
+		for _, n := range r.threads {
 			targetHostname = n.Metadata.Hostname
 			break
 		}
 		r.mu.RUnlock()
 	}
 
-	isLocal, localNode, peerSess, cleanTarget := r.resolveTarget(targetHostname)
+	isLocal, localThread, peerSess, cleanTarget := r.resolveTarget(targetHostname)
 
-	if isLocal && localNode != nil {
-		targetStream, err := localNode.Mux.Session.Open()
+	if isLocal && localThread != nil {
+		targetStream, err := localThread.Mux.Session.Open()
 		if err != nil {
 			srcStream.Close()
 			return fmt.Errorf("failed to open proxy stream: %w", err)
@@ -800,7 +814,7 @@ func (r *Relay) ResolveDNS(req protocol.DNSQuery, proxyIP string) protocol.DNSRe
 			r.peerMu.RLock()
 			_, isPeer := r.peers[last]
 			if !isPeer {
-				for _, rn := range r.remoteNodes {
+				for _, rn := range r.remoteThreads {
 					if rn.GatewayID == last {
 						isPeer = true
 						break
@@ -819,13 +833,13 @@ func (r *Relay) ResolveDNS(req protocol.DNSQuery, proxyIP string) protocol.DNSRe
 
 		if gwID == "" || gwID == r.gatewayID {
 			r.mu.RLock()
-			_, isOnline = r.nodes[nodeID]
+			_, isOnline = r.threads[nodeID]
 			r.mu.RUnlock()
 		}
 
 		if !isOnline {
 			r.peerMu.RLock()
-			for rHost, rentry := range r.remoteNodes {
+			for rHost, rentry := range r.remoteThreads {
 				if rHost == nodeID && (gwID == "" || rentry.GatewayID == gwID) {
 					isOnline = true
 					break
@@ -872,19 +886,20 @@ func (r *Relay) ResolveDNS(req protocol.DNSQuery, proxyIP string) protocol.DNSRe
 	return resp
 }
 
-// BroadcastSync broadcasts connected node metadata to all active nodes.
+// BroadcastSync broadcasts connected thread metadata to all active threads.
 func (r *Relay) BroadcastSync() {
 	r.mu.RLock()
-	list := r.listNodesLocked()
-	nodeSessions := make([]*NodeSession, 0, len(r.nodes))
-	for _, s := range r.nodes {
-		nodeSessions = append(nodeSessions, s)
+	list := r.listThreadsLocked()
+	threadSessions := make([]*ThreadSession, 0, len(r.threads))
+	for _, s := range r.threads {
+		threadSessions = append(threadSessions, s)
 	}
 	r.mu.RUnlock()
 
-	syncMsg := protocol.NodeSync{
-		Type:  protocol.TypeNodeSync,
-		Nodes: list,
+	syncMsg := protocol.ThreadSync{
+		Type:    protocol.TypeThreadSync,
+		Threads: list,
+		Nodes:   list,
 	}
 
 	b, err := json.Marshal(syncMsg)
@@ -892,7 +907,7 @@ func (r *Relay) BroadcastSync() {
 		return
 	}
 
-	for _, s := range nodeSessions {
+	for _, s := range threadSessions {
 		if s.Mux != nil && s.Mux.Session != nil && !s.Mux.Session.IsClosed() {
 			stream, err := s.Mux.Session.Open()
 			if err == nil {
@@ -915,12 +930,12 @@ func (r *Relay) Close() error {
 	close(r.closeCh)
 
 	r.mu.Lock()
-	for _, s := range r.nodes {
+	for _, s := range r.threads {
 		if s.Mux != nil && s.Mux.Session != nil {
 			_ = s.Mux.Session.Close()
 		}
 	}
-	r.nodes = make(map[string]*NodeSession)
+	r.threads = make(map[string]*ThreadSession)
 	r.mu.Unlock()
 
 	r.peerMu.Lock()
@@ -930,7 +945,7 @@ func (r *Relay) Close() error {
 		}
 	}
 	r.peers = make(map[string]*GatewayPeerSession)
-	r.remoteNodes = make(map[string]RemoteNodeEntry)
+	r.remoteThreads = make(map[string]RemoteThreadEntry)
 	r.peerMu.Unlock()
 
 	return nil

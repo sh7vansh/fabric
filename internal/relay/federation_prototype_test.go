@@ -93,7 +93,7 @@ func TestFederationTransitiveStreamRelayPrototype(t *testing.T) {
 				continue
 			}
 
-			if req.Type == protocol.TypeNodeSync {
+			if req.Type == protocol.TypeNodeSync || req.Type == protocol.TypeThreadSync {
 				stream.Close()
 				continue
 			}

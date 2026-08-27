@@ -213,7 +213,7 @@ func TestRelayRouteStream(t *testing.T) {
 			buf := make([]byte, 64)
 			n, _ := stream.Read(buf)
 			content := string(buf[:n])
-			if strings.Contains(content, "node_sync") {
+			if strings.Contains(content, "node_sync") || strings.Contains(content, "thread_sync") {
 				stream.Close()
 				continue
 			}
@@ -584,6 +584,100 @@ func TestRelayCanonicalThreadRegistration(t *testing.T) {
 	r.UnregisterThread("thread-canon-1")
 	if _, ok := r.GetThread("thread-canon-1"); ok {
 		t.Errorf("expected thread-canon-1 to be unregistered")
+	}
+}
+
+func TestRelayBroadcastSyncThreadSync(t *testing.T) {
+	r := New(Config{
+		Domain:   "fabric.mesh",
+		Token:    "secret-123",
+		PingFreq: 0,
+	})
+	defer r.Close()
+
+	sMux, cMux := createMockMultiplexers(t)
+	defer sMux.Session.Close()
+	defer cMux.Session.Close()
+
+	syncReceived := make(chan protocol.ThreadSync, 1)
+	go func() {
+		for {
+			stream, err := cMux.Session.Accept()
+			if err != nil {
+				return
+			}
+			buf := make([]byte, 4096)
+			n, _ := stream.Read(buf)
+			stream.Close()
+			var msg protocol.ThreadSync
+			if json.Unmarshal(buf[:n], &msg) == nil && (msg.Type == protocol.TypeThreadSync || msg.Type == protocol.TypeNodeSync) {
+				syncReceived <- msg
+				return
+			}
+		}
+	}()
+
+	meta := protocol.ThreadMetadata{
+		Hostname:   "sync-thread-1",
+		ThreadName: "sync-thread-1",
+		OS:         "linux",
+		Arch:       "amd64",
+	}
+
+	_, err := r.RegisterThread(meta, sMux)
+	if err != nil {
+		t.Fatalf("RegisterThread failed: %v", err)
+	}
+
+	select {
+	case syncMsg := <-syncReceived:
+		if syncMsg.Type != protocol.TypeThreadSync {
+			t.Errorf("expected TypeThreadSync, got %s", syncMsg.Type)
+		}
+		if len(syncMsg.Threads) != 1 || syncMsg.Threads[0].Hostname != "sync-thread-1" {
+			t.Errorf("expected 1 thread in syncMsg.Threads, got %v", syncMsg.Threads)
+		}
+		if len(syncMsg.Nodes) != 1 || syncMsg.Nodes[0].Hostname != "sync-thread-1" {
+			t.Errorf("expected dual population in syncMsg.Nodes, got %v", syncMsg.Nodes)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatalf("timed out waiting for BroadcastSync")
+	}
+}
+
+func TestRelayThreadHooks(t *testing.T) {
+	var regHookCalled, unregHookCalled bool
+	var regHost, unregHost string
+
+	r := New(Config{
+		Domain: "fabric.mesh",
+		Token:  "secret-123",
+		OnThreadRegistered: func(meta protocol.ThreadMetadata) {
+			regHookCalled = true
+			regHost = meta.Hostname
+		},
+		OnThreadUnregistered: func(hostname string) {
+			unregHookCalled = true
+			unregHost = hostname
+		},
+	})
+	defer r.Close()
+
+	sMux, cMux := createMockMultiplexers(t)
+	defer sMux.Session.Close()
+	defer cMux.Session.Close()
+
+	meta := protocol.ThreadMetadata{
+		Hostname: "hook-thread",
+	}
+	_, _ = r.RegisterThread(meta, sMux)
+	if !regHookCalled || regHost != "hook-thread" {
+		t.Errorf("expected OnThreadRegistered to be called for hook-thread")
+	}
+
+	r.UnregisterThread("hook-thread")
+	if !unregHookCalled || unregHost != "hook-thread" {
+		t.Errorf("expected OnThreadUnregistered to be called for hook-thread")
 	}
 }
 

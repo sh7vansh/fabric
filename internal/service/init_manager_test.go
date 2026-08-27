@@ -20,12 +20,12 @@ func TestGenerateSystemdSystemUnit(t *testing.T) {
 		t.Errorf("missing ExecStopPost in thread system unit: %s", unit)
 	}
 
-	agentUnit := mgr.GenerateSystemdSystemUnit("agent", "/usr/local/bin/fabric-agent")
-	if !strings.Contains(agentUnit, "Description=Fabric Mesh Network Thread") {
-		t.Errorf("missing description in agent unit: %s", agentUnit)
+	threadUnit := mgr.GenerateSystemdSystemUnit("thread", "/usr/local/bin/fabric-thread")
+	if !strings.Contains(threadUnit, "Description=Fabric Mesh Network Thread") {
+		t.Errorf("missing description in thread unit: %s", threadUnit)
 	}
-	if !strings.Contains(agentUnit, "ExecStart=/usr/local/bin/fabric-agent") {
-		t.Errorf("missing ExecStart in agent unit: %s", agentUnit)
+	if !strings.Contains(threadUnit, "ExecStart=/usr/local/bin/fabric-thread") {
+		t.Errorf("missing ExecStart in thread unit: %s", threadUnit)
 	}
 }
 

@@ -326,11 +326,27 @@ func (t *ThreadDaemon) dialAndServe(ctx context.Context, u *url.URL, sessionID s
 
 	router := protocol.NewRouter(mux.Session)
 
+	router.HandleFunc(string(protocol.TypeThreadSync), func(s net.Conn, env []byte) {
+		defer s.Close()
+		var syncMsg protocol.ThreadSync
+		if err := json.Unmarshal(env, &syncMsg); err == nil {
+			threadsToSync := syncMsg.Threads
+			if len(threadsToSync) == 0 {
+				threadsToSync = syncMsg.Nodes
+			}
+			t.dnsMgr.SyncNodes(threadsToSync, t.cfg.ServerURL)
+		}
+	})
+
 	router.HandleFunc(string(protocol.TypeNodeSync), func(s net.Conn, env []byte) {
 		defer s.Close()
 		var syncMsg protocol.NodeSync
 		if err := json.Unmarshal(env, &syncMsg); err == nil {
-			t.dnsMgr.SyncNodes(syncMsg.Nodes, t.cfg.ServerURL)
+			threadsToSync := syncMsg.Threads
+			if len(threadsToSync) == 0 {
+				threadsToSync = syncMsg.Nodes
+			}
+			t.dnsMgr.SyncNodes(threadsToSync, t.cfg.ServerURL)
 		}
 	})
 

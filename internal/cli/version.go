@@ -50,7 +50,7 @@ var versionCmd = &cobra.Command{
 		defer resp.Body.Close()
 
 		if resp.StatusCode != 200 {
-			if len(client.Config.DirectNodes) > 0 {
+			if len(client.Config.DirectThreads) > 0 {
 				fmt.Printf("\nFabric Server:\n  Status:           <not configured: direct mTLS mode>\n")
 			} else {
 				fmt.Printf("\nFabric Server:\n  Status:           <offline: HTTP %d>\n", resp.StatusCode)

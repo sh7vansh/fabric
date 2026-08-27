@@ -583,4 +583,88 @@ func TestGenerateStitchScript_LocalModeOutboundOnly(t *testing.T) {
 	}
 }
 
+func TestStitchHostOptionsNormalize(t *testing.T) {
+	t.Run("normalizes legacy inverted mode and socketURL/nodeName", func(t *testing.T) {
+		opts := StitchHostOptions{
+			Target:    "host-1",
+			SocketURL: "wss://10.0.0.1:8443/ws",
+			NodeName:  "legacy-node",
+			Mode:      "inverted",
+		}
+		opts.Normalize()
+
+		if opts.Mode != "remote" {
+			t.Errorf("expected Mode=remote, got: %s", opts.Mode)
+		}
+		if opts.ServerURL != "wss://10.0.0.1:8443/ws" {
+			t.Errorf("expected ServerURL to be populated from SocketURL, got: %s", opts.ServerURL)
+		}
+		if opts.ThreadName != "legacy-node" {
+			t.Errorf("expected ThreadName to be populated from NodeName, got: %s", opts.ThreadName)
+		}
+		if opts.ListenPort != "8443" {
+			t.Errorf("expected default ListenPort=8443, got: %s", opts.ListenPort)
+		}
+		if opts.Domain != "fabric.mesh" {
+			t.Errorf("expected default Domain=fabric.mesh, got: %s", opts.Domain)
+		}
+	})
+
+	t.Run("normalizes legacy normal mode and sets defaults", func(t *testing.T) {
+		opts := StitchHostOptions{
+			Target: "host-2",
+			Mode:   "normal",
+		}
+		opts.Normalize()
+
+		if opts.Mode != "local" {
+			t.Errorf("expected Mode=local, got: %s", opts.Mode)
+		}
+		if opts.ListenPort != "8443" {
+			t.Errorf("expected ListenPort=8443, got: %s", opts.ListenPort)
+		}
+	})
+
+	t.Run("preserves canonical fields", func(t *testing.T) {
+		opts := StitchHostOptions{
+			Target:     "host-3",
+			ServerURL:  "wss://192.168.1.50:8443/ws",
+			ThreadName: "canon-thread",
+			Mode:       "remote",
+			ListenPort: "9443",
+			Domain:     "custom.mesh",
+		}
+		opts.Normalize()
+
+		if opts.Mode != "remote" || opts.ServerURL != "wss://192.168.1.50:8443/ws" || opts.ThreadName != "canon-thread" || opts.ListenPort != "9443" || opts.Domain != "custom.mesh" {
+			t.Errorf("canonical fields were unexpectedly modified: %+v", opts)
+		}
+	})
+}
+
+func TestStitchHostWrapper(t *testing.T) {
+	mockExec := &mockExecutor{}
+	opts := StitchHostOptions{
+		Target:     "wrapper-node",
+		ServerURL:  "wss://10.0.0.1:8443/ws",
+		ThreadName: "wrapper-node",
+		Token:      "tok",
+		BinaryData: []byte("mock-binary"),
+	}
+
+	verifier := func(socketURL, token string) ([]protocol.NodeMetadata, error) {
+		return []protocol.NodeMetadata{
+			{Hostname: "wrapper-node", Status: "online"},
+		}, nil
+	}
+
+	node, err := StitchHost(opts, mockExec, verifier)
+	if err != nil {
+		t.Fatalf("StitchHost wrapper failed: %v", err)
+	}
+	if node == nil || node.Hostname != "wrapper-node" {
+		t.Errorf("unexpected node from StitchHost wrapper: %+v", node)
+	}
+}
+
 

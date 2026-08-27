@@ -46,6 +46,39 @@ type StitchHostOptions struct {
 	CADir         string        // optional CA directory
 }
 
+// Normalize normalizes legacy fields and parameters to canonical StitchHostOptions.
+func (opts *StitchHostOptions) Normalize() {
+	if opts.ThreadName == "" && opts.NodeName != "" {
+		opts.ThreadName = opts.NodeName
+	}
+	if opts.NodeName == "" && opts.ThreadName != "" {
+		opts.NodeName = opts.ThreadName
+	}
+	if opts.ServerURL == "" && opts.SocketURL != "" {
+		opts.ServerURL = opts.SocketURL
+	}
+	if opts.SocketURL == "" && opts.ServerURL != "" {
+		opts.SocketURL = opts.ServerURL
+	}
+
+	mode := strings.ToLower(strings.TrimSpace(opts.Mode))
+	switch mode {
+	case "inverted", "remote":
+		opts.Mode = "remote"
+	case "normal", "local", "":
+		opts.Mode = "local"
+	default:
+		opts.Mode = mode
+	}
+
+	if opts.ListenPort == "" {
+		opts.ListenPort = "8443"
+	}
+	if opts.Domain == "" {
+		opts.Domain = "fabric.mesh"
+	}
+}
+
 // RemoteExecutor defines an interface for executing a bootstrap script on a remote host.
 type RemoteExecutor interface {
 	Run(script string) error
@@ -380,7 +413,12 @@ func PackageBinaryPayload(data []byte) (string, error) {
 }
 
 // GenerateStitchScript generates the self-contained air-gapped bootstrap script for a remote host.
-func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
+func GenerateStitchScript(opts StitchHostOptions, serverURL string) string {
+	opts.Normalize()
+	if serverURL == "" {
+		serverURL = opts.ServerURL
+	}
+
 	payload := ""
 	if len(opts.BinaryData) > 0 {
 		if p, err := PackageBinaryPayload(opts.BinaryData); err == nil {
@@ -449,11 +487,8 @@ func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
 	}
 
 	listenAddr := ""
-	if opts.Mode == "inverted" || opts.Mode == "remote" {
+	if opts.Mode == "remote" {
 		port := opts.ListenPort
-		if port == "" {
-			port = "8443"
-		}
 		if !strings.HasPrefix(port, ":") {
 			port = ":" + port
 		}
@@ -462,10 +497,10 @@ func GenerateStitchScript(opts StitchHostOptions, socketURL string) string {
 
 	mgr := service.NewInitManager()
 	return mgr.RenderBootstrapScript(service.BootstrapScriptOptions{
-		ServerURL:     socketURL,
-		SocketURL:     socketURL,
+		ServerURL:     serverURL,
+		SocketURL:     serverURL,
 		ThreadName:    opts.ThreadName,
-		NodeName:      opts.NodeName,
+		NodeName:      opts.ThreadName,
 		ListenAddr:    listenAddr,
 		Mode:          opts.Mode,
 		Token:         opts.Token,
@@ -557,8 +592,14 @@ func DiscoverLocalSSHKeys() []string {
 	return keys
 }
 
+// StitchHost is a backward-compatible alias for ExecuteStitchHost.
+func StitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier NodeVerifierFunc, prober ...DirectProberFunc) (*protocol.NodeMetadata, error) {
+	return ExecuteStitchHost(opts, exec, verifier, prober...)
+}
+
 // Provision stitches a single remote target host into the mesh with automatic key retry.
 func (p *Provisioner) Provision(opts StitchHostOptions) (*protocol.NodeMetadata, error) {
+	opts.Normalize()
 	node, err := ExecuteStitchHost(opts, p.exec, p.verifier, p.prober)
 	if err != nil && strings.Contains(err.Error(), "exit status 255") && p.keyPrompt != nil {
 		keys := DiscoverLocalSSHKeys()
@@ -577,6 +618,9 @@ func (p *Provisioner) Provision(opts StitchHostOptions) (*protocol.NodeMetadata,
 func (p *Provisioner) ProvisionBatch(targets []StitchHostOptions) ([]ProvisionResult, error) {
 	if len(targets) == 0 {
 		return nil, nil
+	}
+	for i := range targets {
+		targets[i].Normalize()
 	}
 	results := make([]ProvisionResult, len(targets))
 	concurrency := 8
@@ -650,32 +694,29 @@ type NodeVerifierFunc func(socketURL, token string) ([]protocol.NodeMetadata, er
 
 // ExecuteStitchHost performs the full bootstrap and mesh join verification workflow.
 func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier NodeVerifierFunc, prober ...DirectProberFunc) (*protocol.NodeMetadata, error) {
-	socketURL := opts.ServerURL
-	if socketURL == "" {
-		socketURL = opts.SocketURL
-	}
-	if opts.Mode != "inverted" && opts.Mode != "remote" {
-		u, err := url.Parse(socketURL)
+	opts.Normalize()
+
+	serverURL := opts.ServerURL
+	if opts.Mode != "remote" {
+		u, err := url.Parse(serverURL)
 		if err == nil {
 			host, port, err := net.SplitHostPort(u.Host)
 			if err == nil && (host == "localhost" || host == "127.0.0.1" || host == "::1") {
 				outboundIP := GetOutboundIP()
 				u.Host = net.JoinHostPort(outboundIP, port)
-				socketURL = u.String()
+				serverURL = u.String()
+				opts.ServerURL = serverURL
+				opts.SocketURL = serverURL
 				if !opts.SilentOutput {
-					fmt.Printf("[+] Detected local loopback socket. Resolving remote socket URL to: %s\n", socketURL)
+					fmt.Printf("[+] Detected local loopback server. Resolving remote server URL to: %s\n", serverURL)
 				}
 			}
 		}
 	} else {
-		socketURL = ""
+		serverURL = ""
 	}
 
 	listenPort := opts.ListenPort
-	if listenPort == "" {
-		listenPort = "8443"
-	}
-	opts.ListenPort = listenPort
 
 	targetHostOnly := opts.Target
 	if atIdx := strings.LastIndex(opts.Target, "@"); atIdx != -1 {
@@ -686,13 +727,13 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 	}
 
 	if !opts.SilentOutput {
-		modeStr := "Normal"
-		if opts.Mode == "inverted" || opts.Mode == "remote" {
+		modeStr := "Local"
+		if opts.Mode == "remote" {
 			modeStr = fmt.Sprintf("Remote (:%s)", listenPort)
 		}
 		fmt.Printf("[+] Stitching target '%s' (port %s, mode: %s) into Fabric mesh...\n", opts.Target, opts.SSHPort, modeStr)
-		if opts.Mode != "inverted" && opts.Mode != "remote" {
-			fmt.Printf("[+] Target Socket URL: %s\n", socketURL)
+		if opts.Mode != "remote" {
+			fmt.Printf("[+] Target Server URL: %s\n", serverURL)
 		}
 	}
 
@@ -747,7 +788,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 		fmt.Printf("[+] Streaming payload and executing bootstrap over SSH to %s...\n", opts.Target)
 	}
 
-	bootstrapScript := GenerateStitchScript(opts, socketURL)
+	bootstrapScript := GenerateStitchScript(opts, serverURL)
 
 	if err := exec.Run(bootstrapScript); err != nil {
 		errStr := err.Error()
@@ -783,7 +824,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 	}
 
 	// 1. Explicit Remote Mode Verification
-	if opts.Mode == "inverted" || opts.Mode == "remote" {
+	if opts.Mode == "remote" {
 		if !opts.SilentOutput {
 			fmt.Printf("[+] Verifying remote thread listener via direct mTLS probe (%s)...", targetProbeAddr)
 		}
@@ -846,7 +887,7 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Nod
 			if !opts.SilentOutput {
 				fmt.Print(".")
 			}
-			nodes, err := verifier(socketURL, opts.Token)
+			nodes, err := verifier(serverURL, opts.Token)
 			if err != nil {
 				continue
 			}

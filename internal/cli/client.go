@@ -138,12 +138,12 @@ func (c *Client) DialWebSocketForNode(targetNode string) (*websocket.Conn, error
 		if !strings.Contains(targetHost, "://") {
 			targetHost = "wss://" + targetHost
 		}
-	} else if targetNode != "" && c.Config != nil && c.Config.DirectNodes != nil {
-		if entry, ok := c.Config.DirectNodes[targetNode]; ok && entry.Address != "" {
+	} else if targetNode != "" && c.Config != nil && c.Config.DirectThreads != nil {
+		if entry, ok := c.Config.DirectThreads[targetNode]; ok && entry.Address != "" {
 			targetHost = entry.Address
 		} else {
 			// Check if targetNode matches entry.Hostname or domain suffix
-			for k, entry := range c.Config.DirectNodes {
+			for k, entry := range c.Config.DirectThreads {
 				if k == targetNode || entry.Hostname == targetNode ||
 					(entry.Domain != "" && strings.TrimSuffix(targetNode, "."+entry.Domain) == entry.Hostname) {
 					targetHost = entry.Address
@@ -446,14 +446,14 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 	}
 
 	// Merge direct nodes from local configuration
-	if c.Config != nil && len(c.Config.DirectNodes) > 0 {
+	if c.Config != nil && len(c.Config.DirectThreads) > 0 {
 		seen := make(map[string]bool)
 		seenAddr := make(map[string]bool)
 		for _, n := range nodes {
 			seen[n.Hostname] = true
 			seenAddr[n.RemoteIP] = true
 		}
-		for name, entry := range c.Config.DirectNodes {
+		for name, entry := range c.Config.DirectThreads {
 			// Skip FQDN duplicates in listing if base hostname or address is already listed
 			if strings.Count(name, ".") > 1 && entry.Hostname != "" && name != entry.Hostname {
 				continue
@@ -500,7 +500,7 @@ func (c *Client) ListNodes() ([]protocol.NodeMetadata, error) {
 				Tags:     []string{"relay"},
 				Domain:   socketDomain,
 			}
-		} else if len(c.Config.DirectNodes) > 0 || detectLocalNode() != nil {
+		} else if len(c.Config.DirectThreads) > 0 || detectLocalNode() != nil {
 			socketNode = &protocol.NodeMetadata{
 				ID:       "socket",
 				Hostname: "socket",
@@ -596,16 +596,16 @@ func detectLocalNode() *protocol.NodeMetadata {
 
 // GetNode retrieves metadata for a single mesh node from socket or local direct registry.
 func (c *Client) GetNode(hostname string) (*protocol.NodeMetadata, error) {
-	if c.Config != nil && c.Config.DirectNodes != nil {
-		var matchedEntry *DirectNodeEntry
+	if c.Config != nil && c.Config.DirectThreads != nil {
+		var matchedEntry *DirectThreadEntry
 		displayHost := hostname
-		if entry, ok := c.Config.DirectNodes[hostname]; ok {
+		if entry, ok := c.Config.DirectThreads[hostname]; ok {
 			matchedEntry = &entry
 			if entry.Hostname != "" {
 				displayHost = entry.Hostname
 			}
 		} else {
-			for k, entry := range c.Config.DirectNodes {
+			for k, entry := range c.Config.DirectThreads {
 				if k == hostname || entry.Hostname == hostname || (entry.Domain != "" && strings.TrimSuffix(hostname, "."+entry.Domain) == entry.Hostname) {
 					matchedEntry = &entry
 					displayHost = entry.Hostname

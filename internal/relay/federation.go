@@ -41,13 +41,17 @@ type ServerPeerSession struct {
 // GatewayPeerSession is a backward-compatible alias for ServerPeerSession.
 type GatewayPeerSession = ServerPeerSession
 
-// RemoteNodeEntry maps a remote thread hostname to its hosting server.
-type RemoteNodeEntry struct {
-	Node        protocol.NodeMetadata
+// RemoteThreadEntry maps a remote thread hostname to its hosting server.
+type RemoteThreadEntry struct {
+	Thread      protocol.ThreadMetadata
+	Node        protocol.ThreadMetadata
 	ServerID    string
 	GatewayID   string
 	PeerSession *GatewayPeerSession
 }
+
+// RemoteNodeEntry is a backward-compatible alias for RemoteThreadEntry.
+type RemoteNodeEntry = RemoteThreadEntry
 
 type prefixConn struct {
 	net.Conn
@@ -161,9 +165,9 @@ func (r *Relay) unregisterPeerSession(peer *GatewayPeerSession) {
 	r.peerMu.Lock()
 	if curr, ok := r.peers[peer.GatewayID]; ok && curr == peer {
 		delete(r.peers, peer.GatewayID)
-		for host, entry := range r.remoteNodes {
+		for host, entry := range r.remoteThreads {
 			if entry.GatewayID == peer.GatewayID {
-				delete(r.remoteNodes, host)
+				delete(r.remoteThreads, host)
 			}
 		}
 		if r.reconciler != nil {
@@ -186,9 +190,9 @@ func (r *Relay) UnregisterPeer(gatewayID string) {
 	peer, exists := r.peers[gatewayID]
 	if exists {
 		delete(r.peers, gatewayID)
-		for host, entry := range r.remoteNodes {
+		for host, entry := range r.remoteThreads {
 			if entry.GatewayID == gatewayID {
-				delete(r.remoteNodes, host)
+				delete(r.remoteThreads, host)
 			}
 		}
 		if r.reconciler != nil {
@@ -211,9 +215,9 @@ func (r *Relay) UnregisterPeer(gatewayID string) {
 	}
 }
 
-// RegisterRemoteNode records an advertised thread hosted on a remote peer gateway.
-func (r *Relay) RegisterRemoteNode(node protocol.NodeMetadata, gatewayID string) {
-	if node.Hostname == "" || gatewayID == "" {
+// RegisterRemoteThread records an advertised thread hosted on a remote peer gateway.
+func (r *Relay) RegisterRemoteThread(thread protocol.ThreadMetadata, gatewayID string) {
+	if thread.Hostname == "" || gatewayID == "" {
 		return
 	}
 
@@ -221,28 +225,40 @@ func (r *Relay) RegisterRemoteNode(node protocol.NodeMetadata, gatewayID string)
 	defer r.peerMu.Unlock()
 
 	peer := r.peers[gatewayID]
-	node.GatewayID = gatewayID
-	if node.Status == "" {
-		node.Status = "online [peer: " + gatewayID + "]"
+	thread.GatewayID = gatewayID
+	if thread.Status == "" {
+		thread.Status = "online [peer: " + gatewayID + "]"
 	}
 
-	r.remoteNodes[node.Hostname] = RemoteNodeEntry{
-		Node:        node,
+	r.remoteThreads[thread.Hostname] = RemoteThreadEntry{
+		Thread:      thread,
+		Node:        thread,
+		ServerID:    gatewayID,
 		GatewayID:   gatewayID,
 		PeerSession: peer,
 	}
 }
 
-// UnregisterRemoteNode removes an advertised thread.
-func (r *Relay) UnregisterRemoteNode(hostname, gatewayID string) {
+// RegisterRemoteNode is a backward-compatible alias for RegisterRemoteThread.
+func (r *Relay) RegisterRemoteNode(node protocol.NodeMetadata, gatewayID string) {
+	r.RegisterRemoteThread(node, gatewayID)
+}
+
+// UnregisterRemoteThread removes an advertised thread.
+func (r *Relay) UnregisterRemoteThread(hostname, gatewayID string) {
 	r.peerMu.Lock()
 	defer r.peerMu.Unlock()
 
-	if entry, ok := r.remoteNodes[hostname]; ok {
+	if entry, ok := r.remoteThreads[hostname]; ok {
 		if gatewayID == "" || entry.GatewayID == gatewayID {
-			delete(r.remoteNodes, hostname)
+			delete(r.remoteThreads, hostname)
 		}
 	}
+}
+
+// UnregisterRemoteNode is a backward-compatible alias for UnregisterRemoteThread.
+func (r *Relay) UnregisterRemoteNode(hostname, gatewayID string) {
+	r.UnregisterRemoteThread(hostname, gatewayID)
 }
 
 // ListPeers returns summary telemetry for all active peer gateways.
@@ -253,7 +269,7 @@ func (r *Relay) ListPeers() []protocol.GatewayPeerInfo {
 	list := make([]protocol.GatewayPeerInfo, 0, len(r.peers))
 	for _, p := range r.peers {
 		threadCount := 0
-		for _, rn := range r.remoteNodes {
+		for _, rn := range r.remoteThreads {
 			if rn.GatewayID == p.GatewayID {
 				threadCount++
 			}
@@ -292,7 +308,7 @@ func (r *Relay) GetPeer(gatewayID string) (*protocol.ServerPeerInfo, bool) {
 	}
 
 	threadCount := 0
-	for _, rn := range r.remoteNodes {
+	for _, rn := range r.remoteThreads {
 		if rn.GatewayID == p.GatewayID {
 			threadCount++
 		}
@@ -630,8 +646,12 @@ func (r *Relay) ServePeerMux(mux *protocol.StreamMultiplexer, remoteAddr string,
 			}
 		}
 
-		for _, node := range adv.Nodes {
-			r.RegisterRemoteNode(node, adv.GatewayID)
+		threadsToRegister := adv.Threads
+		if len(threadsToRegister) == 0 {
+			threadsToRegister = adv.Nodes
+		}
+		for _, threadMeta := range threadsToRegister {
+			r.RegisterRemoteThread(threadMeta, adv.GatewayID)
 		}
 	}))
 
@@ -805,10 +825,10 @@ func (r *Relay) cleanTargetHostname(target string) string {
 
 func (r *Relay) sendLocalThreadAdvertisementsToPeer(peer *GatewayPeerSession) {
 	r.mu.RLock()
-	localNodes := r.listNodesLocked()
+	localThreads := r.listThreadsLocked()
 	r.mu.RUnlock()
 
-	if len(localNodes) == 0 {
+	if len(localThreads) == 0 {
 		return
 	}
 
@@ -816,13 +836,14 @@ func (r *Relay) sendLocalThreadAdvertisementsToPeer(peer *GatewayPeerSession) {
 	var checksum uint32
 	if r.reconciler != nil {
 		epoch = r.reconciler.Epoch()
-		checksum = r.reconciler.ComputeChecksum(localNodes)
+		checksum = r.reconciler.ComputeChecksum(localThreads)
 	}
 
 	adv := protocol.ThreadAdvertise{
 		Type:      protocol.TypeThreadAdvertise,
 		GatewayID: r.gatewayID,
-		Nodes:     localNodes,
+		Threads:   localThreads,
+		Nodes:     localThreads,
 		Epoch:     epoch,
 		Checksum:  checksum,
 	}
@@ -877,7 +898,7 @@ func (r *Relay) BroadcastThreadAdvertise(nodes []protocol.NodeMetadata) {
 	if r.reconciler != nil {
 		epoch = r.reconciler.Epoch()
 		r.mu.RLock()
-		allLocal := r.listNodesLocked()
+		allLocal := r.listThreadsLocked()
 		r.mu.RUnlock()
 		checksum = r.reconciler.ComputeChecksum(allLocal)
 	}
@@ -885,6 +906,7 @@ func (r *Relay) BroadcastThreadAdvertise(nodes []protocol.NodeMetadata) {
 	adv := protocol.ThreadAdvertise{
 		Type:      protocol.TypeThreadAdvertise,
 		GatewayID: r.gatewayID,
+		Threads:   nodes,
 		Nodes:     nodes,
 		Epoch:     epoch,
 		Checksum:  checksum,
