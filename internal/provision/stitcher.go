@@ -606,14 +606,14 @@ func DiscoverLocalSSHKeys() []string {
 // StitchHost stitches a single remote target host into the mesh with automatic key retry and context cancellation.
 func (p *Provisioner) StitchHost(ctx context.Context, opts StitchHostOptions) (*protocol.ThreadMetadata, error) {
 	opts.Normalize()
-	thread, err := ExecuteStitchHost(opts, p.exec, p.verifier, p.prober)
+	thread, err := ExecuteStitchHostContext(ctx, opts, p.exec, p.verifier, p.prober)
 	if err != nil && (strings.Contains(err.Error(), "exit status 255") || strings.Contains(err.Error(), "Permission denied")) && p.keyPrompt != nil {
 		keys := DiscoverLocalSSHKeys()
 		if len(keys) > 0 {
 			chosenKey, promptErr := p.keyPrompt(opts.Target, keys)
 			if promptErr == nil && chosenKey != "" {
 				opts.IdentityKey = chosenKey
-				return ExecuteStitchHost(opts, p.exec, p.verifier, p.prober)
+				return ExecuteStitchHostContext(ctx, opts, p.exec, p.verifier, p.prober)
 			}
 		}
 	}
@@ -726,6 +726,20 @@ func StitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier ThreadVeri
 
 // ExecuteStitchHost performs the full bootstrap and mesh join verification workflow.
 func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier ThreadVerifier, prober ...DirectProber) (*protocol.ThreadMetadata, error) {
+	return ExecuteStitchHostContext(context.Background(), opts, exec, verifier, prober...)
+}
+
+// ExecuteStitchHostContext performs the full bootstrap and mesh join verification workflow with context cancellation.
+func ExecuteStitchHostContext(ctx context.Context, opts StitchHostOptions, exec RemoteExecutor, verifier ThreadVerifier, prober ...DirectProber) (*protocol.ThreadMetadata, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
 	opts.Normalize()
 
 	serverURL := opts.ServerURL
@@ -886,6 +900,8 @@ func ExecuteStitchHost(opts StitchHostOptions, exec RemoteExecutor, verifier Thr
 
 	for {
 		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		case <-timeout:
 			if opts.NoFallback {
 				if !opts.SilentOutput {

@@ -774,5 +774,47 @@ func TestFormatSSHError_FirewallHint(t *testing.T) {
 	}
 }
 
+func TestProvisioner_ContextCancellation(t *testing.T) {
+	mockExec := &mockExecutor{}
+	// Verifier that blocks / never returns node
+	verifier := func(serverURL, token string) ([]protocol.ThreadMetadata, error) {
+		return nil, nil
+	}
+
+	pro := NewProvisioner(mockExec, verifier)
+	opts := StitchHostOptions{
+		Target:        "cancel-node",
+		ServerURL:     "wss://srv:8443/ws",
+		VerifyTimeout: 10 * time.Second,
+		BinaryData:    []byte("bin"),
+	}
+
+	// 1. Pre-cancelled context on StitchHost
+	ctxCancel, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	_, err := pro.StitchHost(ctxCancel, opts)
+	if err == nil || err != context.Canceled {
+		t.Fatalf("expected context.Canceled error, got: %v", err)
+	}
+	if time.Since(start) > 1*time.Second {
+		t.Errorf("StitchHost took too long to cancel: %v", time.Since(start))
+	}
+
+	// 2. Mid-flight cancellation on ExecuteStitchHostContext
+	ctxTimeout, cancelMid := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelMid()
+
+	startMid := time.Now()
+	_, errMid := ExecuteStitchHostContext(ctxTimeout, opts, mockExec, verifier)
+	if errMid == nil || (errMid != context.DeadlineExceeded && errMid != context.Canceled) {
+		t.Fatalf("expected context timeout/canceled error from ExecuteStitchHostContext, got: %v", errMid)
+	}
+	if time.Since(startMid) > 1*time.Second {
+		t.Errorf("ExecuteStitchHostContext did not abort on context timeout: %v", time.Since(startMid))
+	}
+}
+
 
 

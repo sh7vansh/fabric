@@ -2,6 +2,8 @@ package service
 
 import (
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -46,16 +48,32 @@ func TestGenerateSystemdUserUnit(t *testing.T) {
 
 func TestGenerateSupervisorScript(t *testing.T) {
 	mgr := NewInitManager()
-	script := mgr.GenerateSupervisorScript("/tmp/thread.pid", "/tmp/thread.env", "/usr/bin/fabric-thread")
+	renderer := NewBootstrapRenderer()
+	pidFile := "/tmp/thread.pid"
+	envFile := "/tmp/thread.env"
+	binPath := "/usr/bin/fabric-thread"
 
-	if !strings.Contains(script, `PIDFILE="/tmp/thread.pid"`) {
-		t.Errorf("missing pidfile in supervisor script: %s", script)
+	scriptMgr := mgr.GenerateSupervisorScript(pidFile, envFile, binPath)
+	scriptRenderer := renderer.GenerateSupervisorScript(pidFile, envFile, binPath)
+
+	if scriptMgr != scriptRenderer {
+		t.Fatalf("InitManager and BootstrapRenderer produced divergent supervisor scripts:\nInitManager:\n%s\nBootstrapRenderer:\n%s", scriptMgr, scriptRenderer)
 	}
-	if !strings.Contains(script, `ENVFILE="/tmp/thread.env"`) {
-		t.Errorf("missing envfile in supervisor script: %s", script)
+
+	if !strings.Contains(scriptMgr, `PIDFILE="/tmp/thread.pid"`) {
+		t.Errorf("missing pidfile in supervisor script: %s", scriptMgr)
 	}
-	if !strings.Contains(script, `BIN="/usr/bin/fabric-thread"`) {
-		t.Errorf("missing bin in supervisor script: %s", script)
+	if !strings.Contains(scriptMgr, `ENVFILE="/tmp/thread.env"`) {
+		t.Errorf("missing envfile in supervisor script: %s", scriptMgr)
+	}
+	if !strings.Contains(scriptMgr, `BIN="/usr/bin/fabric-thread"`) {
+		t.Errorf("missing bin in supervisor script: %s", scriptMgr)
+	}
+	if !strings.Contains(scriptMgr, `echo "$CHILD_PID" > "$PIDFILE"`) {
+		t.Errorf("missing child pid tracking in supervisor script: %s", scriptMgr)
+	}
+	if !strings.Contains(scriptMgr, `trap `) {
+		t.Errorf("missing trap handling in supervisor script: %s", scriptMgr)
 	}
 }
 
@@ -355,6 +373,39 @@ func TestMemoryServiceAdapterLifecycle(t *testing.T) {
 	status, _ = mgr.Status("thread")
 	if status.Active {
 		t.Errorf("expected uninstalled service to not be active")
+	}
+}
+
+func TestInitManager_WriteServiceEnv(t *testing.T) {
+	mgr := NewInitManager()
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	env := ConfigEnv{
+		"FABRIC_SERVER_URL": "wss://test.mesh:8443/ws",
+		"FABRIC_TOKEN":      "secret-token-123",
+		"FABRIC_MODE":       "remote",
+	}
+
+	err := mgr.WriteServiceEnv("thread", env)
+	if err != nil {
+		t.Fatalf("WriteServiceEnv failed: %v", err)
+	}
+
+	targetEnv := filepath.Join(tmpDir, ".fabric", "thread.env")
+	data, err := os.ReadFile(targetEnv)
+	if err != nil {
+		t.Fatalf("failed to read written env file: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "FABRIC_SERVER_URL=wss://test.mesh:8443/ws") {
+		t.Errorf("missing FABRIC_SERVER_URL in %s", content)
+	}
+	if !strings.Contains(content, "FABRIC_TOKEN=secret-token-123") {
+		t.Errorf("missing FABRIC_TOKEN in %s", content)
+	}
+	if !strings.Contains(content, "FABRIC_MODE=remote") {
+		t.Errorf("missing FABRIC_MODE in %s", content)
 	}
 }
 

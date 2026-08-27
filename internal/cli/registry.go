@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 )
@@ -17,6 +18,14 @@ func NewThreadRegistry() *ThreadRegistry {
 	return &ThreadRegistry{
 		threads: make(map[string]DirectThreadEntry),
 	}
+}
+
+// FQTN returns the fully qualified thread name (<hostname>.<domain>) or hostname.
+func (e DirectThreadEntry) FQTN() string {
+	if e.Domain != "" && e.Hostname != "" {
+		return strings.TrimSuffix(e.Hostname, ".") + "." + strings.TrimPrefix(e.Domain, ".")
+	}
+	return e.Hostname
 }
 
 // Get retrieves a thread entry by key, hostname, or FQDN (case-insensitive fallback).
@@ -45,8 +54,8 @@ func (r *ThreadRegistry) Get(name string) (DirectThreadEntry, bool) {
 			return entry, true
 		}
 		if entry.Domain != "" && entry.Hostname != "" {
-			fqdn := entry.Hostname + "." + entry.Domain
-			if strings.EqualFold(fqdn, name) || strings.EqualFold(strings.TrimSuffix(name, "."+entry.Domain), entry.Hostname) {
+			fqdn := entry.FQTN()
+			if strings.EqualFold(fqdn, name) {
 				return entry, true
 			}
 		}
@@ -155,13 +164,21 @@ func (r *ThreadRegistry) UnmarshalJSON(data []byte) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	trimmed := strings.TrimSpace(string(data))
+	if trimmed == "" || trimmed == "null" || trimmed == "{}" {
+		if r.threads == nil {
+			r.threads = make(map[string]DirectThreadEntry)
+		}
+		return nil
+	}
+
 	if r.threads == nil {
 		r.threads = make(map[string]DirectThreadEntry)
 	}
 
 	// Try standard map[string]DirectThreadEntry
 	var rawMap map[string]DirectThreadEntry
-	if err := json.Unmarshal(data, &rawMap); err == nil {
+	if err := json.Unmarshal(data, &rawMap); err == nil && rawMap != nil {
 		for k, v := range rawMap {
 			r.threads[k] = v
 		}
@@ -173,7 +190,7 @@ func (r *ThreadRegistry) UnmarshalJSON(data []byte) error {
 		DirectThreads map[string]DirectThreadEntry `json:"direct_threads"`
 		DirectNodes   map[string]DirectThreadEntry `json:"direct_nodes"`
 	}
-	if err := json.Unmarshal(data, &aux); err == nil {
+	if err := json.Unmarshal(data, &aux); err == nil && (aux.DirectThreads != nil || aux.DirectNodes != nil) {
 		for k, v := range aux.DirectThreads {
 			r.threads[k] = v
 		}
@@ -185,5 +202,13 @@ func (r *ThreadRegistry) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
-	return nil
+	var firstErr error
+	var testMap map[string]interface{}
+	if err := json.Unmarshal(data, &testMap); err != nil {
+		firstErr = err
+	} else {
+		firstErr = fmt.Errorf("JSON object does not contain valid direct_threads or direct_nodes map")
+	}
+
+	return fmt.Errorf("failed to unmarshal thread registry JSON: %w", firstErr)
 }

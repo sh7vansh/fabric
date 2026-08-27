@@ -150,23 +150,8 @@ WantedBy=default.target
 
 // GenerateSupervisorScript renders the standalone background supervisor shell script content.
 func (m *InitManager) GenerateSupervisorScript(pidFile, envFile, targetBin string) string {
-	return fmt.Sprintf(`#!/usr/bin/env bash
-PIDFILE="%s"
-ENVFILE="%s"
-BIN="%s"
-if [ -f "$ENVFILE" ]; then
-    set -a
-    . "$ENVFILE"
-    set +a
-fi
-while true; do
-    "$BIN" &
-    CHILD_PID=$!
-    echo "$CHILD_PID" > "$PIDFILE"
-    wait "$CHILD_PID"
-    sleep 2
-done
-`, pidFile, envFile, targetBin)
+	renderer := NewBootstrapRenderer()
+	return renderer.GenerateSupervisorScript(pidFile, envFile, targetBin)
 }
 
 // GetStandalonePaths returns run directory, pid file, supervisor script, and binary path for standalone mode.
@@ -215,6 +200,43 @@ func (m *InitManager) GetStandalonePaths(role string) (runDir, pidFile, supervis
 		}
 	}
 	return
+}
+
+// WriteServiceEnv writes or updates the service environment file for the given role.
+func (m *InitManager) WriteServiceEnv(role string, env ConfigEnv) error {
+	if len(env) == 0 {
+		return nil
+	}
+
+	canonicalRole := role
+	if role == "agent" || role == "node" {
+		canonicalRole = "thread"
+	} else if role == "socket" {
+		canonicalRole = "server"
+	}
+
+	var envDir string
+	if os.Geteuid() == 0 {
+		envDir = "/etc/fabric"
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		envDir = filepath.Join(home, ".fabric")
+	}
+
+	if err := os.MkdirAll(envDir, 0700); err != nil {
+		return err
+	}
+
+	var sb strings.Builder
+	for k, v := range env {
+		sb.WriteString(fmt.Sprintf("%s=%s\n", k, v))
+	}
+
+	envPath := filepath.Join(envDir, canonicalRole+".env")
+	return os.WriteFile(envPath, []byte(sb.String()), 0600)
 }
 
 // InstallService installs and starts the service according to the detected host init tier.

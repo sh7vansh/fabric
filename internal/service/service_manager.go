@@ -42,6 +42,11 @@ func NewSystemdServiceAdapter() *SystemdServiceAdapter {
 }
 
 func (s *SystemdServiceAdapter) Install(role string, env ConfigEnv) error {
+	if len(env) > 0 {
+		if err := s.initMgr.WriteServiceEnv(role, env); err != nil {
+			return err
+		}
+	}
 	return s.initMgr.InstallService(role)
 }
 

@@ -397,24 +397,27 @@ PIDFILE="%s"
 ENVFILE="%s"
 BIN="%s"
 
-echo $$ > "$PIDFILE"
-
 cleanup() {
+    if [ -n "$CHILD_PID" ]; then
+        kill "$CHILD_PID" 2>/dev/null || true
+    fi
     rm -f "$PIDFILE"
     exit 0
 }
 trap cleanup SIGINT SIGTERM EXIT
 
+if [ -f "$ENVFILE" ]; then
+    set -a
+    . "$ENVFILE"
+    set +a
+fi
+
 while true; do
-    if [ -f "$ENVFILE" ]; then
-        set -a
-        source "$ENVFILE"
-        set +a
-    fi
     "$BIN" &
     CHILD_PID=$!
+    echo "$CHILD_PID" > "$PIDFILE"
     wait "$CHILD_PID"
-    sleep 3
+    sleep 2
 done
 `, pidFile, envFile, binPath)
 }

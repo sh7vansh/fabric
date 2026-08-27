@@ -382,5 +382,89 @@ func TestThreadRegistryDetailed(t *testing.T) {
 	}
 }
 
+func TestThreadRegistryFQDNPrecisionAndFQTN(t *testing.T) {
+	reg := NewThreadRegistry()
+	entry := DirectThreadEntry{
+		Address:  "10.0.1.15:8443",
+		Hostname: "worker-prod",
+		Domain:   "west.fabric.corp",
+		Tags:     []string{"remote"},
+	}
+	reg.Set("worker-key", entry)
+
+	// 1. Direct FQTN method test
+	if fqtn := entry.FQTN(); fqtn != "worker-prod.west.fabric.corp" {
+		t.Errorf("expected FQTN 'worker-prod.west.fabric.corp', got %q", fqtn)
+	}
+
+	// 2. Exact FQDN match
+	if found, ok := reg.Get("worker-prod.west.fabric.corp"); !ok || found.Hostname != "worker-prod" {
+		t.Errorf("expected to find worker-prod by exact FQDN")
+	}
+
+	// 3. Case-insensitive FQDN match
+	if found, ok := reg.Get("WORKER-PROD.WEST.FABRIC.CORP"); !ok || found.Hostname != "worker-prod" {
+		t.Errorf("expected to find worker-prod by upper-case FQDN")
+	}
+
+	// 4. Short hostname match
+	if found, ok := reg.Get("worker-prod"); !ok || found.Hostname != "worker-prod" {
+		t.Errorf("expected to find worker-prod by short hostname")
+	}
+
+	// 5. Wrong domain suffix MUST NOT match
+	if _, ok := reg.Get("worker-prod.east.fabric.corp"); ok {
+		t.Errorf("expected Get to fail when domain suffix is different")
+	}
+
+	// 6. Substring prefix MUST NOT match
+	if _, ok := reg.Get("worker-prod.extra.west.fabric.corp"); ok {
+		t.Errorf("expected Get to fail on extra subdomains not in entry.Domain")
+	}
+}
+
+func TestThreadRegistry_UnmarshalJSONValidation(t *testing.T) {
+	// 1. Valid map JSON
+	reg := NewThreadRegistry()
+	validMapJSON := []byte(`{"node-1": {"address": "10.0.0.1:8443", "hostname": "node-1"}}`)
+	if err := reg.UnmarshalJSON(validMapJSON); err != nil {
+		t.Fatalf("expected valid map JSON to unmarshal cleanly, got: %v", err)
+	}
+	if reg.Len() != 1 {
+		t.Errorf("expected 1 entry, got %d", reg.Len())
+	}
+
+	// 2. Valid dual-key object JSON
+	reg2 := NewThreadRegistry()
+	validDualJSON := []byte(`{"direct_threads": {"node-2": {"address": "10.0.0.2:8443"}}, "direct_nodes": {"node-3": {"address": "10.0.0.3:8443"}}}`)
+	if err := reg2.UnmarshalJSON(validDualJSON); err != nil {
+		t.Fatalf("expected valid dual-key JSON to unmarshal cleanly, got: %v", err)
+	}
+	if reg2.Len() != 2 {
+		t.Errorf("expected 2 entries, got %d", reg2.Len())
+	}
+
+	// 3. Null / empty JSON
+	reg3 := NewThreadRegistry()
+	if err := reg3.UnmarshalJSON([]byte(`null`)); err != nil {
+		t.Fatalf("expected null to unmarshal cleanly, got: %v", err)
+	}
+	if err := reg3.UnmarshalJSON([]byte(``)); err != nil {
+		t.Fatalf("expected empty bytes to unmarshal cleanly, got: %v", err)
+	}
+
+	// 4. Invalid / malformed JSON must return an error
+	regFail := NewThreadRegistry()
+	if err := regFail.UnmarshalJSON([]byte(`{ bad-json `)); err == nil {
+		t.Errorf("expected error on malformed JSON syntax, got nil")
+	}
+	if err := regFail.UnmarshalJSON([]byte(`12345`)); err == nil {
+		t.Errorf("expected error on integer JSON payload, got nil")
+	}
+	if err := regFail.UnmarshalJSON([]byte(`["array", "of", "strings"]`)); err == nil {
+		t.Errorf("expected error on array JSON payload, got nil")
+	}
+}
+
 
 
