@@ -689,8 +689,10 @@ func (r *Relay) RouteStream(targetHostname string, envelope []byte, srcStream ne
 		return nil
 	}
 
+	_ = protocol.WriteFrame(srcStream, protocol.StreamStderr, []byte(fmt.Sprintf("Error: thread '%s' not found\n", targetHostname)))
+	_ = protocol.WriteFrame(srcStream, protocol.StreamExit, []byte("1"))
 	srcStream.Close()
-	return fmt.Errorf("target node not found: %s", targetHostname)
+	return fmt.Errorf("target thread not found: %s", targetHostname)
 }
 
 // RouteProxyStream routes a TCP proxy request to a specified or default node (local or federated).

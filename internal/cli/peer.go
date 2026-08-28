@@ -7,6 +7,8 @@ import (
 	"text/tabwriter"
 	"text/template"
 
+	"fabric/internal/protocol"
+
 	"github.com/spf13/cobra"
 )
 
@@ -144,6 +146,9 @@ func runPeerLs(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 
 	if peerLsFormatFlag == "json" {
+		if peers == nil {
+			peers = []protocol.GatewayPeerInfo{}
+		}
 		b, _ := json.MarshalIndent(peers, "", "  ")
 		fmt.Fprintln(out, string(b))
 		return nil

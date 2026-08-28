@@ -64,6 +64,17 @@ func setupTestMesh(t *testing.T) (*httptest.Server, *relay.Relay) {
 	mux.HandleFunc("/devices", handleDevices)
 	mux.HandleFunc("/api/v1/devices", handleDevices)
 
+	handlePeers := func(w http.ResponseWriter, req *http.Request) {
+		auth := req.Header.Get("Authorization")
+		if auth != "Bearer "+testToken {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]protocol.GatewayPeerInfo{})
+	}
+	mux.HandleFunc("/peers", handlePeers)
+
 	ts := httptest.NewTLSServer(mux)
 	if home, err := os.UserHomeDir(); err == nil {
 		caDir := filepath.Join(home, ".fabric")

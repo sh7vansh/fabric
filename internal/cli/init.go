@@ -89,23 +89,31 @@ func init() {
 	_ = initCmd.Flags().MarkHidden("host")
 }
 
-func parseRoleChoice(input string) string {
+func validateAndParseRole(input string) (string, error) {
 	val := strings.ToLower(strings.TrimSpace(input))
 	switch val {
 	case "2", "server":
-		return "server"
+		return "server", nil
 	case "3", "both":
-		return "both"
+		return "both", nil
 	case "agent":
 		WarnDeprecated("--role=agent", "--role=thread")
-		return "thread"
+		return "thread", nil
 	case "cli", "client":
-		return "cli"
+		return "cli", nil
 	case "1", "thread":
-		return "thread"
+		return "thread", nil
 	default:
+		return "", fmt.Errorf("invalid role %q: must be 'thread', 'server', 'both', or 'cli'", input)
+	}
+}
+
+func parseRoleChoice(input string) string {
+	role, err := validateAndParseRole(input)
+	if err != nil {
 		return "thread"
 	}
+	return role
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
@@ -125,8 +133,24 @@ func runInit(cmd *cobra.Command, args []string) error {
 		initUntrustCA = false
 	}()
 
+	// 1. Early flag validation before privilege check
+	if initRoleFlag != "" {
+		if _, err := validateAndParseRole(initRoleFlag); err != nil {
+			return err
+		}
+	}
+	if initModeFlag != "" {
+		m := strings.ToLower(strings.TrimSpace(initModeFlag))
+		if m != "local" && m != "remote" && m != "inverted" {
+			return fmt.Errorf("invalid mode %q: must be 'local' or 'remote'", initModeFlag)
+		}
+	}
+
+	// CLI configuration role does not require root privileges
+	isCLIRole := strings.ToLower(strings.TrimSpace(initRoleFlag)) == "cli" || strings.ToLower(strings.TrimSpace(initRoleFlag)) == "client"
+
 	// Enforce administrative privileges for fabric init
-	if os.Geteuid() != 0 && os.Getenv("FABRIC_INIT_ALLOW_NON_ROOT") != "1" {
+	if !isCLIRole && os.Geteuid() != 0 && os.Getenv("FABRIC_INIT_ALLOW_NON_ROOT") != "1" {
 		if sudoPath, err := exec.LookPath("sudo"); err == nil {
 			sudoCmd := exec.Command(sudoPath, os.Args...)
 			sudoCmd.Stdin = os.Stdin

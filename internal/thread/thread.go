@@ -382,6 +382,13 @@ func (t *ThreadDaemon) dialAndServe(ctx context.Context, u *url.URL, sessionID s
 func (t *ThreadDaemon) HandleExec(stream net.Conn, env []byte) {
 	defer stream.Close()
 
+	var streamMu sync.Mutex
+	writeFrame := func(streamType protocol.StreamType, payload []byte) error {
+		streamMu.Lock()
+		defer streamMu.Unlock()
+		return protocol.WriteFrame(stream, streamType, payload)
+	}
+
 	var req protocol.ExecRequest
 	if err := json.Unmarshal(env, &req); err != nil {
 		return
@@ -389,14 +396,14 @@ func (t *ThreadDaemon) HandleExec(stream net.Conn, env []byte) {
 
 	cmd, err := t.sandbox.PrepareCmd(req)
 	if err != nil {
-		protocol.WriteFrame(stream, protocol.StreamStderr, []byte(fmt.Sprintf("%v\n", err)))
-		protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
+		writeFrame(protocol.StreamStderr, []byte(fmt.Sprintf("%v\n", err)))
+		writeFrame(protocol.StreamExit, []byte("1"))
 		return
 	}
 
 	if req.Detached {
 		if err := cmd.Start(); err != nil {
-			protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
+			writeFrame(protocol.StreamExit, []byte("1"))
 			return
 		}
 		go func() {
@@ -410,7 +417,7 @@ func (t *ThreadDaemon) HandleExec(stream net.Conn, env []byte) {
 			}
 			_ = cmd.Wait()
 		}()
-		protocol.WriteFrame(stream, protocol.StreamExit, []byte("0"))
+		writeFrame(protocol.StreamExit, []byte("0"))
 		return
 	}
 
@@ -433,7 +440,7 @@ func (t *ThreadDaemon) HandleExec(stream net.Conn, env []byte) {
 	if req.AllocatePTY {
 		ptmx, err := pty.Start(cmd)
 		if err != nil {
-			protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
+			writeFrame(protocol.StreamExit, []byte("1"))
 			return
 		}
 		procMu.Lock()
@@ -444,7 +451,7 @@ func (t *ThreadDaemon) HandleExec(stream net.Conn, env []byte) {
 
 		if req.TimeoutSeconds > 0 {
 			timeoutTimer := time.AfterFunc(time.Duration(req.TimeoutSeconds)*time.Second, func() {
-				protocol.WriteFrame(stream, protocol.StreamStderr, []byte(fmt.Sprintf("\n[!] Execution timed out after %d seconds\n", req.TimeoutSeconds)))
+				writeFrame(protocol.StreamStderr, []byte(fmt.Sprintf("\n[!] Execution timed out after %d seconds\n", req.TimeoutSeconds)))
 				killCmd()
 			})
 			defer timeoutTimer.Stop()
@@ -459,7 +466,7 @@ func (t *ThreadDaemon) HandleExec(stream net.Conn, env []byte) {
 			for {
 				n, err := ptmx.Read(buf)
 				if n > 0 {
-					if writeErr := protocol.WriteFrame(stream, protocol.StreamStdout, buf[:n]); writeErr != nil {
+					if writeErr := writeFrame(protocol.StreamStdout, buf[:n]); writeErr != nil {
 						killCmd()
 						break
 					}
@@ -491,7 +498,7 @@ func (t *ThreadDaemon) HandleExec(stream net.Conn, env []byte) {
 		stdin, _ := cmd.StdinPipe()
 
 		if err := cmd.Start(); err != nil {
-			protocol.WriteFrame(stream, protocol.StreamExit, []byte("1"))
+			writeFrame(protocol.StreamExit, []byte("1"))
 			return
 		}
 		procMu.Lock()
@@ -502,7 +509,7 @@ func (t *ThreadDaemon) HandleExec(stream net.Conn, env []byte) {
 
 		if req.TimeoutSeconds > 0 {
 			timeoutTimer := time.AfterFunc(time.Duration(req.TimeoutSeconds)*time.Second, func() {
-				protocol.WriteFrame(stream, protocol.StreamStderr, []byte(fmt.Sprintf("\n[!] Execution timed out after %d seconds\n", req.TimeoutSeconds)))
+				writeFrame(protocol.StreamStderr, []byte(fmt.Sprintf("\n[!] Execution timed out after %d seconds\n", req.TimeoutSeconds)))
 				killCmd()
 			})
 			defer timeoutTimer.Stop()
@@ -518,7 +525,7 @@ func (t *ThreadDaemon) HandleExec(stream net.Conn, env []byte) {
 			for {
 				n, err := stdout.Read(buf)
 				if n > 0 {
-					if writeErr := protocol.WriteFrame(stream, protocol.StreamStdout, buf[:n]); writeErr != nil {
+					if writeErr := writeFrame(protocol.StreamStdout, buf[:n]); writeErr != nil {
 						killCmd()
 						break
 					}
@@ -536,7 +543,7 @@ func (t *ThreadDaemon) HandleExec(stream net.Conn, env []byte) {
 			for {
 				n, err := stderr.Read(buf)
 				if n > 0 {
-					if writeErr := protocol.WriteFrame(stream, protocol.StreamStderr, buf[:n]); writeErr != nil {
+					if writeErr := writeFrame(protocol.StreamStderr, buf[:n]); writeErr != nil {
 						killCmd()
 						break
 					}
@@ -576,7 +583,7 @@ func (t *ThreadDaemon) HandleExec(stream net.Conn, env []byte) {
 			exitCode = 1
 		}
 	}
-	protocol.WriteFrame(stream, protocol.StreamExit, []byte(strconv.Itoa(exitCode)))
+	writeFrame(protocol.StreamExit, []byte(strconv.Itoa(exitCode)))
 }
 
 // HandleCopy handles tar streaming upload or download requests.

@@ -3,9 +3,12 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
+
+var cpQuietFlag bool
 
 var cpCmd = &cobra.Command{
 	Use:     "cp [flags] SRC_PATH DEST_PATH",
@@ -23,6 +26,7 @@ Transfers are compressed and streamed incrementally as Tar chunks over WebSocket
 }
 
 func init() {
+	cpCmd.Flags().BoolVarP(&cpQuietFlag, "quiet", "q", false, "Suppress transfer summary output")
 	cpCmd.RunE = runCp
 }
 
@@ -34,6 +38,10 @@ func parsePathSpec(spec string) (thread string, path string, isRemote bool) {
 }
 
 func runCp(cmd *cobra.Command, args []string) error {
+	defer func() {
+		cpQuietFlag = false
+	}()
+
 	if len(args) < 2 {
 		return fmt.Errorf("usage: fabric cp [flags] SRC_PATH DEST_PATH")
 	}
@@ -49,12 +57,29 @@ func runCp(cmd *cobra.Command, args []string) error {
 	}
 
 	client := NewClient(GetConfig())
+	start := time.Now()
 
 	if !srcIsRemote && destIsRemote {
 		// Upload: local -> remote thread
-		return client.Upload(destThread, srcPath, destPath)
+		bytes, err := client.Upload(destThread, srcPath, destPath)
+		if err != nil {
+			return err
+		}
+		if !cpQuietFlag {
+			elapsed := time.Since(start).Round(time.Millisecond)
+			fmt.Fprintf(cmd.OutOrStdout(), "✓ Transferred %s to %s:%s in %s\n", formatBytes(bytes), destThread, destPath, elapsed)
+		}
+		return nil
 	}
 
 	// Download: remote thread -> local
-	return client.Download(srcThread, srcPath, destPath)
+	bytes, err := client.Download(srcThread, srcPath, destPath)
+	if err != nil {
+		return err
+	}
+	if !cpQuietFlag {
+		elapsed := time.Since(start).Round(time.Millisecond)
+		fmt.Fprintf(cmd.OutOrStdout(), "✓ Transferred %s from %s:%s to %s in %s\n", formatBytes(bytes), srcThread, srcPath, destPath, elapsed)
+	}
+	return nil
 }

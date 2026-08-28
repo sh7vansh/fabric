@@ -87,8 +87,11 @@ func init() {
 	_ = rootCmd.PersistentFlags().MarkHidden("host")
 	_ = rootCmd.PersistentFlags().MarkHidden("direct")
 
+	rootCmd.SilenceErrors = true
+
 	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
 		cmd.SilenceUsage = true
+		cmd.SilenceErrors = true
 	}
 
 	rootCmd.SetHelpCommand(&cobra.Command{

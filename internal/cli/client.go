@@ -260,7 +260,7 @@ func (c *Client) GetPeer(gatewayID string) (*protocol.GatewayPeerInfo, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("peer gateway '%s' not found", gatewayID)
+		return nil, fmt.Errorf("peer server '%s' not found", gatewayID)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to get peer %s: HTTP %s", gatewayID, resp.Status)
@@ -976,6 +976,7 @@ func (c *Client) executeSingle(opts ExecOptions, in io.Reader, out, errOut io.Wr
 		}()
 	}
 
+	receivedExit := false
 	for {
 		frame, err := protocol.ReadFrame(stream)
 		if err != nil {
@@ -992,6 +993,7 @@ func (c *Client) executeSingle(opts ExecOptions, in io.Reader, out, errOut io.Wr
 				errOut.Write(frame.Payload)
 			}
 		case protocol.StreamExit:
+			receivedExit = true
 			exitStr := string(frame.Payload)
 			if exitStr != "0" {
 				code, err := strconv.Atoi(exitStr)
@@ -1003,25 +1005,28 @@ func (c *Client) executeSingle(opts ExecOptions, in io.Reader, out, errOut io.Wr
 			return nil
 		}
 	}
+	if !receivedExit {
+		return fmt.Errorf("execution stream terminated unexpectedly")
+	}
 	return nil
 }
 
 // Upload streams a local file or directory as a Tar archive to a remote node destination.
-func (c *Client) Upload(targetNode, localPath, remotePath string) error {
+func (c *Client) Upload(targetNode, localPath, remotePath string) (int64, error) {
 	conn, err := c.DialWebSocketForNode(targetNode)
 	if err != nil {
-		return fmt.Errorf("failed to connect to socket: %w", err)
+		return 0, fmt.Errorf("failed to connect to socket: %w", err)
 	}
 	defer conn.Close()
 
 	mux, err := protocol.NewStreamMultiplexer(conn, false)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	stream, err := mux.Session.Open()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer stream.Close()
 
@@ -1036,28 +1041,29 @@ func (c *Client) Upload(targetNode, localPath, remotePath string) error {
 	b, _ := json.Marshal(req)
 	stream.Write(b)
 
-	if err := protocol.CreateTar(stream, localPath); err != nil {
-		return fmt.Errorf("failed to create upload archive: %w", err)
+	stats, err := protocol.CreateTarWithStats(stream, localPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create upload archive: %w", err)
 	}
-	return nil
+	return stats.Bytes, nil
 }
 
 // Download streams a remote node path as a Tar archive and extracts it to a local destination.
-func (c *Client) Download(targetNode, remotePath, localPath string) error {
+func (c *Client) Download(targetNode, remotePath, localPath string) (int64, error) {
 	conn, err := c.DialWebSocketForNode(targetNode)
 	if err != nil {
-		return fmt.Errorf("failed to connect to socket: %w", err)
+		return 0, fmt.Errorf("failed to connect to socket: %w", err)
 	}
 	defer conn.Close()
 
 	mux, err := protocol.NewStreamMultiplexer(conn, false)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	stream, err := mux.Session.Open()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer stream.Close()
 
@@ -1072,10 +1078,11 @@ func (c *Client) Download(targetNode, remotePath, localPath string) error {
 	b, _ := json.Marshal(req)
 	stream.Write(b)
 
-	if err := protocol.ExtractTar(stream, localPath); err != nil {
-		return fmt.Errorf("failed to extract download archive: %w", err)
+	stats, err := protocol.ExtractTarWithStats(stream, localPath)
+	if err != nil {
+		return 0, fmt.Errorf("failed to extract download archive: %w", err)
 	}
-	return nil
+	return stats.Bytes, nil
 }
 
 // ForwardPort binds a local port and forwards incoming TCP connections to the remote node.

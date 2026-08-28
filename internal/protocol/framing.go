@@ -33,20 +33,16 @@ func WriteFrame(w io.Writer, streamType StreamType, payload []byte) error {
 		return io.ErrShortWrite
 	}
 
-	header := make([]byte, headerSize)
-	header[0] = byte(streamType)
+	buf := make([]byte, headerSize+len(payload))
+	buf[0] = byte(streamType)
 	// bytes 1, 2, 3 are 0
-	binary.BigEndian.PutUint32(header[4:], uint32(len(payload)))
-
-	if _, err := w.Write(header); err != nil {
-		return err
-	}
+	binary.BigEndian.PutUint32(buf[4:], uint32(len(payload)))
 	if len(payload) > 0 {
-		if _, err := w.Write(payload); err != nil {
-			return err
-		}
+		copy(buf[headerSize:], payload)
 	}
-	return nil
+
+	_, err := w.Write(buf)
+	return err
 }
 
 func ReadFrame(r io.Reader) (*Frame, error) {

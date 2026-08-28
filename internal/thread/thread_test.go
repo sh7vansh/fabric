@@ -565,3 +565,65 @@ func TestHandleExec_TimeoutBoundary(t *testing.T) {
 		t.Errorf("expected timeout notice in stderr, got: %q", stderrBuf.String())
 	}
 }
+
+func TestThreadHandleExec_ConcurrentStdoutStderr(t *testing.T) {
+	th := New(Config{
+		Domain:   "fabric.mesh",
+		Hostname: "test-node",
+	})
+
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+
+	// Output 500 lines to stdout and 500 lines to stderr concurrently
+	req := protocol.ExecRequest{
+		Command: "sh -c 'for i in $(seq 1 500); do echo \"OUT_$i\"; echo \"ERR_$i\" >&2; done'",
+	}
+	env, _ := json.Marshal(req)
+
+	go th.HandleExec(serverConn, env)
+
+	var stdoutCount, stderrCount int
+	var exitReceived bool
+
+	for {
+		frame, err := protocol.ReadFrame(clientConn)
+		if err != nil {
+			break
+		}
+		if frame.Type == protocol.StreamStdout {
+			lines := strings.Split(string(frame.Payload), "\n")
+			for _, line := range lines {
+				if strings.HasPrefix(line, "OUT_") {
+					stdoutCount++
+				}
+			}
+		}
+		if frame.Type == protocol.StreamStderr {
+			lines := strings.Split(string(frame.Payload), "\n")
+			for _, line := range lines {
+				if strings.HasPrefix(line, "ERR_") {
+					stderrCount++
+				}
+			}
+		}
+		if frame.Type == protocol.StreamExit {
+			exitReceived = true
+			if string(frame.Payload) != "0" {
+				t.Errorf("expected exit code 0, got %s", string(frame.Payload))
+			}
+		}
+	}
+
+	if !exitReceived {
+		t.Errorf("expected exit frame to be received")
+	}
+	if stdoutCount != 500 {
+		t.Errorf("expected 500 stdout lines, got %d", stdoutCount)
+	}
+	if stderrCount != 500 {
+		t.Errorf("expected 500 stderr lines, got %d", stderrCount)
+	}
+}
+

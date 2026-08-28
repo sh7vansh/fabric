@@ -224,6 +224,9 @@ func runDeviceLs(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 
 	if deviceLsJSONFlag || strings.ToLower(deviceLsFormatFlag) == "json" || strings.ToLower(deviceLsOutputFlag) == "json" {
+		if devices == nil {
+			devices = []wireguard.DeviceEntry{}
+		}
 		b, _ := json.MarshalIndent(devices, "", "  ")
 		fmt.Fprintln(out, string(b))
 		return nil

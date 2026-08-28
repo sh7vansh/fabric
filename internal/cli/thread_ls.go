@@ -109,7 +109,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	var computeThreads []protocol.ThreadMetadata
+	computeThreads := []protocol.ThreadMetadata{}
 	var controlPlaneEntry *protocol.ThreadMetadata
 
 	for _, n := range allThreads {
@@ -122,7 +122,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 	}
 
 	if tagFilterFlag != "" {
-		var filtered []protocol.ThreadMetadata
+		filtered := []protocol.ThreadMetadata{}
 		for _, n := range computeThreads {
 			for _, t := range n.Tags {
 				if t == tagFilterFlag {
@@ -135,7 +135,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 	}
 
 	if peerFilterFlag != "" {
-		var filtered []protocol.ThreadMetadata
+		filtered := []protocol.ThreadMetadata{}
 		for _, n := range computeThreads {
 			if strings.EqualFold(n.ServerID, peerFilterFlag) || strings.EqualFold(n.GatewayID, peerFilterFlag) {
 				filtered = append(filtered, n)

@@ -147,13 +147,32 @@ func ValidateDestinationPath(path string) error {
 	return err
 }
 
+// TarStats contains summary metrics of an archive operation.
+type TarStats struct {
+	Bytes int64
+	Files int
+}
+
 // ExtractTar reads a tar stream from r and unpacks it safely inside destDir with default limits.
 func ExtractTar(r io.Reader, destDir string) error {
-	return ExtractTarWithLimits(r, destDir, MaxTarDecompressedSize, MaxTarEntryCount)
+	_, err := ExtractTarWithStats(r, destDir)
+	return err
+}
+
+// ExtractTarWithStats reads a tar stream and unpacks it returning transfer statistics.
+func ExtractTarWithStats(r io.Reader, destDir string) (TarStats, error) {
+	return ExtractTarWithLimitsStats(r, destDir, MaxTarDecompressedSize, MaxTarEntryCount)
 }
 
 // ExtractTarWithLimits reads a tar stream and unpacks it enforcing explicit decompressed size and entry bounds.
 func ExtractTarWithLimits(r io.Reader, destDir string, maxBytes int64, maxEntries int) error {
+	_, err := ExtractTarWithLimitsStats(r, destDir, maxBytes, maxEntries)
+	return err
+}
+
+// ExtractTarWithLimitsStats reads a tar stream and unpacks it enforcing explicit bounds while returning metrics.
+func ExtractTarWithLimitsStats(r io.Reader, destDir string, maxBytes int64, maxEntries int) (TarStats, error) {
+	stats := TarStats{}
 	if maxBytes <= 0 {
 		maxBytes = MaxTarDecompressedSize
 	}
@@ -169,7 +188,7 @@ func ExtractTarWithLimits(r io.Reader, destDir string, maxBytes int64, maxEntrie
 	if err != nil {
 		stagingDir, err = os.MkdirTemp("", ".fabric-staging-*")
 		if err != nil {
-			return fmt.Errorf("failed to create staging directory: %w", err)
+			return stats, fmt.Errorf("failed to create staging directory: %w", err)
 		}
 	}
 	defer func() {
@@ -188,27 +207,27 @@ func ExtractTarWithLimits(r io.Reader, destDir string, maxBytes int64, maxEntrie
 			break
 		}
 		if err != nil {
-			return err
+			return stats, err
 		}
 
 		entryCount++
 		if entryCount > maxEntries {
-			return fmt.Errorf("tar archive exceeds maximum entry count of %d", maxEntries)
+			return stats, fmt.Errorf("tar archive exceeds maximum entry count of %d", maxEntries)
 		}
 
 		targetPath, err := SanitizeExtractPath(stagingDir, header.Name)
 		if err != nil {
-			return err
+			return stats, err
 		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(targetPath, 0755); err != nil {
-				return err
+				return stats, err
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-				return err
+				return stats, err
 			}
 
 			// Strip SUID/SGID bits and enforce safe permission masking
@@ -220,51 +239,57 @@ func ExtractTarWithLimits(r io.Reader, destDir string, maxBytes int64, maxEntrie
 
 			remainingBytes := maxBytes - totalDecompressedBytes
 			if remainingBytes <= 0 || header.Size > remainingBytes {
-				return fmt.Errorf("tar extraction exceeded maximum decompressed size limit of %d bytes", maxBytes)
+				return stats, fmt.Errorf("tar extraction exceeded maximum decompressed size limit of %d bytes", maxBytes)
 			}
 
 			f, err := os.OpenFile(targetPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fileMode)
 			if err != nil {
-				return err
+				return stats, err
 			}
 
 			copied, err := io.Copy(f, io.LimitReader(tr, remainingBytes+1))
 			f.Close()
 			if err != nil {
-				return err
+				return stats, err
 			}
 
 			totalDecompressedBytes += copied
 			if totalDecompressedBytes > maxBytes {
-				return fmt.Errorf("tar extraction exceeded maximum decompressed size limit of %d bytes", maxBytes)
+				return stats, fmt.Errorf("tar extraction exceeded maximum decompressed size limit of %d bytes", maxBytes)
 			}
 		case tar.TypeSymlink:
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-				return err
+				return stats, err
 			}
 			linkTarget := header.Linkname
 			if filepath.IsAbs(linkTarget) || strings.HasPrefix(linkTarget, "/") || strings.HasPrefix(linkTarget, "\\") {
-				return fmt.Errorf("tar extraction rejected unsafe absolute symlink %q -> %q", header.Name, linkTarget)
+				return stats, fmt.Errorf("tar extraction rejected unsafe absolute symlink %q -> %q", header.Name, linkTarget)
 			}
 			resolvedLink := filepath.Join(filepath.Dir(targetPath), linkTarget)
 			cleanResolved := filepath.Clean(resolvedLink)
 			relToStaging, err := filepath.Rel(stagingDir, cleanResolved)
 			if err != nil || strings.HasPrefix(relToStaging, "..") || relToStaging == ".." {
-				return fmt.Errorf("tar extraction rejected escaping symlink %q -> %q", header.Name, linkTarget)
+				return stats, fmt.Errorf("tar extraction rejected escaping symlink %q -> %q", header.Name, linkTarget)
 			}
 			_ = os.Remove(targetPath)
 			if err := os.Symlink(linkTarget, targetPath); err != nil {
-				return fmt.Errorf("failed to create extracted symlink: %w", err)
+				return stats, fmt.Errorf("failed to create extracted symlink: %w", err)
 			}
 		}
 	}
 
-	// Commit staged files to target destination atomically
-	if err := commitStagedDirectory(stagingDir, cleanDest); err != nil {
-		return fmt.Errorf("failed to commit staged archive: %w", err)
+	if entryCount == 0 {
+		return stats, fmt.Errorf("archive contains no files or remote path not found")
 	}
 
-	return nil
+	// Commit staged files to target destination atomically
+	if err := commitStagedDirectory(stagingDir, cleanDest); err != nil {
+		return stats, fmt.Errorf("failed to commit staged archive: %w", err)
+	}
+
+	stats.Bytes = totalDecompressedBytes
+	stats.Files = entryCount
+	return stats, nil
 }
 
 func commitStagedDirectory(stagingDir, destDir string) error {
@@ -364,10 +389,17 @@ func copyRecursive(src, dst string) error {
 
 // CreateTar writes the file or directory at srcPath as a tar stream to w.
 func CreateTar(w io.Writer, srcPath string) error {
+	_, err := CreateTarWithStats(w, srcPath)
+	return err
+}
+
+// CreateTarWithStats writes the file or directory at srcPath as a tar stream to w and returns archive statistics.
+func CreateTarWithStats(w io.Writer, srcPath string) (TarStats, error) {
+	stats := TarStats{}
 	cleanSrc := filepath.Clean(srcPath)
 	info, err := os.Stat(cleanSrc)
 	if err != nil {
-		return err
+		return stats, err
 	}
 
 	tw := tar.NewWriter(w)
@@ -376,23 +408,28 @@ func CreateTar(w io.Writer, srcPath string) error {
 	if !info.IsDir() {
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
-			return err
+			return stats, err
 		}
 		header.Name = filepath.Base(cleanSrc)
 		if err := tw.WriteHeader(header); err != nil {
-			return err
+			return stats, err
 		}
 		f, err := os.Open(cleanSrc)
 		if err != nil {
-			return err
+			return stats, err
 		}
 		defer f.Close()
-		_, err = io.Copy(tw, f)
-		return err
+		copied, err := io.Copy(tw, f)
+		if err != nil {
+			return stats, err
+		}
+		stats.Bytes = copied
+		stats.Files = 1
+		return stats, nil
 	}
 
 	baseDir := filepath.Dir(cleanSrc)
-	return filepath.Walk(cleanSrc, func(path string, fi os.FileInfo, err error) error {
+	err = filepath.Walk(cleanSrc, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -417,9 +454,14 @@ func CreateTar(w io.Writer, srcPath string) error {
 				return err
 			}
 			defer f.Close()
-			_, err = io.Copy(tw, f)
-			return err
+			copied, err := io.Copy(tw, f)
+			if err != nil {
+				return err
+			}
+			stats.Bytes += copied
+			stats.Files++
 		}
 		return nil
 	})
+	return stats, err
 }

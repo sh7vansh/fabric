@@ -148,3 +148,98 @@ func TestEmptyStatesAndJSONFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptyJSONLists_ArrayBrackets(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("FABRIC_SYS_CONFIG_DIR", tempHome)
+
+	ts, r := setupTestMesh(t)
+	defer ts.Close()
+	defer r.Close()
+
+	caCertFlag = filepath.Join(tempHome, ".fabric", "ca.crt")
+	serverFlag = ts.URL
+	tokenFlag = "test-token-thread"
+	defer func() {
+		serverFlag = ""
+		tokenFlag = ""
+		caCertFlag = ""
+	}()
+
+	// 1. thread ls --json on empty mesh
+	{
+		var stdoutBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetArgs([]string{"thread", "ls", "--json"})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("thread ls --json failed: %v", err)
+		}
+		out := strings.TrimSpace(stdoutBuf.String())
+		if out != "[]" {
+			t.Errorf("expected '[]' for empty thread ls --json, got %q", out)
+		}
+	}
+
+	// 2. device ls --json on empty devices
+	{
+		var stdoutBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetArgs([]string{"device", "ls", "--json"})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("device ls --json failed: %v", err)
+		}
+		out := strings.TrimSpace(stdoutBuf.String())
+		if out != "[]" {
+			t.Errorf("expected '[]' for empty device ls --json, got %q", out)
+		}
+	}
+
+	// 3. peer ls --format json on empty peers
+	{
+		var stdoutBuf bytes.Buffer
+		rootCmd.SetOut(&stdoutBuf)
+		rootCmd.SetArgs([]string{"peer", "ls", "--format", "json"})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("peer ls --format json failed: %v", err)
+		}
+		out := strings.TrimSpace(stdoutBuf.String())
+		if out != "[]" {
+			t.Errorf("expected '[]' for empty peer ls --format json, got %q", out)
+		}
+	}
+}
+
+func TestInitFlagValidation_InvalidRole(t *testing.T) {
+	// Should fail immediately with validation error without demanding root
+	rootCmd.SetArgs([]string{"init", "--role", "invalid_role_name"})
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected error for invalid role, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid role") {
+		t.Errorf("expected error message mentioning 'invalid role', got %v", err)
+	}
+
+	// Invalid mode should also fail immediately
+	rootCmd.SetArgs([]string{"init", "--role", "thread", "--mode", "invalid_mode"})
+	err = rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected error for invalid mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid mode") {
+		t.Errorf("expected error message mentioning 'invalid mode', got %v", err)
+	}
+}
+
+func TestFormatError_ExitCode(t *testing.T) {
+	exitErr := &ExitCodeError{Code: 42}
+	if exitErr.ExitCode() != 42 {
+		t.Errorf("expected exit code 42, got %d", exitErr.ExitCode())
+	}
+	if exitErr.Error() != "exit code 42" {
+		t.Errorf("expected 'exit code 42', got %q", exitErr.Error())
+	}
+}
+
+
