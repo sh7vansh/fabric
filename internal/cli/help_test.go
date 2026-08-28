@@ -25,7 +25,6 @@ func TestHelpCommandOutput(t *testing.T) {
 		"Thread Management Commands:",
 		"Mesh & Networking Commands:",
 		"System & Lifecycle Commands:",
-		"Cluster & Node Commands (Deprecated):",
 		"Help Topics & Guides:",
 	}
 

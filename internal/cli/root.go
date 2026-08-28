@@ -68,10 +68,6 @@ func init() {
 			Title: "System & Lifecycle Commands:",
 		},
 		&cobra.Group{
-			ID:    "cluster",
-			Title: "Cluster & Node Commands (Deprecated):",
-		},
-		&cobra.Group{
 			ID:    "topics",
 			Title: "Help Topics & Guides:",
 		},

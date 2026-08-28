@@ -242,4 +242,76 @@ func TestFormatError_ExitCode(t *testing.T) {
 	}
 }
 
+func TestFormatRoleDisplay_CLI(t *testing.T) {
+	got := formatRoleDisplay("cli", "local")
+	if got != "CLI (Operator)" {
+		t.Errorf("expected 'CLI (Operator)', got %q", got)
+	}
+}
+
+func TestRootCmdHelp_NoEmptyDeprecatedGroup(t *testing.T) {
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	if err := rootCmd.Help(); err != nil {
+		t.Fatalf("rootCmd.Help() failed: %v", err)
+	}
+	helpText := buf.String()
+	if strings.Contains(helpText, "Cluster & Node Commands (Deprecated):") {
+		t.Errorf("help output contains empty deprecated commands header:\n%s", helpText)
+	}
+}
+
+func TestPeerLs_EmptyStateMessage(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("FABRIC_SYS_CONFIG_DIR", tempHome)
+
+	ts, r := setupTestMesh(t)
+	defer ts.Close()
+	defer r.Close()
+
+	caCertFlag = filepath.Join(tempHome, ".fabric", "ca.crt")
+	serverFlag = ts.URL
+	tokenFlag = "test-token-thread"
+	defer func() {
+		serverFlag = ""
+		tokenFlag = ""
+		caCertFlag = ""
+	}()
+
+	var stdoutBuf bytes.Buffer
+	rootCmd.SetOut(&stdoutBuf)
+	rootCmd.SetArgs([]string{"peer", "ls"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("peer ls failed: %v", err)
+	}
+	out := stdoutBuf.String()
+	if !strings.Contains(out, "No server federation peers connected.") {
+		t.Errorf("expected friendly empty state message, got:\n%s", out)
+	}
+}
+
+func TestLoadConfig_UnreadableCACertFallback(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	t.Setenv("FABRIC_SYS_CONFIG_DIR", tempHome)
+
+	// Create a dummy config pointing to an unreadable/non-existent path
+	cfg := &Config{
+		Host:   "wss://localhost:8443/ws",
+		Token:  "test-secret",
+		CACert: "/root/.fabric/ca.crt",
+	}
+	if err := SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig failed: %v", err)
+	}
+
+	loaded := LoadConfig("", "", "")
+	if loaded.CACert != "" {
+		t.Errorf("expected empty CACert for unreadable CA path, got %q", loaded.CACert)
+	}
+}
+
+
+
 

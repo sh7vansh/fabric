@@ -325,12 +325,67 @@ func LoadConfig(hostFlag, tokenFlag, directFlag string, caCertFlag ...string) *C
 	}
 	if len(caCertFlag) > 0 && caCertFlag[0] != "" {
 		cfg.CACert = caCertFlag[0]
+	} else if cfg.CACert != "" {
+		if isPermissionDenied(cfg.CACert) {
+			sysDir := "/etc/fabric"
+			if envSys := os.Getenv("FABRIC_SYS_CONFIG_DIR"); envSys != "" {
+				sysDir = envSys
+			}
+			fallbackPaths := []string{
+				filepath.Join(sysDir, "ca.crt"),
+			}
+			if home, err := os.UserHomeDir(); err == nil {
+				fallbackPaths = append(fallbackPaths,
+					filepath.Join(home, ".fabric", "ca.crt"),
+					filepath.Join(home, ".config", "fabric", "ca.crt"),
+				)
+			}
+			found := false
+			for _, fb := range fallbackPaths {
+				if isReadableFile(fb) {
+					cfg.CACert = fb
+					found = true
+					break
+				}
+			}
+			if !found {
+				cfg.CACert = ""
+			}
+		}
 	}
+
 	if directFlag != "" {
 		cfg.DirectAddress = directFlag
 	}
 
 	return cfg
+}
+
+func isPermissionDenied(p string) bool {
+	if p == "" {
+		return false
+	}
+	if os.Geteuid() != 0 && (strings.HasPrefix(p, "/root/") || strings.HasPrefix(p, "/root")) {
+		return true
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return os.IsPermission(err)
+	}
+	_ = f.Close()
+	return false
+}
+
+func isReadableFile(p string) bool {
+	if p == "" {
+		return false
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	_ = f.Close()
+	return true
 }
 
 func SaveConfig(cfg *Config) error {

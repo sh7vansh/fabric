@@ -177,6 +177,13 @@ func runPeerLs(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if len(peers) == 0 {
+		fmt.Fprintln(out, "No server federation peers connected.")
+		fmt.Fprintln(out, "\nTo connect to a remote server peer:")
+		fmt.Fprintln(out, "  • Run: fabric peer add <server-url>")
+		return nil
+	}
+
 	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "SERVER ID\tREGION\tTOPOLOGY\tRTT\tTHREADS\tSTATUS\tENDPOINT")
 	for _, p := range peers {

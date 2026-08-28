@@ -35,7 +35,6 @@ func WarnDeprecated(deprecated, replacement string) {
 var nodeCmd = &cobra.Command{
 	Use:     "node",
 	Short:   "Manage fabric nodes (deprecated, use 'fabric thread')",
-	GroupID: "cluster",
 	Hidden:  true,
 	Example: `  # List all active online nodes
   fabric node ls

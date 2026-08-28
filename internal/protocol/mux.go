@@ -104,6 +104,7 @@ func NewStreamMultiplexer(conn *websocket.Conn, isServer bool) (*StreamMultiplex
 	var err error
 
 	config := yamux.DefaultConfig()
+	config.LogOutput = io.Discard
 	// Optionally tweak config.KeepAliveInterval if needed
 
 	if isServer {

@@ -11,6 +11,18 @@ NO_SETUP="${FABRIC_NO_SETUP:-0}"
 
 for arg in "$@"; do
     case "$arg" in
+        -h|--help)
+            echo "Fabric Mesh Network Installer"
+            echo ""
+            echo "Usage:"
+            echo "  ./install.sh [options]"
+            echo ""
+            echo "Options:"
+            echo "  --dir=<path>    Target directory for binaries (default: /usr/local/bin or ~/.local/bin)"
+            echo "  --no-setup      Skip interactive onboarding wizard (fabric init)"
+            echo "  -h, --help      Show this help message and exit"
+            exit 0
+            ;;
         --no-setup)
             NO_SETUP=1
             ;;

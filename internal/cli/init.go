@@ -391,6 +391,8 @@ func formatRoleDisplay(role, mode string) string {
 		return fmt.Sprintf("Thread (%s mode)", mode)
 	case "both":
 		return fmt.Sprintf("Server + Thread (%s mode)", mode)
+	case "cli":
+		return "CLI (Operator)"
 	default:
 		return fmt.Sprintf("Thread (%s mode)", mode)
 	}
