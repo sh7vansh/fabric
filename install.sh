@@ -57,13 +57,16 @@ echo "[+] Detected Linux ($FABRIC_ARCH)"
 SUDO=""
 if [ "$EUID" -ne 0 ]; then
     if [ "$INSTALL_DIR" = "/usr/local/bin" ]; then
-        if command -v sudo >/dev/null 2>&1; then
+        if [ -w "$INSTALL_DIR" ]; then
+            SUDO=""
+            echo "[+] User has direct write access to $INSTALL_DIR"
+        elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
             SUDO="sudo"
-            echo "[+] Using sudo for installation into $INSTALL_DIR"
+            echo "[+] Using passwordless sudo for installation into $INSTALL_DIR"
         else
             INSTALL_DIR="$HOME/.local/bin"
             mkdir -p "$INSTALL_DIR"
-            echo "[!] Sudo not found. Installing into user directory: $INSTALL_DIR"
+            echo "[!] Non-root user without passwordless sudo. Installing into user directory: $INSTALL_DIR"
         fi
     fi
 fi
@@ -79,7 +82,7 @@ trap cleanup EXIT
 
 # If running within the fabric source tree, build locally
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || echo "")"
-if [ -n "$REPO_DIR" ] && [ -f "$REPO_DIR/go.mod" ] && command -v go >/dev/null 2>&1; then
+if [ -n "$REPO_DIR" ] && [ -f "$REPO_DIR/go.mod" ] && grep -q "module fabric" "$REPO_DIR/go.mod" 2>/dev/null && command -v go >/dev/null 2>&1; then
     echo "[+] Building canonical Fabric binaries from source..."
     (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric" ./cmd/cli)
     (cd "$REPO_DIR" && go build -o "$TMP_DIR/fabric-server" ./cmd/server)
@@ -165,12 +168,14 @@ else
     # Fallback to Go build if binaries were not downloaded and Go is available
     if [ ! -f "$TMP_DIR/fabric" ] && command -v go >/dev/null 2>&1; then
         echo "[+] Building Fabric binaries using Go toolchain..."
-        GOBIN="$TMP_DIR" go install fabric/cmd/cli@latest 2>/dev/null || true
-        GOBIN="$TMP_DIR" go install fabric/cmd/server@latest 2>/dev/null || true
-        GOBIN="$TMP_DIR" go install fabric/cmd/thread@latest 2>/dev/null || true
-        [ -f "$TMP_DIR/cli" ] && mv "$TMP_DIR/cli" "$TMP_DIR/fabric" || true
-        [ -f "$TMP_DIR/server" ] && mv "$TMP_DIR/server" "$TMP_DIR/fabric-server" || true
-        [ -f "$TMP_DIR/thread" ] && mv "$TMP_DIR/thread" "$TMP_DIR/fabric-thread" || true
+        if command -v git >/dev/null 2>&1; then
+            git clone --depth 1 https://github.com/sh7vansh/fabric.git "$TMP_DIR/src" 2>/dev/null || true
+            if [ -f "$TMP_DIR/src/go.mod" ]; then
+                (cd "$TMP_DIR/src" && go build -o "$TMP_DIR/fabric" ./cmd/cli)
+                (cd "$TMP_DIR/src" && go build -o "$TMP_DIR/fabric-server" ./cmd/server)
+                (cd "$TMP_DIR/src" && go build -o "$TMP_DIR/fabric-thread" ./cmd/thread)
+            fi
+        fi
     fi
 fi
 
@@ -209,13 +214,17 @@ if [ "$NO_SETUP" -eq 0 ]; then
     echo "  • Remote Stitching (SSH):         Port 22/TCP (inbound on target)"
     echo "========================================="
 
-    if [ -t 0 ] && command -v "$INSTALL_DIR/fabric" >/dev/null 2>&1; then
+    if [ -t 0 ] && [ -t 1 ] && command -v "$INSTALL_DIR/fabric" >/dev/null 2>&1; then
         echo ""
         echo "[+] Launching Fabric onboarding wizard..."
         $SUDO "$INSTALL_DIR/fabric" init || true
     else
         echo ""
-        echo "[+] Installation complete! Run 'sudo fabric init' to configure this machine."
+        if [ -n "$SUDO" ]; then
+            echo "[+] Installation complete! Run 'sudo fabric init' to configure this machine."
+        else
+            echo "[+] Installation complete! Run '$INSTALL_DIR/fabric init' to configure this machine."
+        fi
     fi
 else
     echo "[+] Installation complete (setup skipped via --no-setup)."

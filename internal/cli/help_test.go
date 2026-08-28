@@ -65,8 +65,11 @@ func TestHelpTopicsExecution(t *testing.T) {
 			}
 
 			output := buf.String()
-			if !strings.Contains(output, "Usage:") {
-				t.Errorf("Expected topic %s help to contain Usage block, got:\n%s", topic, output)
+			if len(output) == 0 {
+				t.Errorf("Expected topic %s help to produce output", topic)
+			}
+			if strings.Contains(output, "Global Flags:") {
+				t.Errorf("Expected clean topic %s guide without global flags dump, got:\n%s", topic, output)
 			}
 		})
 	}

@@ -39,7 +39,7 @@ Communication Flow:
    (Operator)                         (Server & DNS)                       (Managed Thread)
 `,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Print(cmd.Long)
+			fmt.Fprint(cmd.OutOrStdout(), cmd.Long)
 		},
 	}
 
@@ -69,7 +69,7 @@ Communication Flow:
      directly to services running on remote threads through the multiplexed WebSocket stream.
 `,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Print(cmd.Long)
+			fmt.Fprint(cmd.OutOrStdout(), cmd.Long)
 		},
 	}
 
@@ -94,7 +94,7 @@ Communication Flow:
      the controlling CLI session or WebSocket closes.
 `,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Print(cmd.Long)
+			fmt.Fprint(cmd.OutOrStdout(), cmd.Long)
 		},
 	}
 
@@ -137,7 +137,7 @@ Communication Flow:
    $ fabric stitch 192.168.1.0/24
 `,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Print(cmd.Long)
+			fmt.Fprint(cmd.OutOrStdout(), cmd.Long)
 		},
 	}
 
@@ -164,12 +164,13 @@ daemon connected to the central Fabric server.
    $ fabric thread inspect worker-1 worker-2
 `,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Print(cmd.Long)
+			fmt.Fprint(cmd.OutOrStdout(), cmd.Long)
 		},
 	}
 
 	topicStitchGuideCmd = &cobra.Command{
 		Use:     "stitch-guide",
+		Aliases: []string{"stitch-topic"},
 		Short:   "Guide to SSH machine onboarding and polymorphic subnet discovery",
 		GroupID: "topics",
 		Long: `Fabric Stitch & Provisioning Guide:
@@ -191,12 +192,23 @@ daemon connected to the central Fabric server.
    $ fabric stitch --remote --listen-port 8443 ubuntu@10.0.0.12
 `,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Print(cmd.Long)
+			fmt.Fprint(cmd.OutOrStdout(), cmd.Long)
 		},
 	}
 )
 
+func cleanTopicHelp(cmd *cobra.Command, args []string) {
+	fmt.Fprint(cmd.OutOrStdout(), cmd.Long)
+}
+
 func init() {
+	topicArchitectureCmd.SetHelpFunc(cleanTopicHelp)
+	topicNetworkingCmd.SetHelpFunc(cleanTopicHelp)
+	topicSecurityCmd.SetHelpFunc(cleanTopicHelp)
+	topicWorkflowsCmd.SetHelpFunc(cleanTopicHelp)
+	topicThreadsCmd.SetHelpFunc(cleanTopicHelp)
+	topicStitchGuideCmd.SetHelpFunc(cleanTopicHelp)
+
 	rootCmd.AddCommand(topicArchitectureCmd)
 	rootCmd.AddCommand(topicNetworkingCmd)
 	rootCmd.AddCommand(topicSecurityCmd)

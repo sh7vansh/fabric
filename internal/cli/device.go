@@ -31,7 +31,9 @@ import (
 var (
 	deviceQuietFlag         bool
 	deviceLsFormatFlag      string
+	deviceLsOutputFlag      string
 	deviceInspectFormatFlag string
+	deviceInspectOutputFlag string
 
 	stitchDeviceQRFlag       bool
 	stitchDeviceWebFlag      bool
@@ -45,7 +47,10 @@ var deviceCmd = &cobra.Command{
 	Use:     "device",
 	Short:   "Manage paired WireGuard consumer devices",
 	GroupID: "network",
-	Example: `  # List all paired WireGuard devices
+	Example: `  # Add/pair a phone or laptop device
+  fabric device add iphone
+
+  # List all paired WireGuard devices
   fabric device ls
 
   # Inspect a specific device
@@ -55,6 +60,22 @@ var deviceCmd = &cobra.Command{
   fabric device rm iphone`,
 }
 
+var deviceAddCmd = &cobra.Command{
+	Use:     "add <name>",
+	Aliases: []string{"create"},
+	Short:   "Generate a WireGuard client profile, keys, and QR code for a device",
+	Args:    cobra.ExactArgs(1),
+	Example: `  # Add an iPhone with terminal QR code and web download portal
+  fabric device add iphone
+
+  # Add without web server, save profile to myphone.conf
+  fabric device add iphone --web=false --out myphone.conf
+
+  # Add specifying public WireGuard endpoint
+  fabric device add living-room-tv --endpoint vpn.example.com:51820`,
+	RunE: runStitchDevice,
+}
+
 var deviceLsCmd = &cobra.Command{
 	Use:   "ls [flags]",
 	Short: "List all paired WireGuard devices",
@@ -62,6 +83,7 @@ var deviceLsCmd = &cobra.Command{
   fabric device ls
 
   # JSON format
+  fabric device ls -o json
   fabric device ls --format json
 
   # Display only device names
@@ -73,8 +95,17 @@ var deviceInspectCmd = &cobra.Command{
 	Use:   "inspect <device-name>",
 	Short: "Inspect detailed WireGuard device telemetry",
 	Args:  cobra.ExactArgs(1),
-	Example: `  fabric device inspect iphone`,
+	Example: `  # Inspect device in card view
+  fabric device inspect iphone
+
+  # Inspect in JSON format
+  fabric device inspect -o json iphone`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		defer func() {
+			deviceInspectFormatFlag = ""
+			deviceInspectOutputFlag = ""
+		}()
+
 		name := args[0]
 		client := NewClient(GetConfig())
 		dev, err := client.GetDevice(name)
@@ -83,12 +114,29 @@ var deviceInspectCmd = &cobra.Command{
 		}
 
 		out := cmd.OutOrStdout()
-		if deviceInspectFormatFlag == "json" || deviceInspectFormatFlag == "" {
+		if strings.ToLower(deviceInspectFormatFlag) == "json" || strings.ToLower(deviceInspectOutputFlag) == "json" {
 			b, _ := json.MarshalIndent(dev, "", "  ")
 			fmt.Fprintln(out, string(b))
 			return nil
 		}
 
+		fmt.Fprintln(out, "==================================================")
+		fmt.Fprintf(out, "  Device: %s\n", dev.Name)
+		fmt.Fprintln(out, "==================================================")
+		w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+		fmt.Fprintf(w, "  Name:\t%s\n", dev.Name)
+		fmt.Fprintf(w, "  Virtual IP:\t%s\n", dev.VirtualIP)
+		fmt.Fprintf(w, "  Public Key:\t%s\n", dev.PublicKey)
+		if dev.PresharedKey != "" {
+			fmt.Fprintf(w, "  Preshared Key:\t[configured]\n")
+		}
+		fmt.Fprintf(w, "  Last Handshake:\t%s\n", formatRelativeTime(dev.LastHandshake))
+		fmt.Fprintf(w, "  Transfer (RX / TX):\t%s / %s\n", formatBytes(dev.RxBytes), formatBytes(dev.TxBytes))
+		if !dev.CreatedAt.IsZero() {
+			fmt.Fprintf(w, "  Created At:\t%s (%s)\n", dev.CreatedAt.Format(time.RFC3339), formatRelativeTime(dev.CreatedAt))
+		}
+		w.Flush()
+		fmt.Fprintln(out, "==================================================")
 		return nil
 	},
 }
@@ -111,7 +159,7 @@ var deviceRmCmd = &cobra.Command{
 
 var stitchDeviceCmd = &cobra.Command{
 	Use:   "device <name>",
-	Short: "Pair a phone, tablet, or TV as a WireGuard device",
+	Short: "Pair a phone, tablet, or TV as a WireGuard device (alias for 'fabric device add')",
 	Args:  cobra.ExactArgs(1),
 	Example: `  # Stitch an iPhone with terminal QR code and web download portal
   fabric stitch device iphone
@@ -124,30 +172,71 @@ var stitchDeviceCmd = &cobra.Command{
 	RunE: runStitchDevice,
 }
 
+func registerDeviceAddFlags(cmd *cobra.Command) {
+	cmd.Flags().BoolVar(&stitchDeviceQRFlag, "qr", true, "Render ASCII QR code in terminal")
+	cmd.Flags().BoolVar(&stitchDeviceWebFlag, "web", true, "Serve temporary local web portal for mobile pairing")
+	cmd.Flags().StringVarP(&stitchDeviceOutFlag, "out", "o", "", "Path to write WireGuard .conf file (default <name>.conf)")
+	cmd.Flags().StringVar(&stitchDeviceEndpointFlag, "endpoint", "", "WireGuard server endpoint override (host:port)")
+	cmd.Flags().BoolVar(&stitchDevicePSKFlag, "psk", true, "Generate symmetric preshared key for quantum resistance")
+	cmd.Flags().StringVar(&stitchDeviceSubnetFlag, "subnet", "", "Custom overlay subnet override (e.g. 10.42.0.0/16)")
+}
+
 func init() {
 	deviceLsCmd.Flags().BoolVarP(&deviceQuietFlag, "quiet", "q", false, "Only display device names")
-	deviceLsCmd.Flags().StringVar(&deviceLsFormatFlag, "format", "", "Output format ('json' or raw)")
-	deviceInspectCmd.Flags().StringVar(&deviceInspectFormatFlag, "format", "", "Output format ('json' or raw)")
+	deviceLsCmd.Flags().StringVarP(&deviceLsFormatFlag, "format", "f", "", "Output format ('json' or raw)")
+	deviceLsCmd.Flags().StringVarP(&deviceLsOutputFlag, "output", "o", "", "Output format ('json' or table)")
+	deviceInspectCmd.Flags().StringVarP(&deviceInspectFormatFlag, "format", "f", "", "Output format ('json' or card)")
+	deviceInspectCmd.Flags().StringVarP(&deviceInspectOutputFlag, "output", "o", "", "Output format ('json' or card)")
 
+	registerDeviceAddFlags(deviceAddCmd)
+	registerDeviceAddFlags(stitchDeviceCmd)
+
+	deviceCmd.AddCommand(deviceAddCmd)
 	deviceCmd.AddCommand(deviceLsCmd)
 	deviceCmd.AddCommand(deviceInspectCmd)
 	deviceCmd.AddCommand(deviceRmCmd)
 
-	stitchDeviceCmd.Flags().BoolVar(&stitchDeviceQRFlag, "qr", true, "Render ASCII QR code in terminal")
-	stitchDeviceCmd.Flags().BoolVar(&stitchDeviceWebFlag, "web", true, "Serve temporary local web portal for mobile pairing")
-	stitchDeviceCmd.Flags().StringVarP(&stitchDeviceOutFlag, "out", "o", "", "Path to write WireGuard .conf file (default <name>.conf)")
-	stitchDeviceCmd.Flags().StringVar(&stitchDeviceEndpointFlag, "endpoint", "", "WireGuard server endpoint override (host:port)")
-	stitchDeviceCmd.Flags().BoolVar(&stitchDevicePSKFlag, "psk", true, "Generate symmetric preshared key for quantum resistance")
-	stitchDeviceCmd.Flags().StringVar(&stitchDeviceSubnetFlag, "subnet", "", "Custom overlay subnet override (e.g. 10.42.0.0/16)")
-
 	rootCmd.AddCommand(deviceCmd)
 	stitchCmd.AddCommand(stitchDeviceCmd)
+}
+
+func formatRelativeTime(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	d := time.Since(t)
+	if d < 0 {
+		d = 0
+	}
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		mins := int(d.Minutes())
+		secs := int(d.Seconds()) % 60
+		if secs > 0 {
+			return fmt.Sprintf("%dm%ds ago", mins, secs)
+		}
+		return fmt.Sprintf("%dm ago", mins)
+	}
+	if d < 24*time.Hour {
+		hours := int(d.Hours())
+		mins := int(d.Minutes()) % 60
+		if mins > 0 {
+			return fmt.Sprintf("%dh%dm ago", hours, mins)
+		}
+		return fmt.Sprintf("%dh ago", hours)
+	}
+	days := int(d.Hours()) / 24
+	return fmt.Sprintf("%dd ago", days)
 }
 
 func runDeviceLs(cmd *cobra.Command, args []string) error {
 	defer func() {
 		deviceQuietFlag = false
 		deviceLsFormatFlag = ""
+		deviceLsOutputFlag = ""
 	}()
 
 	client := NewClient(GetConfig())
@@ -158,7 +247,7 @@ func runDeviceLs(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
-	if deviceLsFormatFlag == "json" {
+	if strings.ToLower(deviceLsFormatFlag) == "json" || strings.ToLower(deviceLsOutputFlag) == "json" {
 		b, _ := json.MarshalIndent(devices, "", "  ")
 		fmt.Fprintln(out, string(b))
 		return nil
@@ -171,13 +260,17 @@ func runDeviceLs(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if len(devices) == 0 {
+		fmt.Fprintln(out, "No WireGuard devices registered.")
+		fmt.Fprintln(out, "To pair a device (phone, laptop, tablet), run:")
+		fmt.Fprintln(out, "  fabric device add <name>")
+		return nil
+	}
+
 	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tVIRTUAL IP\tPUBLIC KEY\tLAST HANDSHAKE\tTRANSFER (RX / TX)")
 	for _, d := range devices {
-		hsStr := "never"
-		if !d.LastHandshake.IsZero() {
-			hsStr = time.Since(d.LastHandshake).Round(time.Second).String() + " ago"
-		}
+		hsStr := formatRelativeTime(d.LastHandshake)
 		pubKeyShort := d.PublicKey
 		if len(pubKeyShort) > 16 {
 			pubKeyShort = pubKeyShort[:8] + "…" + pubKeyShort[len(pubKeyShort)-6:]

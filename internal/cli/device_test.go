@@ -97,11 +97,21 @@ func TestDeviceCLICommands(t *testing.T) {
 		t.Errorf("invalid json output: %v", err)
 	}
 
-	// 4. Test `fabric device inspect iphone-13`
+	// 4. Test `fabric device inspect iphone-13` (card view by default & json with -o json)
 	outBuf.Reset()
 	rootCmd.SetArgs([]string{"device", "inspect", "iphone-13"})
 	if err := rootCmd.Execute(); err != nil {
 		t.Fatalf("fabric device inspect failed: %v", err)
+	}
+	cardOut := outBuf.String()
+	if !strings.Contains(cardOut, "Device: iphone-13") || !strings.Contains(cardOut, "Virtual IP:") {
+		t.Errorf("expected human-readable card from inspect, got:\n%s", cardOut)
+	}
+
+	outBuf.Reset()
+	rootCmd.SetArgs([]string{"device", "inspect", "-o", "json", "iphone-13"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("fabric device inspect -o json failed: %v", err)
 	}
 	var dev wireguard.DeviceEntry
 	if err := json.Unmarshal(outBuf.Bytes(), &dev); err != nil || dev.Name != "iphone-13" {

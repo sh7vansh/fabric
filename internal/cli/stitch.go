@@ -72,6 +72,7 @@ var stitchDiscoverCmd = &cobra.Command{
 	Use:          "discover [flags] [CIDR]",
 	Short:        "Scan local or specified network for SSH endpoints (deprecated, use 'fabric stitch [CIDR]')",
 	SilenceUsage: true,
+	Hidden:       true,
 	Args:         cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		rawCIDR := ""
@@ -105,6 +106,10 @@ func init() {
 	stitchCmd.Flags().StringVar(&stitchListenPortFlag, "listen-port", "8443", "Port for remote mode thread to listen on")
 	stitchCmd.Flags().BoolVar(&stitchNoFallback, "no-fallback", false, "Disable automatic fallback to remote mode if normal verification times out")
 
+	_ = stitchCmd.Flags().MarkHidden("socket-url")
+	_ = stitchCmd.Flags().MarkHidden("inverted")
+	_ = stitchCmd.Flags().MarkHidden("direct")
+
 	// Discovery flags on stitchCmd
 	stitchCmd.Flags().IntVarP(&stitchConcurrencyFlag, "concurrency", "c", 128, "Concurrent probe workers")
 	stitchCmd.Flags().DurationVarP(&stitchTimeoutFlag, "timeout", "t", 1000*time.Millisecond, "Connection timeout per probe")
@@ -137,6 +142,10 @@ func init() {
 	stitchDiscoverCmd.Flags().BoolVar(&stitchDirectFlag, "direct", false, "Alias for --remote (deprecated, use --remote)")
 	stitchDiscoverCmd.Flags().StringVar(&stitchListenPortFlag, "listen-port", "8443", "Port for remote mode threads to listen on")
 	stitchDiscoverCmd.Flags().BoolVar(&stitchNoFallback, "no-fallback", false, "Disable automatic fallback to remote mode")
+
+	_ = stitchDiscoverCmd.Flags().MarkHidden("socket-url")
+	_ = stitchDiscoverCmd.Flags().MarkHidden("inverted")
+	_ = stitchDiscoverCmd.Flags().MarkHidden("direct")
 }
 
 func nodeVerifier(socketURL, token string) ([]protocol.NodeMetadata, error) {

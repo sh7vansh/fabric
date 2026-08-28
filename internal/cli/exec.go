@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"text/tabwriter"
 
@@ -44,6 +43,7 @@ var (
 )
 
 func init() {
+	execCmd.Flags().SetInterspersed(false)
 	execCmd.Flags().BoolVarP(&execInteractive, "interactive", "i", false, "Keep STDIN open even if not attached")
 	execCmd.Flags().BoolVarP(&execPty, "tty", "t", false, "Allocate a pseudo-TTY")
 	execCmd.Flags().BoolVarP(&execDetached, "detach", "d", false, "Run command in background")
@@ -58,6 +58,18 @@ func init() {
 }
 
 func runExec(cmd *cobra.Command, args []string) error {
+	defer func() {
+		execPty = false
+		execInteractive = false
+		execDetached = false
+		execEnv = nil
+		execWorkdir = ""
+		execUser = ""
+		execAll = false
+		execTag = ""
+		execConcurrency = 10
+	}()
+
 	client := NewClient(GetConfig())
 
 	isFleet := execAll || execTag != ""
@@ -78,9 +90,9 @@ func runExec(cmd *cobra.Command, args []string) error {
 			User:        execUser,
 		}
 
-		fleetRes, err := client.Execute(opts, nil, os.Stdout, os.Stderr)
+		fleetRes, err := client.Execute(opts, nil, cmd.OutOrStdout(), cmd.ErrOrStderr())
 		if fleetRes != nil && len(fleetRes.Results) > 0 {
-			printFleetSummary(fleetRes)
+			printFleetSummary(cmd, fleetRes)
 		}
 		return err
 	}
@@ -103,15 +115,16 @@ func runExec(cmd *cobra.Command, args []string) error {
 		User:        execUser,
 	}
 
-	_, err := client.Execute(opts, os.Stdin, os.Stdout, os.Stderr)
+	_, err := client.Execute(opts, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 	return err
 }
 
-func printFleetSummary(fleetRes *FleetResult) {
-	fmt.Println("\n==================================================")
-	fmt.Println("             Fleet Execution Summary              ")
-	fmt.Println("==================================================")
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+func printFleetSummary(cmd *cobra.Command, fleetRes *FleetResult) {
+	out := cmd.OutOrStdout()
+	fmt.Fprintln(out, "\n==================================================")
+	fmt.Fprintln(out, "             Fleet Execution Summary              ")
+	fmt.Fprintln(out, "==================================================")
+	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "THREAD\tSTATUS\tEXIT CODE\tDURATION")
 	for _, r := range fleetRes.Results {
 		status := "SUCCESS"
@@ -121,6 +134,6 @@ func printFleetSummary(fleetRes *FleetResult) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Node, status, r.ExitCode, r.Duration)
 	}
 	w.Flush()
-	fmt.Println("==================================================")
-	fmt.Printf("Total: %d | Succeeded: %d | Failed: %d\n\n", fleetRes.Total, fleetRes.SucceededCount, fleetRes.FailedCount)
+	fmt.Fprintln(out, "==================================================")
+	fmt.Fprintf(out, "Total: %d | Succeeded: %d | Failed: %d\n\n", fleetRes.Total, fleetRes.SucceededCount, fleetRes.FailedCount)
 }

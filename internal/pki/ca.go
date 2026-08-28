@@ -239,6 +239,11 @@ func BootstrapCA(caDir, domain string, opts ...Option) (*CA, string, error) {
 			_ = os.MkdirAll("/etc/fabric/ca", 0755)
 			_ = os.WriteFile("/etc/fabric/ca/ca.crt", data, 0644)
 		}
+		if home, err := os.UserHomeDir(); err == nil {
+			userFabricDir := filepath.Join(home, ".fabric")
+			_ = os.MkdirAll(userFabricDir, 0755)
+			_ = os.WriteFile(filepath.Join(userFabricDir, "ca.crt"), data, 0644)
+		}
 		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && sudoUser != "root" {
 			sudoHome := os.Getenv("SUDO_HOME")
 			if sudoHome == "" {

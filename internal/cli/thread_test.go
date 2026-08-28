@@ -184,7 +184,7 @@ func TestThreadCommandsAndDeprecations(t *testing.T) {
 		}
 	}
 
-	// 5. Test `fabric thread inspect worker-1`
+	// 5. Test `fabric thread inspect worker-1` (card view by default & json with --format json)
 	{
 		var stdoutBuf bytes.Buffer
 		rootCmd.SetOut(&stdoutBuf)
@@ -193,6 +193,16 @@ func TestThreadCommandsAndDeprecations(t *testing.T) {
 		err := rootCmd.Execute()
 		if err != nil {
 			t.Fatalf("thread inspect failed: %v", err)
+		}
+		cardOut := stdoutBuf.String()
+		if !strings.Contains(cardOut, "Thread: worker-1") || !strings.Contains(cardOut, "Hostname:") {
+			t.Errorf("expected human-readable card for worker-1, got:\n%s", cardOut)
+		}
+
+		stdoutBuf.Reset()
+		rootCmd.SetArgs([]string{"thread", "inspect", "--format", "json", "worker-1"})
+		if err := rootCmd.Execute(); err != nil {
+			t.Fatalf("thread inspect --format json failed: %v", err)
 		}
 		var list []protocol.NodeMetadata
 		if err := json.Unmarshal(stdoutBuf.Bytes(), &list); err != nil {
@@ -247,7 +257,7 @@ func TestThreadCommandsAndDeprecations(t *testing.T) {
 		var stdoutBuf bytes.Buffer
 		rootCmd.SetOut(&stdoutBuf)
 		rootCmd.SetErr(&stderrBuf)
-		rootCmd.SetArgs([]string{"node", "inspect", "worker-1"})
+		rootCmd.SetArgs([]string{"node", "inspect", "--format", "json", "worker-1"})
 
 		err := rootCmd.Execute()
 		if err != nil {

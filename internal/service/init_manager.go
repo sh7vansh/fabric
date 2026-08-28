@@ -226,7 +226,7 @@ func (m *InitManager) WriteServiceEnv(role string, env ConfigEnv) error {
 		envDir = filepath.Join(home, ".fabric")
 	}
 
-	if err := os.MkdirAll(envDir, 0700); err != nil {
+	if err := os.MkdirAll(envDir, 0755); err != nil {
 		return err
 	}
 
@@ -340,15 +340,18 @@ func (m *InitManager) InstallService(role string) error {
 		// Also sync user CA to /etc/fabric/ca so system service shares the identical CA
 		userCADir := filepath.Join(home, ".fabric", "ca")
 		if _, err := os.Stat(filepath.Join(userCADir, "ca.crt")); err == nil {
+			_ = m.RunPrivileged("mkdir", "-p", "/etc/fabric")
+			_ = m.RunPrivileged("chmod", "755", "/etc/fabric")
 			_ = m.RunPrivileged("mkdir", "-p", "/etc/fabric/ca")
+			_ = m.RunPrivileged("chmod", "755", "/etc/fabric/ca")
 			_ = m.RunPrivileged("cp", filepath.Join(userCADir, "ca.crt"), "/etc/fabric/ca/ca.crt")
+			_ = m.RunPrivileged("chmod", "644", "/etc/fabric/ca/ca.crt")
+			_ = m.RunPrivileged("cp", filepath.Join(userCADir, "ca.crt"), "/etc/fabric/ca.crt")
+			_ = m.RunPrivileged("chmod", "644", "/etc/fabric/ca.crt")
 			if _, errKey := os.Stat(filepath.Join(userCADir, "ca.key")); errKey == nil {
 				_ = m.RunPrivileged("cp", filepath.Join(userCADir, "ca.key"), "/etc/fabric/ca/ca.key")
 				_ = m.RunPrivileged("chmod", "600", "/etc/fabric/ca/ca.key")
 			}
-			_ = m.RunPrivileged("chmod", "644", "/etc/fabric/ca/ca.crt")
-			_ = m.RunPrivileged("cp", filepath.Join(userCADir, "ca.crt"), "/etc/fabric/ca.crt")
-			_ = m.RunPrivileged("chmod", "644", "/etc/fabric/ca.crt")
 		}
 
 		// Sync config.json to /etc/fabric/config.json

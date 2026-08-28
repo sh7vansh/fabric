@@ -67,6 +67,7 @@ type Relay struct {
 	federationCA  string
 	peers         map[string]*GatewayPeerSession
 	remoteThreads map[string]RemoteThreadEntry
+	outboundCancels map[string]chan struct{}
 	peerMu        sync.RWMutex
 	reconciler    *TopologyReconciler
 }
@@ -115,6 +116,7 @@ func New(cfg Config) *Relay {
 		federationCA:         cfg.FederationCA,
 		peers:                make(map[string]*GatewayPeerSession),
 		remoteThreads:        make(map[string]RemoteThreadEntry),
+		outboundCancels:      make(map[string]chan struct{}),
 		reconciler:           NewTopologyReconciler(serverID),
 	}
 

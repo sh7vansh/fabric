@@ -65,7 +65,8 @@ func TestThreadLsMultiClusterAndPeerFiltering(t *testing.T) {
 		caCertFlag = ""
 	}()
 
-	// 1. Test listing all threads displays SERVER column
+	// 1. Test listing all threads displays SERVER column in wide output
+	wideFlag = true
 	var bufAll bytes.Buffer
 	threadLsCmd.SetOut(&bufAll)
 	defer threadLsCmd.SetOut(nil)

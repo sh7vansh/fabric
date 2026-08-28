@@ -11,6 +11,10 @@ var psCmd = &cobra.Command{
 	Example: `  # List all active threads in the Fabric
   fabric ps
 
+  # Show extended columns
+  fabric ps -o wide
+  fabric ps --wide
+
   # Show only thread names
   fabric ps -q
 

@@ -8,6 +8,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -119,6 +121,20 @@ func NewSecureServer(cfg Config) (*SecureServer, error) {
 	if err != nil {
 		meshRelay.Close()
 		return nil, fmt.Errorf("failed to initialize TLS engine: %w", err)
+	}
+
+	if ca := tlsEng.CA(); ca != nil && len(ca.CertPEM()) > 0 {
+		if os.Geteuid() == 0 {
+			_ = os.MkdirAll("/etc/fabric", 0755)
+			_ = os.WriteFile("/etc/fabric/ca.crt", ca.CertPEM(), 0644)
+			_ = os.MkdirAll("/etc/fabric/ca", 0755)
+			_ = os.WriteFile("/etc/fabric/ca/ca.crt", ca.CertPEM(), 0644)
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			userFabricDir := filepath.Join(home, ".fabric")
+			_ = os.MkdirAll(userFabricDir, 0755)
+			_ = os.WriteFile(filepath.Join(userFabricDir, "ca.crt"), ca.CertPEM(), 0644)
+		}
 	}
 
 	accessCtrl := NewAccessController(AccessControllerConfig{

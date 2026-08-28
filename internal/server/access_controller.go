@@ -276,10 +276,13 @@ func (ac *AccessController) AuthenticateRequest(r *http.Request, requiredCaps ..
 	} else if adminTok != "" && constantTimeMatch(token, adminTok) {
 		ident = newAdminIdentity(token, ip)
 	} else if clusterTok != "" && constantTimeMatch(token, clusterTok) {
+		isAdmin := (adminTok == "")
 		ident = &SessionIdentity{
 			Token: token,
 			Role:  "cluster",
 			Capabilities: map[string]bool{
+				CapabilityAdmin:   isAdmin,
+				CapabilityPeer:    true,
 				CapabilityInspect: true,
 				CapabilityExec:    true,
 				CapabilityCopy:    true,

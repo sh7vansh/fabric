@@ -16,6 +16,8 @@ import (
 var (
 	quietFlag      bool
 	formatFlag     string
+	outputFlag     string
+	wideFlag       bool
 	tagFilterFlag  string
 	peerFilterFlag string
 )
@@ -29,6 +31,11 @@ var threadCmd = &cobra.Command{
 
   # Output threads in JSON format
   fabric thread ls --format json
+  fabric thread ls -o json
+
+  # Display wide output (all columns)
+  fabric thread ls -o wide
+  fabric thread ls --wide
 
   # Filter threads by tag
   fabric thread ls -l web
@@ -46,8 +53,12 @@ var threadLsCmd = &cobra.Command{
 	Example: `  # Table view of active threads
   fabric thread ls
 
+  # Wide output with all columns
+  fabric thread ls -o wide
+  fabric thread ls --wide
+
   # Output in JSON format
-  fabric thread ls --format json
+  fabric thread ls -o json
 
   # Display only thread names
   fabric thread ls -q
@@ -61,7 +72,9 @@ var threadLsCmd = &cobra.Command{
 
 func registerThreadListingFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "Only display thread names")
-	cmd.Flags().StringVar(&formatFlag, "format", "", "Pretty-print threads using a Go template or json")
+	cmd.Flags().StringVarP(&outputFlag, "output", "o", "", "Output format ('wide', 'json', 'table', or Go template)")
+	cmd.Flags().StringVarP(&formatFlag, "format", "f", "", "Pretty-print threads using a Go template or json")
+	cmd.Flags().BoolVarP(&wideFlag, "wide", "w", false, "Display extended table columns")
 	cmd.Flags().StringVarP(&tagFilterFlag, "tag", "l", "", "Filter threads by tag")
 	cmd.Flags().StringVarP(&peerFilterFlag, "peer", "p", "", "Filter threads by gateway ID")
 }
@@ -79,19 +92,33 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 	defer func() {
 		quietFlag = false
 		formatFlag = ""
+		outputFlag = ""
+		wideFlag = false
 		tagFilterFlag = ""
 		peerFilterFlag = ""
 	}()
 
 	client := NewClient(GetConfig())
-	threads, err := client.ListThreads()
+	allThreads, err := client.ListThreads()
 	if err != nil {
 		return err
 	}
 
+	var computeThreads []protocol.ThreadMetadata
+	var controlPlaneEntry *protocol.ThreadMetadata
+
+	for _, n := range allThreads {
+		if n.ID == "socket" || strings.Contains(n.Status, "control-plane") || (len(n.Tags) == 2 && n.Tags[0] == "relay" && n.Tags[1] == "control-plane") {
+			cpCopy := n
+			controlPlaneEntry = &cpCopy
+		} else {
+			computeThreads = append(computeThreads, n)
+		}
+	}
+
 	if tagFilterFlag != "" {
 		var filtered []protocol.ThreadMetadata
-		for _, n := range threads {
+		for _, n := range computeThreads {
 			for _, t := range n.Tags {
 				if t == tagFilterFlag {
 					filtered = append(filtered, n)
@@ -99,41 +126,46 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 				}
 			}
 		}
-		threads = filtered
+		computeThreads = filtered
 	}
 
 	if peerFilterFlag != "" {
 		var filtered []protocol.ThreadMetadata
-		for _, n := range threads {
+		for _, n := range computeThreads {
 			if strings.EqualFold(n.ServerID, peerFilterFlag) || strings.EqualFold(n.GatewayID, peerFilterFlag) {
 				filtered = append(filtered, n)
 			}
 		}
-		threads = filtered
+		computeThreads = filtered
 	}
 
 	if quietFlag {
-		for _, n := range threads {
+		for _, n := range computeThreads {
 			fmt.Fprintln(cmd.OutOrStdout(), n.Hostname)
 		}
 		return nil
 	}
 
-	if formatFlag != "" {
-		if strings.ToLower(formatFlag) == "json" {
-			b, err := json.MarshalIndent(threads, "", "  ")
-			if err != nil {
-				return err
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), string(b))
-			return nil
+	isJSON := strings.ToLower(formatFlag) == "json" || strings.ToLower(outputFlag) == "json"
+	if isJSON {
+		b, err := json.MarshalIndent(computeThreads, "", "  ")
+		if err != nil {
+			return err
 		}
+		fmt.Fprintln(cmd.OutOrStdout(), string(b))
+		return nil
+	}
 
-		tmpl, err := template.New("format").Parse(formatFlag + "\n")
+	templateFmt := formatFlag
+	if templateFmt == "" && outputFlag != "" && outputFlag != "wide" && outputFlag != "table" && outputFlag != "json" {
+		templateFmt = outputFlag
+	}
+	if templateFmt != "" && templateFmt != "wide" && templateFmt != "table" {
+		tmpl, err := template.New("format").Parse(templateFmt + "\n")
 		if err != nil {
 			return fmt.Errorf("invalid format template: %w", err)
 		}
-		for _, n := range threads {
+		for _, n := range computeThreads {
 			if err := tmpl.Execute(cmd.OutOrStdout(), n); err != nil {
 				return err
 			}
@@ -141,45 +173,104 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "THREAD\tHOSTNAME\tPLATFORM\tSERVER\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
-	for _, n := range threads {
-		uptime := ""
-		if t, err := time.Parse(time.RFC3339, n.ConnectedAt); err == nil {
-			uptime = time.Since(t).Round(time.Second).String()
+	out := cmd.OutOrStdout()
+
+	// Empty state handling
+	if len(computeThreads) == 0 {
+		if tagFilterFlag != "" {
+			fmt.Fprintf(out, "No threads found with tag %q.\nTo view all connected threads, run: fabric ps\n", tagFilterFlag)
+		} else if peerFilterFlag != "" {
+			fmt.Fprintf(out, "No threads found for server/gateway %q.\nTo view all connected threads, run: fabric ps\n", peerFilterFlag)
+		} else {
+			fmt.Fprintln(out, "No compute threads connected to the Fabric mesh.")
+			fmt.Fprintln(out, "To join this machine or stitch a remote host, run:")
+			fmt.Fprintln(out, "  • fabric stitch <host>")
+			fmt.Fprintln(out, "  • sudo fabric init --role=thread")
 		}
-		tagsStr := "-"
-		if len(n.Tags) > 0 {
-			tagsStr = strings.Join(n.Tags, ",")
+		if controlPlaneEntry != nil {
+			serverStatus := "online"
+			if strings.Contains(controlPlaneEntry.Status, "unreachable") {
+				serverStatus = "unreachable"
+			}
+			fmt.Fprintf(out, "\nControl Plane: %s (%s)\n", serverStatus, controlPlaneEntry.RemoteIP)
 		}
-		platform := "-"
-		if n.OS != "" && n.Arch != "" {
-			platform = n.OS + "/" + n.Arch
-		} else if n.OS != "" {
-			platform = n.OS
-		} else if n.Arch != "" {
-			platform = n.Arch
+		return nil
+	}
+
+	isWide := wideFlag || strings.ToLower(outputFlag) == "wide" || strings.ToLower(formatFlag) == "wide"
+
+	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
+	if isWide {
+		fmt.Fprintln(w, "THREAD\tHOSTNAME\tPLATFORM\tSERVER\tSTATUS\tTAGS\tIP\tDOMAIN\tUPTIME")
+		for _, n := range computeThreads {
+			uptime := ""
+			if t, err := time.Parse(time.RFC3339, n.ConnectedAt); err == nil {
+				uptime = time.Since(t).Round(time.Second).String()
+			}
+			tagsStr := "-"
+			if len(n.Tags) > 0 {
+				tagsStr = strings.Join(n.Tags, ",")
+			}
+			platform := "-"
+			if n.OS != "" && n.Arch != "" {
+				platform = n.OS + "/" + n.Arch
+			} else if n.OS != "" {
+				platform = n.OS
+			} else if n.Arch != "" {
+				platform = n.Arch
+			}
+			domainStr := n.Domain
+			if domainStr == "" {
+				domainStr = "fabric.mesh"
+			}
+			if n.Hostname != "" && !strings.Contains(n.Hostname, ".") && !strings.HasPrefix(domainStr, n.Hostname+".") {
+				domainStr = n.Hostname + "." + domainStr
+			}
+			displayName := n.Hostname
+			if displayName == "" {
+				displayName = n.ID
+			}
+			gwStr := n.ServerID
+			if gwStr == "" {
+				gwStr = n.GatewayID
+			}
+			if gwStr == "" {
+				gwStr = "local"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayName, n.Hostname, platform, gwStr, n.Status, tagsStr, n.RemoteIP, domainStr, uptime)
 		}
-		domainStr := n.Domain
-		if domainStr == "" {
-			domainStr = "fabric.mesh"
+	} else {
+		// Default 5 columns: THREAD, STATUS, PLATFORM, IP, UPTIME
+		fmt.Fprintln(w, "THREAD\tSTATUS\tPLATFORM\tIP\tUPTIME")
+		for _, n := range computeThreads {
+			uptime := ""
+			if t, err := time.Parse(time.RFC3339, n.ConnectedAt); err == nil {
+				uptime = time.Since(t).Round(time.Second).String()
+			}
+			platform := "-"
+			if n.OS != "" && n.Arch != "" {
+				platform = n.OS + "/" + n.Arch
+			} else if n.OS != "" {
+				platform = n.OS
+			} else if n.Arch != "" {
+				platform = n.Arch
+			}
+			displayName := n.Hostname
+			if displayName == "" {
+				displayName = n.ID
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", displayName, n.Status, platform, n.RemoteIP, uptime)
 		}
-		if n.Hostname != "" && !strings.Contains(n.Hostname, ".") && !strings.HasPrefix(domainStr, n.Hostname+".") {
-			domainStr = n.Hostname + "." + domainStr
-		}
-		displayName := n.Hostname
-		if displayName == "" {
-			displayName = n.ID
-		}
-		gwStr := n.ServerID
-		if gwStr == "" {
-			gwStr = n.GatewayID
-		}
-		if gwStr == "" {
-			gwStr = "local"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayName, n.Hostname, platform, gwStr, n.Status, tagsStr, n.RemoteIP, domainStr, uptime)
 	}
 	w.Flush()
+
+	if controlPlaneEntry != nil {
+		serverStatus := "online"
+		if strings.Contains(controlPlaneEntry.Status, "unreachable") {
+			serverStatus = "unreachable"
+		}
+		fmt.Fprintf(out, "\nControl Plane: %s (%s)\n", serverStatus, controlPlaneEntry.RemoteIP)
+	}
+
 	return nil
 }

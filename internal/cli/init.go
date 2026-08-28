@@ -85,6 +85,8 @@ func init() {
 	initCmd.Flags().BoolVar(&initACMEFlag, "acme", false, "Enable automatic Let's Encrypt / ACME TLS certification (opens port 80/tcp)")
 	initCmd.Flags().BoolVar(&initTrustCA, "trust-ca", false, "Install Fabric Root CA into system trust store")
 	initCmd.Flags().BoolVar(&initUntrustCA, "untrust-ca", false, "Remove Fabric Root CA from system trust store")
+
+	_ = initCmd.Flags().MarkHidden("host")
 }
 
 func parseRoleChoice(input string) string {
@@ -263,6 +265,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to bootstrap Certificate Authority: %w", err)
 		}
 		caPath = path
+		if _, err := os.Stat("/etc/fabric/ca.crt"); err == nil {
+			caPath = "/etc/fabric/ca.crt"
+		}
 	}
 
 	if !initNonInteract {
@@ -276,7 +281,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	// 7. Save CLI Config
 	if caPath == "" {
-		if path, _, err := pki.FindCACert(""); err == nil {
+		if _, err := os.Stat("/etc/fabric/ca.crt"); err == nil {
+			caPath = "/etc/fabric/ca.crt"
+		} else if path, _, err := pki.FindCACert(""); err == nil {
 			caPath = path
 		}
 	}

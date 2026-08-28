@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -728,7 +729,10 @@ func (c *Client) Execute(opts ExecOptions, in io.Reader, out, errOut io.Writer) 
 	if err != nil {
 		res.Success = false
 		res.Error = err
-		if strings.HasPrefix(err.Error(), "exit code ") {
+		var exitErr *ExitCodeError
+		if errors.As(err, &exitErr) {
+			res.ExitCode = strconv.Itoa(exitErr.Code)
+		} else if strings.HasPrefix(err.Error(), "exit code ") {
 			res.ExitCode = strings.TrimPrefix(err.Error(), "exit code ")
 		} else {
 			res.ExitCode = "ERR"
@@ -824,7 +828,10 @@ func (c *Client) executeFleet(opts ExecOptions, out, errOut io.Writer) (*FleetTh
 			if execErr != nil {
 				r.Success = false
 				r.Error = execErr
-				if strings.HasPrefix(execErr.Error(), "exit code ") {
+				var exitErr *ExitCodeError
+				if errors.As(execErr, &exitErr) {
+					r.ExitCode = strconv.Itoa(exitErr.Code)
+				} else if strings.HasPrefix(execErr.Error(), "exit code ") {
 					r.ExitCode = strings.TrimPrefix(execErr.Error(), "exit code ")
 				} else {
 					r.ExitCode = "ERR"
@@ -987,7 +994,11 @@ func (c *Client) executeSingle(opts ExecOptions, in io.Reader, out, errOut io.Wr
 		case protocol.StreamExit:
 			exitStr := string(frame.Payload)
 			if exitStr != "0" {
-				return fmt.Errorf("exit code %s", exitStr)
+				code, err := strconv.Atoi(exitStr)
+				if err != nil {
+					code = 1
+				}
+				return &ExitCodeError{Code: code}
 			}
 			return nil
 		}

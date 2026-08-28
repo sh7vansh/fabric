@@ -337,9 +337,27 @@ func (r *Relay) GetPeer(gatewayID string) (*protocol.ServerPeerInfo, bool) {
 
 // RemovePeer disconnects and removes a peer gateway.
 func (r *Relay) RemovePeer(gatewayID string) error {
-	r.peerMu.RLock()
+	r.peerMu.Lock()
 	peer, ok := r.peers[gatewayID]
-	r.peerMu.RUnlock()
+	if cancelCh, hasCancel := r.outboundCancels[gatewayID]; hasCancel {
+		select {
+		case <-cancelCh:
+		default:
+			close(cancelCh)
+		}
+		delete(r.outboundCancels, gatewayID)
+	}
+	if ok && peer.Endpoint != "" {
+		if cancelCh, hasCancel := r.outboundCancels[peer.Endpoint]; hasCancel {
+			select {
+			case <-cancelCh:
+			default:
+				close(cancelCh)
+			}
+			delete(r.outboundCancels, peer.Endpoint)
+		}
+	}
+	r.peerMu.Unlock()
 
 	if !ok {
 		return fmt.Errorf("peer gateway %q not found", gatewayID)
@@ -354,16 +372,40 @@ func (r *Relay) RemovePeer(gatewayID string) error {
 
 // AddPeer initiates an outbound connection to a target gateway endpoint.
 func (r *Relay) AddPeer(endpoint string) error {
-	go r.connectOutboundPeerWithBackoff(endpoint, false)
+	cancelCh := make(chan struct{})
+	r.peerMu.Lock()
+	if existing, ok := r.outboundCancels[endpoint]; ok {
+		select {
+		case <-existing:
+		default:
+			close(existing)
+		}
+	}
+	r.outboundCancels[endpoint] = cancelCh
+	r.peerMu.Unlock()
+
+	go r.connectOutboundPeerWithBackoff(endpoint, false, cancelCh)
 	return nil
 }
 
 // ConnectLeaf initiates an outbound leaf reverse tunnel connection to a core gateway.
 func (r *Relay) ConnectLeaf(coreEndpoint string) {
-	go r.connectOutboundPeerWithBackoff(coreEndpoint, true)
+	cancelCh := make(chan struct{})
+	r.peerMu.Lock()
+	if existing, ok := r.outboundCancels[coreEndpoint]; ok {
+		select {
+		case <-existing:
+		default:
+			close(existing)
+		}
+	}
+	r.outboundCancels[coreEndpoint] = cancelCh
+	r.peerMu.Unlock()
+
+	go r.connectOutboundPeerWithBackoff(coreEndpoint, true, cancelCh)
 }
 
-func (r *Relay) connectOutboundPeerWithBackoff(rawEndpoint string, isLeaf bool) {
+func (r *Relay) connectOutboundPeerWithBackoff(rawEndpoint string, isLeaf bool, cancelCh chan struct{}) {
 	baseBackoff := 1 * time.Second
 	maxBackoff := 30 * time.Second
 	backoff := baseBackoff
@@ -372,16 +414,20 @@ func (r *Relay) connectOutboundPeerWithBackoff(rawEndpoint string, isLeaf bool) 
 		select {
 		case <-r.closeCh:
 			return
+		case <-cancelCh:
+			return
 		default:
 		}
 
-		err := r.dialAndRunPeerSession(rawEndpoint, isLeaf)
+		err := r.dialAndRunPeerSession(rawEndpoint, isLeaf, cancelCh)
 		if err != nil {
 			log.Printf("[Relay/Peering] Outbound connection to %s failed (%v); reconnecting in %v...", rawEndpoint, err, backoff)
 		}
 
 		select {
 		case <-r.closeCh:
+			return
+		case <-cancelCh:
 			return
 		case <-time.After(backoff):
 		}
@@ -395,7 +441,7 @@ func (r *Relay) connectOutboundPeerWithBackoff(rawEndpoint string, isLeaf bool) 
 	}
 }
 
-func (r *Relay) dialAndRunPeerSession(rawEndpoint string, isLeaf bool) error {
+func (r *Relay) dialAndRunPeerSession(rawEndpoint string, isLeaf bool, cancelCh chan struct{}) error {
 	u, err := pki.NormalizeURL(rawEndpoint)
 	if err != nil {
 		return fmt.Errorf("invalid peer url: %w", err)
@@ -488,6 +534,10 @@ func (r *Relay) dialAndRunPeerSession(rawEndpoint string, isLeaf bool) error {
 		ConnectedAt:  time.Now().UTC(),
 		IsOutbound:   true,
 	}
+
+	r.peerMu.Lock()
+	r.outboundCancels[remoteHello.GatewayID] = cancelCh
+	r.peerMu.Unlock()
 
 	if err := r.RegisterPeer(peerSession); err != nil {
 		return err

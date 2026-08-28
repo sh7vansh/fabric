@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -82,6 +84,40 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&remoteFlag, "remote", "", "Directly connect to a listening thread (e.g. 192.168.1.10:8443)")
 	rootCmd.PersistentFlags().StringVar(&directFlag, "direct", "", "Directly connect to a listening node (deprecated, use --remote)")
 
+	_ = rootCmd.PersistentFlags().MarkHidden("host")
+	_ = rootCmd.PersistentFlags().MarkHidden("direct")
+
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, args []string) {
+		cmd.SilenceUsage = true
+	}
+
+	rootCmd.SetHelpCommand(&cobra.Command{
+		Use:   "help [command]",
+		Short: "Help about any command or topic",
+		Long:  `Help provides help for any command in the application.`,
+		Run: func(c *cobra.Command, args []string) {
+			if len(args) > 0 {
+				topic := strings.ToLower(args[0])
+				if topic == "stitch" || topic == "stitch-guide" {
+					fmt.Fprint(c.OutOrStdout(), topicStitchGuideCmd.Long)
+					return
+				}
+			}
+			cmd, _, err := c.Root().Find(args)
+			if cmd == nil || err != nil {
+				c.Printf("Unknown help topic %#q\n", args)
+				_ = c.Root().Usage()
+				return
+			}
+			if cmd.GroupID == "topics" {
+				fmt.Fprint(c.OutOrStdout(), cmd.Long)
+				return
+			}
+			cmd.InitDefaultHelpFlag()
+			_ = cmd.Help()
+		},
+	})
+
 	rootCmd.AddCommand(execCmd)
 	rootCmd.AddCommand(psCmd)
 	rootCmd.AddCommand(cpCmd)
@@ -93,7 +129,11 @@ func init() {
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		var exitErr *ExitCodeError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.Code)
+		}
+		fmt.Fprintln(os.Stderr, FormatError(err))
 		os.Exit(1)
 	}
 }
