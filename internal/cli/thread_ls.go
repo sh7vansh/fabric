@@ -17,6 +17,7 @@ var (
 	quietFlag      bool
 	formatFlag     string
 	outputFlag     string
+	jsonFlag       bool
 	wideFlag       bool
 	tagFilterFlag  string
 	peerFilterFlag string
@@ -30,6 +31,7 @@ var threadCmd = &cobra.Command{
   fabric thread ls
 
   # Output threads in JSON format
+  fabric thread ls --json
   fabric thread ls --format json
   fabric thread ls -o json
 
@@ -40,8 +42,8 @@ var threadCmd = &cobra.Command{
   # Filter threads by tag
   fabric thread ls -l web
 
-  # Filter threads by peer gateway
-  fabric thread ls --peer gw-eu-west
+  # Filter threads by peer server
+  fabric thread ls --peer srv-eu-west
 
   # Inspect a specific thread
   fabric thread inspect worker-1`,
@@ -58,6 +60,7 @@ var threadLsCmd = &cobra.Command{
   fabric thread ls --wide
 
   # Output in JSON format
+  fabric thread ls --json
   fabric thread ls -o json
 
   # Display only thread names
@@ -66,17 +69,18 @@ var threadLsCmd = &cobra.Command{
   # Filter by tag
   fabric thread ls -l prod
 
-  # Filter by gateway
-  fabric thread ls --peer gw-eu-west`,
+  # Filter by server
+  fabric thread ls --peer srv-eu-west`,
 }
 
 func registerThreadListingFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVarP(&quietFlag, "quiet", "q", false, "Only display thread names")
 	cmd.Flags().StringVarP(&outputFlag, "output", "o", "", "Output format ('wide', 'json', 'table', or Go template)")
 	cmd.Flags().StringVarP(&formatFlag, "format", "f", "", "Pretty-print threads using a Go template or json")
+	cmd.Flags().BoolVar(&jsonFlag, "json", false, "Output in JSON format")
 	cmd.Flags().BoolVarP(&wideFlag, "wide", "w", false, "Display extended table columns")
 	cmd.Flags().StringVarP(&tagFilterFlag, "tag", "l", "", "Filter threads by tag")
-	cmd.Flags().StringVarP(&peerFilterFlag, "peer", "p", "", "Filter threads by gateway ID")
+	cmd.Flags().StringVarP(&peerFilterFlag, "peer", "p", "", "Filter threads by server ID")
 }
 
 func init() {
@@ -93,6 +97,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 		quietFlag = false
 		formatFlag = ""
 		outputFlag = ""
+		jsonFlag = false
 		wideFlag = false
 		tagFilterFlag = ""
 		peerFilterFlag = ""
@@ -146,7 +151,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	isJSON := strings.ToLower(formatFlag) == "json" || strings.ToLower(outputFlag) == "json"
+	isJSON := jsonFlag || strings.ToLower(formatFlag) == "json" || strings.ToLower(outputFlag) == "json"
 	if isJSON {
 		b, err := json.MarshalIndent(computeThreads, "", "  ")
 		if err != nil {
@@ -180,12 +185,12 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 		if tagFilterFlag != "" {
 			fmt.Fprintf(out, "No threads found with tag %q.\nTo view all connected threads, run: fabric ps\n", tagFilterFlag)
 		} else if peerFilterFlag != "" {
-			fmt.Fprintf(out, "No threads found for server/gateway %q.\nTo view all connected threads, run: fabric ps\n", peerFilterFlag)
+			fmt.Fprintf(out, "No threads found for server %q.\nTo view all connected threads, run: fabric ps\n", peerFilterFlag)
 		} else {
-			fmt.Fprintln(out, "No compute threads connected to the Fabric mesh.")
-			fmt.Fprintln(out, "To join this machine or stitch a remote host, run:")
-			fmt.Fprintln(out, "  • fabric stitch <host>")
-			fmt.Fprintln(out, "  • sudo fabric init --role=thread")
+			fmt.Fprintln(out, "No active threads connected to the Fabric.")
+			fmt.Fprintln(out, "\nTo connect your first thread:")
+			fmt.Fprintln(out, "  • Onboard a remote machine over SSH: fabric stitch user@<host-ip>")
+			fmt.Fprintln(out, "  • Initialize a local thread daemon:  sudo fabric init --role=thread")
 		}
 		if controlPlaneEntry != nil {
 			serverStatus := "online"
@@ -211,14 +216,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 			if len(n.Tags) > 0 {
 				tagsStr = strings.Join(n.Tags, ",")
 			}
-			platform := "-"
-			if n.OS != "" && n.Arch != "" {
-				platform = n.OS + "/" + n.Arch
-			} else if n.OS != "" {
-				platform = n.OS
-			} else if n.Arch != "" {
-				platform = n.Arch
-			}
+			platform := FormatPlatform(n.OS, n.Arch)
 			domainStr := n.Domain
 			if domainStr == "" {
 				domainStr = "fabric.mesh"
@@ -247,14 +245,7 @@ func runThreadLs(cmd *cobra.Command, args []string) error {
 			if t, err := time.Parse(time.RFC3339, n.ConnectedAt); err == nil {
 				uptime = time.Since(t).Round(time.Second).String()
 			}
-			platform := "-"
-			if n.OS != "" && n.Arch != "" {
-				platform = n.OS + "/" + n.Arch
-			} else if n.OS != "" {
-				platform = n.OS
-			} else if n.Arch != "" {
-				platform = n.Arch
-			}
+			platform := FormatPlatform(n.OS, n.Arch)
 			displayName := n.Hostname
 			if displayName == "" {
 				displayName = n.ID

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 )
 
 // ExitCodeError represents a process termination with a specific exit code.
@@ -59,10 +60,57 @@ func FormatError(err error) string {
 			addr = opErr.Addr.String()
 		}
 		if addr != "" {
-			return fmt.Sprintf("Error: Connection refused (%s)\n  👉 Tip: Unable to reach Fabric server. Check if fabric-server is active ('fabric thread service status') or verify '--server'.", addr)
+			return fmt.Sprintf("Error: Connection refused (%s)\n  👉 Tip: Unable to reach Fabric server. Check if fabric-server is active on the target host or verify '--server'.", addr)
 		}
-		return fmt.Sprintf("Error: Connection refused\n  👉 Tip: Unable to reach Fabric server. Check if fabric-server is active ('fabric thread service status') or verify '--server'.")
+		return fmt.Sprintf("Error: Connection refused\n  👉 Tip: Unable to reach Fabric server. Check if fabric-server is active on the target host or verify '--server'.")
 	}
 
 	return fmt.Sprintf("Error: %v", err)
+}
+
+// FormatPlatform formats OS and Arch into standard "os/arch" representation.
+func FormatPlatform(osName, arch string) string {
+	if osName != "" && arch != "" {
+		return osName + "/" + arch
+	}
+	if osName != "" {
+		return osName
+	}
+	if arch != "" {
+		return arch
+	}
+	return "-"
+}
+
+// FormatRelativeTime converts a timestamp to a friendly relative duration (e.g. "45s ago", "never").
+func FormatRelativeTime(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	d := time.Since(t)
+	if d < 0 {
+		d = 0
+	}
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds ago", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		mins := int(d.Minutes())
+		secs := int(d.Seconds()) % 60
+		if secs > 0 {
+			return fmt.Sprintf("%dm%ds ago", mins, secs)
+		}
+		return fmt.Sprintf("%dm ago", mins)
+	}
+	if d < 24*time.Hour {
+		hours := int(d.Hours())
+		mins := int(d.Minutes()) % 60
+		if mins > 0 {
+			return fmt.Sprintf("%dh%dm ago", hours, mins)
+		}
+		return fmt.Sprintf("%dh ago", hours)
+	}
+	days := int(d.Hours()) / 24
+	return fmt.Sprintf("%dd ago", days)
 }

@@ -16,6 +16,7 @@ import (
 var (
 	threadInspectFormatFlag string
 	threadInspectOutputFlag string
+	threadInspectJSONFlag   bool
 )
 
 var threadInspectCmd = &cobra.Command{
@@ -25,6 +26,7 @@ var threadInspectCmd = &cobra.Command{
   fabric thread inspect worker-1
 
   # Inspect in JSON format
+  fabric thread inspect --json worker-1
   fabric thread inspect -o json worker-1
   fabric thread inspect --format json worker-1
 
@@ -36,12 +38,14 @@ var threadInspectCmd = &cobra.Command{
 func init() {
 	threadInspectCmd.Flags().StringVarP(&threadInspectFormatFlag, "format", "f", "", "Output format ('json', 'table', or Go template)")
 	threadInspectCmd.Flags().StringVarP(&threadInspectOutputFlag, "output", "o", "", "Output format ('json', 'table')")
+	threadInspectCmd.Flags().BoolVar(&threadInspectJSONFlag, "json", false, "Output in JSON format")
 }
 
 func runThreadInspect(cmd *cobra.Command, args []string) error {
 	defer func() {
 		threadInspectFormatFlag = ""
 		threadInspectOutputFlag = ""
+		threadInspectJSONFlag = false
 	}()
 
 	if len(args) < 1 {
@@ -59,7 +63,7 @@ func runThreadInspect(cmd *cobra.Command, args []string) error {
 		results = append(results, *meta)
 	}
 
-	isJSON := strings.ToLower(threadInspectFormatFlag) == "json" || strings.ToLower(threadInspectOutputFlag) == "json"
+	isJSON := threadInspectJSONFlag || strings.ToLower(threadInspectFormatFlag) == "json" || strings.ToLower(threadInspectOutputFlag) == "json"
 	if isJSON {
 		b, err := json.MarshalIndent(results, "", "  ")
 		if err != nil {
@@ -117,14 +121,7 @@ func runThreadInspect(cmd *cobra.Command, args []string) error {
 			domainStr = "fabric.mesh"
 		}
 		fmt.Fprintf(w, "  Domain:\t%s\n", domainStr)
-		platform := "-"
-		if n.OS != "" && n.Arch != "" {
-			platform = n.OS + "/" + n.Arch
-		} else if n.OS != "" {
-			platform = n.OS
-		} else if n.Arch != "" {
-			platform = n.Arch
-		}
+		platform := FormatPlatform(n.OS, n.Arch)
 		fmt.Fprintf(w, "  OS / Arch:\t%s\n", platform)
 		if n.Version != "" {
 			fmt.Fprintf(w, "  Version:\t%s\n", n.Version)
@@ -147,14 +144,14 @@ func runThreadInspect(cmd *cobra.Command, args []string) error {
 		if n.ConnectedAt != "" {
 			connStr := n.ConnectedAt
 			if t, err := time.Parse(time.RFC3339, n.ConnectedAt); err == nil {
-				connStr = fmt.Sprintf("%s (%s ago)", n.ConnectedAt, time.Since(t).Round(time.Second).String())
+				connStr = fmt.Sprintf("%s (%s)", n.ConnectedAt, FormatRelativeTime(t))
 			}
 			fmt.Fprintf(w, "  Connected At:\t%s\n", connStr)
 		}
 		if n.LastSeen != "" {
 			lastSeenStr := n.LastSeen
 			if t, err := time.Parse(time.RFC3339, n.LastSeen); err == nil {
-				lastSeenStr = fmt.Sprintf("%s (%s ago)", n.LastSeen, time.Since(t).Round(time.Second).String())
+				lastSeenStr = fmt.Sprintf("%s (%s)", n.LastSeen, FormatRelativeTime(t))
 			}
 			fmt.Fprintf(w, "  Last Seen:\t%s\n", lastSeenStr)
 		}

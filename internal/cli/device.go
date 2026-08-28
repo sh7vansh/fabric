@@ -32,8 +32,10 @@ var (
 	deviceQuietFlag         bool
 	deviceLsFormatFlag      string
 	deviceLsOutputFlag      string
+	deviceLsJSONFlag        bool
 	deviceInspectFormatFlag string
 	deviceInspectOutputFlag string
+	deviceInspectJSONFlag   bool
 
 	stitchDeviceQRFlag       bool
 	stitchDeviceWebFlag      bool
@@ -83,6 +85,7 @@ var deviceLsCmd = &cobra.Command{
   fabric device ls
 
   # JSON format
+  fabric device ls --json
   fabric device ls -o json
   fabric device ls --format json
 
@@ -99,11 +102,13 @@ var deviceInspectCmd = &cobra.Command{
   fabric device inspect iphone
 
   # Inspect in JSON format
+  fabric device inspect --json iphone
   fabric device inspect -o json iphone`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		defer func() {
 			deviceInspectFormatFlag = ""
 			deviceInspectOutputFlag = ""
+			deviceInspectJSONFlag = false
 		}()
 
 		name := args[0]
@@ -114,7 +119,7 @@ var deviceInspectCmd = &cobra.Command{
 		}
 
 		out := cmd.OutOrStdout()
-		if strings.ToLower(deviceInspectFormatFlag) == "json" || strings.ToLower(deviceInspectOutputFlag) == "json" {
+		if deviceInspectJSONFlag || strings.ToLower(deviceInspectFormatFlag) == "json" || strings.ToLower(deviceInspectOutputFlag) == "json" {
 			b, _ := json.MarshalIndent(dev, "", "  ")
 			fmt.Fprintln(out, string(b))
 			return nil
@@ -130,10 +135,10 @@ var deviceInspectCmd = &cobra.Command{
 		if dev.PresharedKey != "" {
 			fmt.Fprintf(w, "  Preshared Key:\t[configured]\n")
 		}
-		fmt.Fprintf(w, "  Last Handshake:\t%s\n", formatRelativeTime(dev.LastHandshake))
+		fmt.Fprintf(w, "  Last Handshake:\t%s\n", FormatRelativeTime(dev.LastHandshake))
 		fmt.Fprintf(w, "  Transfer (RX / TX):\t%s / %s\n", formatBytes(dev.RxBytes), formatBytes(dev.TxBytes))
 		if !dev.CreatedAt.IsZero() {
-			fmt.Fprintf(w, "  Created At:\t%s (%s)\n", dev.CreatedAt.Format(time.RFC3339), formatRelativeTime(dev.CreatedAt))
+			fmt.Fprintf(w, "  Created At:\t%s (%s)\n", dev.CreatedAt.Format(time.RFC3339), FormatRelativeTime(dev.CreatedAt))
 		}
 		w.Flush()
 		fmt.Fprintln(out, "==================================================")
@@ -185,8 +190,10 @@ func init() {
 	deviceLsCmd.Flags().BoolVarP(&deviceQuietFlag, "quiet", "q", false, "Only display device names")
 	deviceLsCmd.Flags().StringVarP(&deviceLsFormatFlag, "format", "f", "", "Output format ('json' or raw)")
 	deviceLsCmd.Flags().StringVarP(&deviceLsOutputFlag, "output", "o", "", "Output format ('json' or table)")
+	deviceLsCmd.Flags().BoolVar(&deviceLsJSONFlag, "json", false, "Output in JSON format")
 	deviceInspectCmd.Flags().StringVarP(&deviceInspectFormatFlag, "format", "f", "", "Output format ('json' or card)")
 	deviceInspectCmd.Flags().StringVarP(&deviceInspectOutputFlag, "output", "o", "", "Output format ('json' or card)")
+	deviceInspectCmd.Flags().BoolVar(&deviceInspectJSONFlag, "json", false, "Output in JSON format")
 
 	registerDeviceAddFlags(deviceAddCmd)
 	registerDeviceAddFlags(stitchDeviceCmd)
@@ -200,43 +207,12 @@ func init() {
 	stitchCmd.AddCommand(stitchDeviceCmd)
 }
 
-func formatRelativeTime(t time.Time) string {
-	if t.IsZero() {
-		return "never"
-	}
-	d := time.Since(t)
-	if d < 0 {
-		d = 0
-	}
-	d = d.Round(time.Second)
-	if d < time.Minute {
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		mins := int(d.Minutes())
-		secs := int(d.Seconds()) % 60
-		if secs > 0 {
-			return fmt.Sprintf("%dm%ds ago", mins, secs)
-		}
-		return fmt.Sprintf("%dm ago", mins)
-	}
-	if d < 24*time.Hour {
-		hours := int(d.Hours())
-		mins := int(d.Minutes()) % 60
-		if mins > 0 {
-			return fmt.Sprintf("%dh%dm ago", hours, mins)
-		}
-		return fmt.Sprintf("%dh ago", hours)
-	}
-	days := int(d.Hours()) / 24
-	return fmt.Sprintf("%dd ago", days)
-}
-
 func runDeviceLs(cmd *cobra.Command, args []string) error {
 	defer func() {
 		deviceQuietFlag = false
 		deviceLsFormatFlag = ""
 		deviceLsOutputFlag = ""
+		deviceLsJSONFlag = false
 	}()
 
 	client := NewClient(GetConfig())
@@ -247,7 +223,7 @@ func runDeviceLs(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 
-	if strings.ToLower(deviceLsFormatFlag) == "json" || strings.ToLower(deviceLsOutputFlag) == "json" {
+	if deviceLsJSONFlag || strings.ToLower(deviceLsFormatFlag) == "json" || strings.ToLower(deviceLsOutputFlag) == "json" {
 		b, _ := json.MarshalIndent(devices, "", "  ")
 		fmt.Fprintln(out, string(b))
 		return nil
@@ -261,16 +237,16 @@ func runDeviceLs(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(devices) == 0 {
-		fmt.Fprintln(out, "No WireGuard devices registered.")
-		fmt.Fprintln(out, "To pair a device (phone, laptop, tablet), run:")
-		fmt.Fprintln(out, "  fabric device add <name>")
+		fmt.Fprintln(out, "No WireGuard devices paired.")
+		fmt.Fprintln(out, "\nTo pair a mobile device or TV:")
+		fmt.Fprintln(out, "  • Run: fabric device add <device-name>")
 		return nil
 	}
 
 	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tVIRTUAL IP\tPUBLIC KEY\tLAST HANDSHAKE\tTRANSFER (RX / TX)")
 	for _, d := range devices {
-		hsStr := formatRelativeTime(d.LastHandshake)
+		hsStr := FormatRelativeTime(d.LastHandshake)
 		pubKeyShort := d.PublicKey
 		if len(pubKeyShort) > 16 {
 			pubKeyShort = pubKeyShort[:8] + "…" + pubKeyShort[len(pubKeyShort)-6:]

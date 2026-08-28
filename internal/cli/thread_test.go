@@ -14,6 +14,7 @@ import (
 
 	"fabric/internal/protocol"
 	"fabric/internal/relay"
+	"fabric/internal/wireguard"
 )
 
 func setupTestMesh(t *testing.T) (*httptest.Server, *relay.Relay) {
@@ -50,6 +51,18 @@ func setupTestMesh(t *testing.T) (*httptest.Server, *relay.Relay) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(meta)
 	})
+
+	handleDevices := func(w http.ResponseWriter, req *http.Request) {
+		auth := req.Header.Get("Authorization")
+		if auth != "Bearer "+testToken {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]wireguard.DeviceEntry{})
+	}
+	mux.HandleFunc("/devices", handleDevices)
+	mux.HandleFunc("/api/v1/devices", handleDevices)
 
 	ts := httptest.NewTLSServer(mux)
 	if home, err := os.UserHomeDir(); err == nil {

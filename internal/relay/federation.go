@@ -335,27 +335,25 @@ func (r *Relay) GetPeer(gatewayID string) (*protocol.ServerPeerInfo, bool) {
 	return &info, true
 }
 
-// RemovePeer disconnects and removes a peer gateway.
-func (r *Relay) RemovePeer(gatewayID string) error {
-	r.peerMu.Lock()
-	peer, ok := r.peers[gatewayID]
-	if cancelCh, hasCancel := r.outboundCancels[gatewayID]; hasCancel {
+// cancelOutboundLocked safely and idempotently closes and deletes an outbound cancellation channel.
+func (r *Relay) cancelOutboundLocked(key string) {
+	if cancelCh, ok := r.outboundCancels[key]; ok {
 		select {
 		case <-cancelCh:
 		default:
 			close(cancelCh)
 		}
-		delete(r.outboundCancels, gatewayID)
+		delete(r.outboundCancels, key)
 	}
+}
+
+// RemovePeer disconnects and removes a peer gateway.
+func (r *Relay) RemovePeer(gatewayID string) error {
+	r.peerMu.Lock()
+	peer, ok := r.peers[gatewayID]
+	r.cancelOutboundLocked(gatewayID)
 	if ok && peer.Endpoint != "" {
-		if cancelCh, hasCancel := r.outboundCancels[peer.Endpoint]; hasCancel {
-			select {
-			case <-cancelCh:
-			default:
-				close(cancelCh)
-			}
-			delete(r.outboundCancels, peer.Endpoint)
-		}
+		r.cancelOutboundLocked(peer.Endpoint)
 	}
 	r.peerMu.Unlock()
 
@@ -374,13 +372,7 @@ func (r *Relay) RemovePeer(gatewayID string) error {
 func (r *Relay) AddPeer(endpoint string) error {
 	cancelCh := make(chan struct{})
 	r.peerMu.Lock()
-	if existing, ok := r.outboundCancels[endpoint]; ok {
-		select {
-		case <-existing:
-		default:
-			close(existing)
-		}
-	}
+	r.cancelOutboundLocked(endpoint)
 	r.outboundCancels[endpoint] = cancelCh
 	r.peerMu.Unlock()
 
@@ -392,13 +384,7 @@ func (r *Relay) AddPeer(endpoint string) error {
 func (r *Relay) ConnectLeaf(coreEndpoint string) {
 	cancelCh := make(chan struct{})
 	r.peerMu.Lock()
-	if existing, ok := r.outboundCancels[coreEndpoint]; ok {
-		select {
-		case <-existing:
-		default:
-			close(existing)
-		}
-	}
+	r.cancelOutboundLocked(coreEndpoint)
 	r.outboundCancels[coreEndpoint] = cancelCh
 	r.peerMu.Unlock()
 
