@@ -145,9 +145,6 @@ func NewSecureServer(cfg Config) (*SecureServer, error) {
 	var wgEng *wireguard.WireGuardEngine
 	if !cfg.WireGuardDisabled {
 		wgPort := cfg.WireGuardPort
-		if wgPort <= 0 {
-			wgPort = 51820
-		}
 		var err error
 		wgEng, err = wireguard.NewEngine(wireguard.EngineConfig{
 			Port:         wgPort,

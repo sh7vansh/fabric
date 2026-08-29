@@ -3,6 +3,7 @@ package relay
 import (
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net"
 	"strings"
 	"testing"
@@ -250,8 +251,9 @@ func TestCrossGatewayExecRoutingAndLoopAvoidance(t *testing.T) {
 			var req protocol.ExecRequest
 			dec := json.NewDecoder(st)
 			if err := dec.Decode(&req); err == nil && req.Type == protocol.TypeExecRequest {
+				agentReader := io.MultiReader(dec.Buffered(), st)
 				buf := make([]byte, 128)
-				n, _ := st.Read(buf)
+				n, _ := io.ReadAtLeast(agentReader, buf, len("PING_DB"))
 				agentReceived <- string(buf[:n])
 				_, _ = st.Write([]byte("PONG_DB"))
 				st.Close()
@@ -295,7 +297,7 @@ func TestCrossGatewayExecRoutingAndLoopAvoidance(t *testing.T) {
 	}
 
 	buf := make([]byte, 64)
-	n, _ := clientConn.Read(buf)
+	n, _ := io.ReadAtLeast(clientConn, buf, len("PONG_DB"))
 	if string(buf[:n]) != "PONG_DB" {
 		t.Errorf("expected client to receive PONG_DB, got %q", string(buf[:n]))
 	}

@@ -193,7 +193,7 @@ func TestFederationFullTopologyE2E(t *testing.T) {
 			if err := dec.Decode(&req); err == nil && req.Type == protocol.TypeExecRequest {
 				agentReader := io.MultiReader(dec.Buffered(), st)
 				buf := make([]byte, 128)
-				n, _ := agentReader.Read(buf)
+				n, _ := io.ReadAtLeast(agentReader, buf, len("CMD_READ"))
 				agentSensorReceived <- string(buf[:n])
 				_, _ = st.Write([]byte("DATA_FROM_EDGE_SENSOR"))
 				st.Close()
@@ -230,7 +230,7 @@ func TestFederationFullTopologyE2E(t *testing.T) {
 	}
 
 	buf := make([]byte, 64)
-	n, _ := clientConn.Read(buf)
+	n, _ := io.ReadAtLeast(clientConn, buf, len("DATA_FROM_EDGE_SENSOR"))
 	if string(buf[:n]) != "DATA_FROM_EDGE_SENSOR" {
 		t.Errorf("expected DATA_FROM_EDGE_SENSOR, got %q", string(buf[:n]))
 	}
@@ -248,7 +248,7 @@ func TestFederationFullTopologyE2E(t *testing.T) {
 			if err := dec.Decode(&req); err == nil && req.Type == protocol.TypeCopyRequest {
 				agentReader := io.MultiReader(dec.Buffered(), st)
 				buf := make([]byte, 128)
-				n, _ := agentReader.Read(buf)
+				n, _ := io.ReadAtLeast(agentReader, buf, len("TAR_BYTES_STREAM"))
 				agentDBReceived <- string(buf[:n])
 				_, _ = st.Write([]byte("ACK_TAR_SAVED"))
 				st.Close()
@@ -286,7 +286,7 @@ func TestFederationFullTopologyE2E(t *testing.T) {
 	}
 
 	cpAckBuf := make([]byte, 64)
-	nCp, _ := cpClientConn.Read(cpAckBuf)
+	nCp, _ := io.ReadAtLeast(cpClientConn, cpAckBuf, len("ACK_TAR_SAVED"))
 	if string(cpAckBuf[:nCp]) != "ACK_TAR_SAVED" {
 		t.Errorf("expected ACK_TAR_SAVED, got %q", string(cpAckBuf[:nCp]))
 	}
@@ -304,7 +304,7 @@ func TestFederationFullTopologyE2E(t *testing.T) {
 			if err := dec.Decode(&req); err == nil && req.Type == protocol.TypeProxyRequest {
 				agentReader := io.MultiReader(dec.Buffered(), st)
 				buf := make([]byte, 128)
-				n, _ := agentReader.Read(buf)
+				n, _ := io.ReadAtLeast(agentReader, buf, len("PGSQL_STARTUP"))
 				agentProxyReceived <- string(buf[:n])
 				_, _ = st.Write([]byte("PGSQL_READY"))
 				st.Close()
@@ -342,7 +342,7 @@ func TestFederationFullTopologyE2E(t *testing.T) {
 	}
 
 	proxyReplyBuf := make([]byte, 64)
-	nProxy, _ := proxyClientConn.Read(proxyReplyBuf)
+	nProxy, _ := io.ReadAtLeast(proxyClientConn, proxyReplyBuf, len("PGSQL_READY"))
 	if !bytes.Contains(proxyReplyBuf[:nProxy], []byte("PGSQL_READY")) {
 		t.Errorf("expected PGSQL_READY, got %q", string(proxyReplyBuf[:nProxy]))
 	}
