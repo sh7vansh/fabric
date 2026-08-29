@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"fabric/internal/pki"
 	"fabric/internal/protocol"
 	"fabric/internal/provision"
 
@@ -338,6 +339,7 @@ func runStitchSingle(cmd *cobra.Command, rawTarget string) error {
 		Mode:        mode,
 		ListenPort:  listenPort,
 		NoFallback:  stitchNoFallback,
+		CADir:       pki.ResolveCADir(cfg.CACert),
 	}
 
 	provisioner := provision.NewProvisioner(nil, nodeVerifier).
@@ -509,6 +511,7 @@ func runStitchScan(cmd *cobra.Command, rawCIDR string) error {
 			Mode:        mode,
 			ListenPort:  listenPort,
 			NoFallback:  stitchNoFallback,
+			CADir:       pki.ResolveCADir(cfg.CACert),
 		}
 		if st.User != "" {
 			opts.Target = st.User + "@" + st.Host

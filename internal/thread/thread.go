@@ -230,6 +230,9 @@ func (t *ThreadDaemon) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("invalid server url: %w", err)
 	}
+	if u.Path == "" || u.Path == "/" {
+		u.Path = "/ws"
+	}
 
 	backoff := t.cfg.InitialRetry
 	sessionID := fmt.Sprintf("thread-%s-%d", t.cfg.Hostname, time.Now().UnixNano())

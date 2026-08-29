@@ -193,6 +193,9 @@ func LoadOrInitCA(dir, domain string, opts ...Option) (*CA, error) {
 // system directory (/etc/fabric/ca), or fallback directory (/tmp/fabric-ca).
 func ResolveCADir(customDir string) string {
 	if customDir != "" {
+		if strings.HasSuffix(customDir, ".crt") || strings.HasSuffix(customDir, ".key") || fileExists(customDir) {
+			return filepath.Dir(customDir)
+		}
 		return customDir
 	}
 	if envCADir := os.Getenv("FABRIC_CA_DIR"); envCADir != "" {
@@ -200,6 +203,15 @@ func ResolveCADir(customDir string) string {
 	}
 	if envCACert := os.Getenv("FABRIC_CA_CERT"); envCACert != "" {
 		return filepath.Dir(envCACert)
+	}
+	for _, p := range DefaultCACandidatePaths() {
+		dir := filepath.Dir(p)
+		if strings.HasPrefix(dir, "/etc/fabric") && os.Geteuid() != 0 {
+			continue
+		}
+		if fileExists(filepath.Join(dir, "ca.crt")) && fileExists(filepath.Join(dir, "ca.key")) {
+			return dir
+		}
 	}
 	for _, p := range DefaultCACandidatePaths() {
 		if _, err := os.Stat(p); err == nil {
