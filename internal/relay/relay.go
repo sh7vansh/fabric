@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -84,7 +85,11 @@ func New(cfg Config) *Relay {
 		serverID = cfg.GatewayID
 	}
 	if serverID == "" {
-		serverID = "gw-" + strings.ReplaceAll(domain, ".", "-")
+		if h, err := os.Hostname(); err == nil && h != "" {
+			serverID = h
+		} else {
+			serverID = "gw-" + strings.ReplaceAll(domain, ".", "-")
+		}
 	}
 
 	region := cfg.Region

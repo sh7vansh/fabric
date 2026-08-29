@@ -441,15 +441,6 @@ func GenerateStitchScript(opts StitchHostOptions, serverURL string) string {
 		if p, err := PackageBinaryPayload(opts.CliBinaryData); err == nil {
 			cliPayload = p
 		}
-	} else {
-		cliPath, err := FindLocalCliBinary()
-		if err == nil {
-			if data, readErr := os.ReadFile(cliPath); readErr == nil {
-				if p, pkgErr := PackageBinaryPayload(data); pkgErr == nil {
-					cliPayload = p
-				}
-			}
-		}
 	}
 
 	domain := opts.Domain
@@ -472,7 +463,11 @@ func GenerateStitchScript(opts StitchHostOptions, serverURL string) string {
 	certPayload := ""
 	keyPayload := ""
 
-	if ca, err := pki.LoadOrInitCA(caDir, domain); err == nil && ca != nil {
+	if ca, err := pki.LoadOrInitCA(caDir, domain); err != nil {
+		if !opts.SilentOutput {
+			fmt.Printf("[!] Warning: CA loading failed in %s: %v\n", caDir, err)
+		}
+	} else if ca != nil {
 		hosts := []string{targetHostOnly}
 		if net.ParseIP(targetHostOnly) == nil && !strings.Contains(targetHostOnly, ".") && domain != "" {
 			hosts = append(hosts, targetHostOnly+"."+domain)
@@ -480,7 +475,11 @@ func GenerateStitchScript(opts StitchHostOptions, serverURL string) string {
 		if domain != "" {
 			hosts = append(hosts, "*."+domain)
 		}
-		if certPEM, keyPEM, err := ca.MintCertificatePEM(hosts, 90*24*time.Hour); err == nil {
+		if certPEM, keyPEM, err := ca.MintCertificatePEM(hosts, 90*24*time.Hour); err != nil {
+			if !opts.SilentOutput {
+				fmt.Printf("[!] Warning: Certificate minting failed: %v\n", err)
+			}
+		} else {
 			caPayload = base64.StdEncoding.EncodeToString(ca.CertPEM())
 			certPayload = base64.StdEncoding.EncodeToString(certPEM)
 			keyPayload = base64.StdEncoding.EncodeToString(keyPEM)
@@ -812,12 +811,9 @@ func ExecuteStitchHostContext(ctx context.Context, opts StitchHostOptions, exec 
 	}
 
 	if len(opts.BinaryData) == 0 {
-		nodeBytes, cliBytes, resolveErr := ResolveCrossPlatformBinaries(remoteOS, remoteArch)
+		nodeBytes, _, resolveErr := ResolveCrossPlatformBinaries(remoteOS, remoteArch)
 		if resolveErr == nil && len(nodeBytes) > 0 {
 			opts.BinaryData = nodeBytes
-			if len(cliBytes) > 0 {
-				opts.CliBinaryData = cliBytes
-			}
 		} else {
 			if !opts.SilentOutput {
 				fmt.Printf("[!] Warning: Could not resolve cross-platform binaries (%v). Falling back to local binaries...\n", resolveErr)

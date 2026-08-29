@@ -15,6 +15,20 @@ import (
 )
 
 func extractDecodedEnv(script string) string {
+	if strings.Contains(script, "ENV_EOF") {
+		idxStart := strings.Index(script, "<< 'ENV_EOF'")
+		if idxStart != -1 {
+			idxStart += len("<< 'ENV_EOF'")
+			rem := script[idxStart:]
+			idxEnd := strings.Index(rem, "ENV_EOF")
+			if idxEnd != -1 {
+				b64Data := strings.TrimSpace(rem[:idxEnd])
+				if decoded, err := base64.StdEncoding.DecodeString(b64Data); err == nil {
+					return string(decoded)
+				}
+			}
+		}
+	}
 	idxStart := strings.Index(script, `ENV_B64="`)
 	if idxStart == -1 {
 		return script

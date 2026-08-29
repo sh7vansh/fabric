@@ -111,6 +111,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=HOME=/root
 EnvironmentFile=-/etc/fabric/%s.env
 %sExecStart=%s
 %sRestart=always

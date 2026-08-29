@@ -7,6 +7,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -193,10 +194,17 @@ func LoadOrInitCA(dir, domain string, opts ...Option) (*CA, error) {
 // system directory (/etc/fabric/ca), or fallback directory (/tmp/fabric-ca).
 func ResolveCADir(customDir string) string {
 	if customDir != "" {
-		if strings.HasSuffix(customDir, ".crt") || strings.HasSuffix(customDir, ".key") || fileExists(customDir) {
-			return filepath.Dir(customDir)
+		if strings.HasSuffix(customDir, ".crt") || strings.HasSuffix(customDir, ".key") {
+			dir := filepath.Dir(customDir)
+			if fileExists(filepath.Join(dir, "ca.crt")) && fileExists(filepath.Join(dir, "ca.key")) {
+				return dir
+			}
+			if fileExists(filepath.Join(dir, "ca", "ca.crt")) && fileExists(filepath.Join(dir, "ca", "ca.key")) {
+				return filepath.Join(dir, "ca")
+			}
+		} else {
+			return customDir
 		}
-		return customDir
 	}
 	if envCADir := os.Getenv("FABRIC_CA_DIR"); envCADir != "" {
 		return envCADir
@@ -206,20 +214,14 @@ func ResolveCADir(customDir string) string {
 	}
 	for _, p := range DefaultCACandidatePaths() {
 		dir := filepath.Dir(p)
-		if strings.HasPrefix(dir, "/etc/fabric") && os.Geteuid() != 0 {
-			continue
-		}
-		if fileExists(filepath.Join(dir, "ca.crt")) && fileExists(filepath.Join(dir, "ca.key")) {
-			return dir
-		}
-	}
-	for _, p := range DefaultCACandidatePaths() {
-		if _, err := os.Stat(p); err == nil {
-			dir := filepath.Dir(p)
-			if strings.HasPrefix(dir, "/etc/fabric") && os.Geteuid() != 0 {
-				continue
+		certPath := filepath.Join(dir, "ca.crt")
+		keyPath := filepath.Join(dir, "ca.key")
+		if certF, err := os.Open(certPath); err == nil {
+			certF.Close()
+			if keyF, kerr := os.Open(keyPath); kerr == nil {
+				keyF.Close()
+				return dir
 			}
-			return dir
 		}
 	}
 	if home, err := os.UserHomeDir(); err == nil {
@@ -354,12 +356,17 @@ func (c *CA) generateRoot(validity time.Duration) error {
 		cn = fmt.Sprintf("Fabric Mesh Root CA (%s)", c.domain)
 	}
 
+	pubBytes := elliptic.Marshal(elliptic.P256(), privKey.PublicKey.X, privKey.PublicKey.Y)
+	skid := sha1.Sum(pubBytes)
+
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			CommonName:   cn,
 			Organization: []string{"Fabric Mesh Authority"},
 		},
+		SubjectKeyId:          skid[:],
+		AuthorityKeyId:        skid[:],
 		NotBefore:             time.Now().Add(-1 * time.Minute),
 		NotAfter:              time.Now().Add(validity),
 		IsCA:                  true,
@@ -489,12 +496,17 @@ func (c *CA) MintCertificate(hosts []string, validity time.Duration) (*tls.Certi
 	notBefore := time.Now().Add(-1 * time.Minute)
 	notAfter := time.Now().Add(validity)
 
+	pubBytes := elliptic.Marshal(elliptic.P256(), privKey.PublicKey.X, privKey.PublicKey.Y)
+	skid := sha1.Sum(pubBytes)
+
 	template := x509.Certificate{
 		SerialNumber: serialNumber,
 		Subject: pkix.Name{
 			CommonName:   hosts[0],
 			Organization: []string{"Fabric Mesh Thread"},
 		},
+		SubjectKeyId:          skid[:],
+		AuthorityKeyId:        c.rootCert.SubjectKeyId,
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

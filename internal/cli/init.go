@@ -14,7 +14,6 @@ import (
 
 	"fabric/internal/firewall"
 	"fabric/internal/pki"
-	"fabric/internal/service"
 
 	"github.com/spf13/cobra"
 )
@@ -330,14 +329,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if err := writeRoleEnv("server", serverURL, token, domain, "local"); err == nil {
 			fmt.Println("[+] Configured server environment (~/.fabric/server.env)")
 		}
-		if !initNonInteract {
-			if err := svcMgr.Install("server", service.ConfigEnv{
-				"FABRIC_SERVER_URL": serverURL,
-				"FABRIC_TOKEN":      token,
-				"FABRIC_DOMAIN":     domain,
-			}); err == nil {
-				startedServices = append(startedServices, "fabric-server")
-			}
+		if err := svcMgr.Install("server", nil); err == nil {
+			startedServices = append(startedServices, "fabric-server")
 		}
 	}
 
@@ -345,15 +338,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if err := writeRoleEnv("thread", serverURL, token, domain, mode); err == nil {
 			fmt.Println("[+] Configured thread environment (~/.fabric/thread.env)")
 		}
-		if !initNonInteract {
-			if err := svcMgr.Install("thread", service.ConfigEnv{
-				"FABRIC_SERVER_URL": serverURL,
-				"FABRIC_TOKEN":      token,
-				"FABRIC_DOMAIN":     domain,
-				"FABRIC_MODE":       mode,
-			}); err == nil {
-				startedServices = append(startedServices, "fabric-thread")
-			}
+		if err := svcMgr.Install("thread", nil); err == nil {
+			startedServices = append(startedServices, "fabric-thread")
 		}
 	}
 

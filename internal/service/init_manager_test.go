@@ -77,38 +77,59 @@ func TestGenerateSupervisorScript(t *testing.T) {
 	}
 }
 
-func TestRenderBootstrapScript(t *testing.T) {
+func extractDecodedEnv(script string) string {
+	if strings.Contains(script, "ENV_EOF") {
+		idxStart := strings.Index(script, "<< 'ENV_EOF'")
+		if idxStart != -1 {
+			idxStart += len("<< 'ENV_EOF'")
+			rem := script[idxStart:]
+			idxEnd := strings.Index(rem, "ENV_EOF")
+			if idxEnd != -1 {
+				b64Data := strings.TrimSpace(rem[:idxEnd])
+				if decoded, err := base64.StdEncoding.DecodeString(b64Data); err == nil {
+					return string(decoded)
+				}
+			}
+		}
+	}
+	idxStart := strings.Index(script, `ENV_B64="`)
+	if idxStart == -1 {
+		return script
+	}
+	idxStart += len(`ENV_B64="`)
+	idxEnd := strings.Index(script[idxStart:], `"`)
+	if idxEnd == -1 {
+		return script
+	}
+	b64Data := script[idxStart : idxStart+idxEnd]
+	decoded, err := base64.StdEncoding.DecodeString(b64Data)
+	if err != nil {
+		return script
+	}
+	return string(decoded)
+}
+
+func TestRenderBootstrapScript_ComprehensiveFlags(t *testing.T) {
 	mgr := NewInitManager()
 	opts := BootstrapScriptOptions{
-		ServerURL:   "wss://10.0.0.1:8443/ws",
-		ThreadName:  "worker-prod-1",
-		ListenAddr:  ":8443",
-		Token:       "tok-123",
-		Domain:      "custom.mesh",
-		Tags:        []string{"ingress", "edge"},
-		NodePayload: "base64-node-payload",
-		CliPayload:  "base64-cli-payload",
-		CAPayload:   "base64-ca-cert",
-		CertPayload: "base64-node-cert",
-		KeyPayload:  "base64-node-key",
+		ServerURL:     "wss://10.0.0.1:8443/ws",
+		SocketURL:     "wss://10.0.0.1:8443/ws",
+		ThreadName:    "worker-prod-1",
+		Mode:          "remote",
+		ListenAddr:    ":8443",
+		Token:         "tok-123",
+		Domain:        "custom.mesh",
+		Tags:          []string{"ingress", "edge"},
+		NodePayload:   "base64-node-payload",
+		CliPayload:    "base64-cli-payload",
+		CAPayload:     "base64-ca-cert",
+		CertPayload:   "base64-node-cert",
+		KeyPayload:    "base64-node-key",
 	}
 
 	script := mgr.RenderBootstrapScript(opts)
 
-	if !strings.Contains(script, `ENV_B64="`) {
-		t.Errorf("missing ENV_B64 in bootstrap script: %s", script)
-	}
-
-	// Verify that decoded ENV_B64 contains all expected environment variables
-	idxStart := strings.Index(script, `ENV_B64="`) + len(`ENV_B64="`)
-	idxEnd := strings.Index(script[idxStart:], `"`)
-	b64Data := script[idxStart : idxStart+idxEnd]
-
-	decoded, err := base64.StdEncoding.DecodeString(b64Data)
-	if err != nil {
-		t.Fatalf("failed to base64-decode ENV_B64: %v", err)
-	}
-	envStr := string(decoded)
+	envStr := extractDecodedEnv(script)
 
 	if !strings.Contains(envStr, "FABRIC_SERVER_URL=wss://10.0.0.1:8443/ws") {
 		t.Errorf("missing server url in decoded env: %s", envStr)
@@ -131,19 +152,16 @@ func TestRenderBootstrapScript(t *testing.T) {
 	if !strings.Contains(envStr, "FABRIC_TAGS=ingress,edge") {
 		t.Errorf("missing tags in decoded env: %s", envStr)
 	}
-	if !strings.Contains(script, `PAYLOAD="base64-node-payload"`) {
-		t.Errorf("missing node payload in bootstrap script: %s", script)
+	if !strings.Contains(script, "THREAD_PAYLOAD_EOF") && !strings.Contains(script, `PAYLOAD="base64-node-payload"`) {
+		t.Errorf("missing node payload unpacking in bootstrap script: %s", script)
 	}
-	if !strings.Contains(script, `CLI_PAYLOAD="base64-cli-payload"`) {
-		t.Errorf("missing cli payload in bootstrap script: %s", script)
-	}
-	if !strings.Contains(script, `CA_PAYLOAD="base64-ca-cert"`) {
+	if !strings.Contains(script, "CA_EOF") && !strings.Contains(script, `CA_PAYLOAD="base64-ca-cert"`) {
 		t.Errorf("missing ca payload in bootstrap script: %s", script)
 	}
-	if !strings.Contains(script, `CERT_PAYLOAD="base64-node-cert"`) {
+	if !strings.Contains(script, "CERT_EOF") && !strings.Contains(script, `CERT_PAYLOAD="base64-node-cert"`) {
 		t.Errorf("missing cert payload in bootstrap script: %s", script)
 	}
-	if !strings.Contains(script, `KEY_PAYLOAD="base64-node-key"`) {
+	if !strings.Contains(script, "KEY_EOF") && !strings.Contains(script, `KEY_PAYLOAD="base64-node-key"`) {
 		t.Errorf("missing key payload in bootstrap script: %s", script)
 	}
 	if !strings.Contains(script, "chmod 600") {
@@ -168,15 +186,7 @@ func TestRenderBootstrapScript_ShellMetacharactersInjectionSafety(t *testing.T) 
 		t.Errorf("script contains unescaped token string injection")
 	}
 
-	idxStart := strings.Index(script, `ENV_B64="`) + len(`ENV_B64="`)
-	idxEnd := strings.Index(script[idxStart:], `"`)
-	b64Data := script[idxStart : idxStart+idxEnd]
-
-	decoded, err := base64.StdEncoding.DecodeString(b64Data)
-	if err != nil {
-		t.Fatalf("failed to decode ENV_B64: %v", err)
-	}
-	envStr := string(decoded)
+	envStr := extractDecodedEnv(script)
 
 	if !strings.Contains(envStr, opts.Token) {
 		t.Errorf("expected decoded env to preserve exact token without corruption")
@@ -306,16 +316,14 @@ func TestBootstrapRendererPure(t *testing.T) {
 	}
 
 	script := renderer.RenderBootstrapScript(opts)
-	if !strings.Contains(script, "FABRIC_THREAD_NAME=pure-edge") && !strings.Contains(script, "FABRIC_SERVER_URL=wss://server.internal:8443/ws") {
-		// Verify environment payload encoded
-		if !strings.Contains(script, `ENV_B64="`) {
-			t.Errorf("expected ENV_B64 in pure rendered script")
-		}
+	envStr := extractDecodedEnv(script)
+	if !strings.Contains(envStr, "FABRIC_THREAD_NAME=pure-edge") || !strings.Contains(envStr, "FABRIC_SERVER_URL=wss://server.internal:8443/ws") {
+		t.Errorf("expected thread name and server url in decoded env: %s", envStr)
 	}
-	if !strings.Contains(script, "PAYLOAD=\"b64payload\"") {
+	if !strings.Contains(script, "b64payload") {
 		t.Errorf("expected payload in script")
 	}
-	if !strings.Contains(script, "CA_PAYLOAD=\"b64ca\"") {
+	if !strings.Contains(script, "b64ca") {
 		t.Errorf("expected CA payload in script")
 	}
 

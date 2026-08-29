@@ -99,33 +99,41 @@ TARGET_BIN="$INSTALL_BIN_DIR/fabric-thread"
 ENV_FILE="$CONFIG_DIR/thread.env"
 
 # 4. Extract Injected Self-Contained Binary Payload
-PAYLOAD="%s"
-if [ -n "$PAYLOAD" ]; then
+if [ -n "%s" ]; then
     echo "[+] Unpacking injected fabric-thread binary to $TARGET_BIN..."
     TMP_BIN="${TARGET_BIN}.tmp.$$"
+    unpack_thread() {
+        base64 -d << 'THREAD_PAYLOAD_EOF' | gzip -d
+%s
+THREAD_PAYLOAD_EOF
+    }
     if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
-        (echo "$PAYLOAD" | base64 -d | gzip -d | $SUDO tee "$TMP_BIN" > /dev/null 2>&1) || (echo "$PAYLOAD" | base64 -d | gunzip | $SUDO tee "$TMP_BIN" > /dev/null 2>&1)
+        unpack_thread | $SUDO tee "$TMP_BIN" > /dev/null
         $SUDO chmod 755 "$TMP_BIN"
         $SUDO mv -f "$TMP_BIN" "$TARGET_BIN"
     else
-        (echo "$PAYLOAD" | base64 -d | gzip -d > "$TMP_BIN" 2>/dev/null) || (echo "$PAYLOAD" | base64 -d | gunzip > "$TMP_BIN" 2>/dev/null)
+        unpack_thread > "$TMP_BIN"
         chmod 755 "$TMP_BIN"
         mv -f "$TMP_BIN" "$TARGET_BIN"
     fi
 fi
 
 # Extract CLI binary if available
-CLI_PAYLOAD="%s"
-if [ -n "$CLI_PAYLOAD" ]; then
+if [ -n "%s" ]; then
     echo "[+] Unpacking injected fabric CLI to $INSTALL_BIN_DIR/fabric..."
     TARGET_CLI="$INSTALL_BIN_DIR/fabric"
     TMP_CLI="${TARGET_CLI}.tmp.$$"
+    unpack_cli() {
+        base64 -d << 'CLI_PAYLOAD_EOF' | gzip -d
+%s
+CLI_PAYLOAD_EOF
+    }
     if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
-        (echo "$CLI_PAYLOAD" | base64 -d | gzip -d | $SUDO tee "$TMP_CLI" > /dev/null 2>&1) || (echo "$CLI_PAYLOAD" | base64 -d | gunzip | $SUDO tee "$TMP_CLI" > /dev/null 2>&1)
+        unpack_cli | $SUDO tee "$TMP_CLI" > /dev/null
         $SUDO chmod 755 "$TMP_CLI"
         $SUDO mv -f "$TMP_CLI" "$TARGET_CLI"
     else
-        (echo "$CLI_PAYLOAD" | base64 -d | gzip -d > "$TMP_CLI" 2>/dev/null) || (echo "$CLI_PAYLOAD" | base64 -d | gunzip > "$TMP_CLI" 2>/dev/null)
+        unpack_cli > "$TMP_CLI"
         chmod 755 "$TMP_CLI"
         mv -f "$TMP_CLI" "$TARGET_CLI"
     fi
@@ -149,51 +157,67 @@ fi
 echo "[+] Validated binary integrity: $TARGET_BIN"
 
 # 5. Extract Injected mTLS PKI Payloads
-CA_PAYLOAD="%s"
-if [ -n "$CA_PAYLOAD" ]; then
+if [ -n "%s" ]; then
     echo "[+] Unpacking Root CA certificate to $CONFIG_DIR/ca.crt..."
+    unpack_ca() {
+        base64 -d << 'CA_EOF'
+%s
+CA_EOF
+    }
     if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
-        echo "$CA_PAYLOAD" | base64 -d | $SUDO tee "$CONFIG_DIR/ca.crt" > /dev/null
+        unpack_ca | $SUDO tee "$CONFIG_DIR/ca.crt" > /dev/null
         $SUDO chmod 644 "$CONFIG_DIR/ca.crt"
     else
-        echo "$CA_PAYLOAD" | base64 -d > "$CONFIG_DIR/ca.crt"
+        unpack_ca > "$CONFIG_DIR/ca.crt"
         chmod 644 "$CONFIG_DIR/ca.crt"
     fi
 fi
 
-CERT_PAYLOAD="%s"
-if [ -n "$CERT_PAYLOAD" ]; then
+if [ -n "%s" ]; then
     echo "[+] Unpacking thread leaf certificate to $CONFIG_DIR/client.crt..."
+    unpack_cert() {
+        base64 -d << 'CERT_EOF'
+%s
+CERT_EOF
+    }
     if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
-        echo "$CERT_PAYLOAD" | base64 -d | $SUDO tee "$CONFIG_DIR/client.crt" > /dev/null
+        unpack_cert | $SUDO tee "$CONFIG_DIR/client.crt" > /dev/null
         $SUDO chmod 644 "$CONFIG_DIR/client.crt"
     else
-        echo "$CERT_PAYLOAD" | base64 -d > "$CONFIG_DIR/client.crt"
+        unpack_cert > "$CONFIG_DIR/client.crt"
         chmod 644 "$CONFIG_DIR/client.crt"
     fi
 fi
 
-KEY_PAYLOAD="%s"
-if [ -n "$KEY_PAYLOAD" ]; then
+if [ -n "%s" ]; then
     echo "[+] Unpacking thread leaf private key to $CONFIG_DIR/client.key..."
+    unpack_key() {
+        base64 -d << 'KEY_EOF'
+%s
+KEY_EOF
+    }
     if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
-        echo "$KEY_PAYLOAD" | base64 -d | $SUDO tee "$CONFIG_DIR/client.key" > /dev/null
+        unpack_key | $SUDO tee "$CONFIG_DIR/client.key" > /dev/null
         $SUDO chmod 600 "$CONFIG_DIR/client.key"
     else
-        echo "$KEY_PAYLOAD" | base64 -d > "$CONFIG_DIR/client.key"
+        unpack_key > "$CONFIG_DIR/client.key"
         chmod 600 "$CONFIG_DIR/client.key"
     fi
 fi
 
 # 6. Write Environment Configuration
-ENV_B64="%s"
+unpack_env() {
+    base64 -d << 'ENV_EOF'
+%s
+ENV_EOF
+}
 if [ "$IS_ROOT" -eq 1 ] && [ -n "$SUDO" ]; then
-    echo "$ENV_B64" | base64 -d | $SUDO tee "$ENV_FILE" > /dev/null
+    unpack_env | $SUDO tee "$ENV_FILE" > /dev/null
     $SUDO chmod 600 "$ENV_FILE"
     # Legacy fallback link
     $SUDO cp -f "$ENV_FILE" "$CONFIG_DIR/node.env" 2>/dev/null || true
 else
-    echo "$ENV_B64" | base64 -d > "$ENV_FILE"
+    unpack_env > "$ENV_FILE"
     chmod 600 "$ENV_FILE"
     cp -f "$ENV_FILE" "$CONFIG_DIR/node.env" 2>/dev/null || true
 fi
@@ -215,6 +239,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+Environment=HOME=/root
 EnvironmentFile=-/etc/fabric/thread.env
 ExecStart=/usr/local/bin/fabric-thread
 Restart=always
@@ -308,7 +333,7 @@ if [ "%s" = "remote" ]; then
         echo "[+] Configured iptables rule for port $PORT_NUM/tcp"
     fi
 fi
-`, threadPayload, opts.CliPayload, opts.CAPayload, opts.CertPayload, opts.KeyPayload, envB64, mode, opts.ListenAddr)
+`, threadPayload, threadPayload, opts.CliPayload, opts.CliPayload, opts.CAPayload, opts.CAPayload, opts.CertPayload, opts.CertPayload, opts.KeyPayload, opts.KeyPayload, envB64, mode, opts.ListenAddr)
 }
 
 // RenderRemoteSwitchScript renders a lightweight SSH command to switch an existing thread to remote mode.
